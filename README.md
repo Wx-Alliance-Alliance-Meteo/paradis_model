@@ -2,7 +2,7 @@
 
 #### Key Features
 
-- **Physically-informed neural architecture:** Combines convolutional neural networks with operators akin to the **A**dvection, **R**eaction, and **D**iffusion (ADR) equation to handle complex physical phenomena.
+- **Physically-informed neural architecture:** Combines convolutional neural networks with operators akin to the advection, diffusion, and reaction (ADR) equation to handle complex physical phenomena.
 - **Spherical Semi-Lagrangian advection operator:** Enables the non-local transformation of information in spherical coordinates.
 - **Geocyclic Padding:** Addresses the challenge of representing the Earth’s spherical geometry
 
