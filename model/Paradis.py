@@ -158,12 +158,6 @@ class DiffusionOperator(nn.Module):
         diffusion = self.conv(padded)
         diffusion = self.norm(diffusion)
 
-        # Ensure diffusion has correct size
-        if diffusion.shape != x.shape:
-            diffusion = nn.functional.interpolate(
-                diffusion, size=x.shape[2:], mode="bilinear", align_corners=True
-            )
-
         return x + dt * self.kappa * diffusion
 
 
