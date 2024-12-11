@@ -56,6 +56,19 @@ class AdvectionOperator(nn.Module):
             self.register_buffer("grid_x", grid_x.clone(), persistent=False)
 
     def forward(self, x: torch.Tensor, dt: float = 1.0) -> torch.Tensor:
+        """Computes the forward Semi-Lagrangian advection using great circles.
+
+        Inspired by Ritchie, H. (1987). "Semi-Lagrangian advection on a Gaussian grid."
+        *Monthly Weather Review*, 115(2), 608-619.
+        https://doi.org/10.1175/1520-0493(1987)115<0608:SLAOAG>2.0.CO;2
+
+        Args:
+            x (torch.Tensor): The input tensor representing the initial state.
+            dt (float, optional): The time step for advection. Default is 1.0.
+
+        Returns:
+            torch.Tensor: The tensor representing the state after advection.
+        """
         batch_size, _, height, width = x.shape
         self.initialize_grid(height, width, x.device)
 
