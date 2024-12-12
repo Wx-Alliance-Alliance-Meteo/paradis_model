@@ -1,10 +1,12 @@
 """Model training implementation."""
 
 import time
-import torch
+
 import lightning as L
-from model.Paradis import Paradis
+import torch
+
 from data.era5_dataset import input_from_output
+from model.Paradis import Paradis
 from utils.loss import WeightedMSELoss
 
 
@@ -12,9 +14,12 @@ class LitParadis(L.LightningModule):
     def __init__(self, datamodule: L.LightningDataModule, cfg: dict) -> None:
         super().__init__()
 
-        # Initialize PARADIS model
+        # Instantiate the model
         self.model = Paradis(datamodule, cfg)
         self.lr = cfg.model.lr
+
+        self.warmup_steps = cfg.model.get("warmup_steps", 1000)
+        self.gradient_clip_val = cfg.model.get("gradient_clip_val", 1.0)
 
         # Custom loss function
         num_surface_vars = len(cfg.features.output.surface)
@@ -31,74 +36,82 @@ class LitParadis(L.LightningModule):
         self.autoreg_maps = datamodule.autoreg_maps
         self.print_losses = cfg.trainer.print_losses
 
-        # To compute elapsed time for each epoch
+        # Gradient scaling for mixed precision
+        self.scaler = torch.amp.GradScaler()
+
         self.epoch_start_time = None
-        self.train_loss = None
-
-    def setup(self, stage=None):
-        # Keep track of loss within epoch
-        self.train_loss_sum = torch.zeros(1, dtype=torch.float32, device=self.device)
-        self.val_loss_sum = torch.zeros(1, dtype=torch.float32, device=self.device)
-        self.train_step_count = torch.zeros(1, dtype=torch.int, device=self.device)
-        self.val_step_count = torch.zeros(1, dtype=torch.int, device=self.device)
-
-    def forward(self, x, t=None):
-        return self.model(x, t)
 
     def configure_optimizers(self):
         """Configure optimizer and scheduler."""
+        no_decay = [
+            "bias",
+            "LayerNorm.weight",
+            "BatchNorm.weight",
+            "InstanceNorm.weight",
+        ]
+        grouped_parameters = [
+            {
+                "params": [
+                    p
+                    for n, p in self.model.named_parameters()
+                    if not any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 0.1,
+            },
+            {
+                "params": [
+                    p
+                    for n, p in self.model.named_parameters()
+                    if any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 0.0,
+            },
+        ]
+
         optimizer = torch.optim.AdamW(
-            self.model.parameters(), betas=[0.9, 0.95], lr=self.lr, weight_decay=0.1
+            grouped_parameters, betas=[0.9, 0.999], lr=self.lr, eps=1e-8
         )
 
-        lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
             optimizer,
             total_steps=self.trainer.estimated_stepping_batches,
             max_lr=self.lr,
-            pct_start=0.05,
+            pct_start=0.1,
             div_factor=25,
             final_div_factor=1e4,
             anneal_strategy="cos",
+            three_phase=True,
         )
-        return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
+
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
+        }
+
+    def forward(self, x, t=None):
+        """Forward pass through the model."""
+        return self.model(x, t)
 
     def on_train_epoch_start(self):
-        # Record the start time of the epoch
+        """Record the start time of the epoch."""
         if self.print_losses:
             self.epoch_start_time = time.time()
 
-    def training_step(self, batch, batch_idx):
-        loss = self._common_step(batch, batch_idx)
-        self.train_loss_sum += loss.detach()
-        self.train_step_count += 1
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        loss = self._common_step(batch, batch_idx)
-        self.val_loss_sum += loss.detach()
-        self.val_step_count += 1
-        return loss
-
     # pylint: disable=W0613
     def _common_step(self, batch, batch_idx):
-        # Extract the input and true dataset for this batch
+        """Common step for both training and validation."""
         input_data, true_data, static_data = batch
-
-        # Perform a number of autoregressive steps
         batch_loss = 0.0
         current_input = input_data
 
         for step in range(self.forecast_steps):
             # Call the model
             output_data = self(current_input, torch.tensor(step, device=self.device))
-
-            # Compute the loss with respect to the expected output
             loss = self.loss_fn(output_data, true_data[step])
             batch_loss += loss
 
             # Use output dataset as input for next forecasting step
             if step + 1 < self.forecast_steps:
-                # Reshape for input_from_output function
                 output_flat = output_data.permute(0, 2, 3, 1).reshape(
                     output_data.shape[0], -1, output_data.shape[1]
                 )
@@ -119,25 +132,47 @@ class LitParadis(L.LightningModule):
 
         return batch_loss / self.forecast_steps
 
-    def on_train_epoch_end(self):
-        # Log mean error after all train epoch calls
-        self.train_loss = self.train_loss_sum / self.train_step_count
+    def training_step(self, batch, batch_idx):
+        """Training step using automatic mixed precision."""
+        with torch.amp.autocast("cuda"):
+            loss = self._common_step(batch, batch_idx)
+
+        # Log metrics
         self.log(
-            "train_loss", self.train_loss, on_epoch=True, prog_bar=True, sync_dist=True
+            "train_loss",
+            loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
         )
+        self.log("lr", self.optimizers().param_groups[0]["lr"], prog_bar=True)
 
-    def on_validation_epoch_end(self):
-        # Log mean error after all validation epoch calls
-        val_loss = self.val_loss_sum / self.val_step_count
-        self.log("val_loss", val_loss, on_epoch=True, prog_bar=True, sync_dist=True)
+        return loss
 
-        if self.print_losses and self.epoch_start_time and self.train_loss is not None:
-            current_lr = self.trainer.optimizers[0].param_groups[0]["lr"]
+    def validation_step(self, batch, batch_idx):
+        """Validation step."""
+        loss = self._common_step(batch, batch_idx)
+        self.log(
+            "val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True
+        )
+        return loss
+
+    def on_train_epoch_end(self):
+        """Log epoch time and metrics if printing losses."""
+        if self.print_losses and self.epoch_start_time is not None:
             elapsed_time = time.time() - self.epoch_start_time
-            print(
-                f"Epoch {self.current_epoch:4d} | "
-                f"Train Loss: {self.train_loss.item():.6f} | "
-                f"Val Loss: {val_loss.item():.6f} | "
-                f"LR: {current_lr:.2e} | "
-                f"Time: {elapsed_time:.2f}s"
-            )
+            current_lr = self.optimizers().param_groups[0]["lr"]
+
+            # Get the losses using the logged metrics
+            train_loss = self.trainer.callback_metrics.get("train_loss")
+            val_loss = self.trainer.callback_metrics.get("val_loss")
+
+            if train_loss is not None and val_loss is not None:
+                print(
+                    f"Epoch {self.current_epoch:4d} | "
+                    f"Train Loss: {train_loss.item():.6f} | "
+                    f"Val Loss: {val_loss.item():.6f} | "
+                    f"LR: {current_lr:.2e} | "
+                    f"Elapsed time: {elapsed_time:.2f}s"
+                )

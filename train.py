@@ -1,11 +1,11 @@
 """Training script for the model."""
 
 import logging
-
 import hydra
 import torch
 import lightning as L
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
+from lightning.pytorch.strategies import DDPStrategy
 from omegaconf import DictConfig
 
 from trainer import LitParadis
@@ -17,6 +17,10 @@ from data.datamodule import Era5DataModule
 def main(cfg: DictConfig):
     """Train the model on ERA5 dataset."""
 
+    # Set deterministic behavior for reproducibility
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
     # Instantiate data module
     datamodule = Era5DataModule(cfg)
 
@@ -27,7 +31,6 @@ def main(cfg: DictConfig):
     litmodel = LitParadis(datamodule, cfg)
 
     if cfg.model.compile:
-        # Will throw error if graph breaks present
         litmodel = torch.compile(litmodel, fullgraph=True)
 
     # Define callbacks
@@ -49,7 +52,7 @@ def main(cfg: DictConfig):
         default_root_dir="logs/",
         accelerator=cfg.trainer.accelerator,
         devices=cfg.trainer.num_devices,
-        strategy="ddp",
+        strategy=DDPStrategy(),
         max_epochs=cfg.trainer.max_epochs,
         gradient_clip_val=1.0,
         gradient_clip_algorithm="norm",
