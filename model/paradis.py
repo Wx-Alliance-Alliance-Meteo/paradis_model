@@ -4,7 +4,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from model.geo_cyclic import GeoCyclicPadding
+from model.padding import GeoCyclicPadding
 
 
 class AdvectionOperator(nn.Module):
@@ -36,10 +36,10 @@ class AdvectionOperator(nn.Module):
 
         lat_grid, lon_grid = torch.meshgrid(lat, lon, indexing="ij")
 
-        self.register_buffer("cos_lat", torch.cos(lat_grid).clone())
-        self.register_buffer("sin_lat", torch.sin(lat_grid).clone())
-        self.register_buffer("cos_lon", torch.cos(lon_grid).clone())
-        self.register_buffer("sin_lon", torch.sin(lon_grid).clone())
+        self.register_buffer("cos_lat", torch.cos(lat_grid))
+        self.register_buffer("sin_lat", torch.sin(lat_grid))
+        self.register_buffer("cos_lon", torch.cos(lon_grid))
+        self.register_buffer("sin_lon", torch.sin(lon_grid))
 
         self.register_buffer("grid_y", None, persistent=False)
         self.register_buffer("grid_x", None, persistent=False)
@@ -72,23 +72,19 @@ class AdvectionOperator(nn.Module):
         batch_size, _, height, width = x.shape
         self.initialize_grid(height, width, x.device)
 
-        # Get velocities and scale by Earth radius
-        u = self.u_net(x) / self.earth_radius
-        v = self.v_net(x) / self.earth_radius
-
-        # Initial Cartesian coordinates
-        x0 = (self.cos_lon * self.cos_lat).clone()
-        y0 = (self.sin_lon * self.cos_lat).clone()
-        z0 = self.sin_lat.clone()
-
-        # Convert velocities to Cartesian
-        u_scaled = u.squeeze(1) / self.earth_radius
-        v_scaled = v.squeeze(1) / self.earth_radius
+        # Get velocities
+        u = self.u_net(x)
+        v = self.v_net(x)
 
         # Convert to Cartesian velocity components
-        dx = -u_scaled * self.sin_lon - v_scaled * self.cos_lon * self.sin_lat
-        dy = u_scaled * self.cos_lon - v_scaled * self.sin_lon * self.sin_lat
-        dz = v_scaled * self.cos_lat
+        dx = -u[:, 0] * self.sin_lon - v[:, 0] * self.cos_lon * self.sin_lat
+        dy = u[:, 0] * self.cos_lon - v[:, 0] * self.sin_lon * self.sin_lat
+        dz = v[:, 0] * self.cos_lat
+
+        # Initial Cartesian coordinates
+        x0 = self.cos_lon * self.cos_lat
+        y0 = self.sin_lon * self.cos_lat
+        z0 = self.sin_lat.clone()
 
         # Compute correction factor
         velocity_squared = dx * dx + dy * dy + dz * dz
@@ -142,17 +138,10 @@ class DiffusionOperator(nn.Module):
         self.conv = nn.Conv2d(channels, channels, kernel_size=5, padding=0, bias=False)
         self.norm = nn.InstanceNorm2d(channels, affine=True)
 
-    def _apply_padding(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply padding with size checks."""
-        padded = self.padding(x)
-        return padded[
-            :, :, : self.mesh_size[0] + 4, : self.mesh_size[1] + 4
-        ]  # Ensure correct output size
-
     def forward(self, x: torch.Tensor, dt: float = 1.0) -> torch.Tensor:
         """Apply diffusion operator for time step dt with proper padding."""
         # Apply padding with size check
-        padded = self._apply_padding(x)
+        padded = self.padding(x)
 
         # Compute diffusion
         diffusion = self.conv(padded)

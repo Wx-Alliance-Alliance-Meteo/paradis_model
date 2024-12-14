@@ -6,7 +6,7 @@ import lightning as L
 import torch
 
 from data.era5_dataset import input_from_output
-from model.Paradis import Paradis
+from model.paradis import Paradis
 from utils.loss import WeightedMSELoss
 
 
@@ -17,6 +17,8 @@ class LitParadis(L.LightningModule):
         # Instantiate the model
         self.model = Paradis(datamodule, cfg)
         self.lr = cfg.model.lr
+
+        print(f"Number of trainable parameters: {sum(p.numel() for p in self.model.parameters() if p.requires_grad):,}")
 
         self.warmup_steps = cfg.model.get("warmup_steps", 1000)
         self.gradient_clip_val = cfg.model.get("gradient_clip_val", 1.0)

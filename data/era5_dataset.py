@@ -1,13 +1,3 @@
-import logging
-from omegaconf import DictConfig
-import os
-
-import numpy as np
-import torch
-from torch.utils.data import Dataset
-import xarray as xr
-
-
 """ERA5 dataset handling for the model."""
 
 import logging
@@ -32,6 +22,39 @@ class ERA5Dataset(Dataset):
     ) -> None:
         self.dtype = dtype
         self.root_dir = root_dir
+
+        # Physical constants
+        self.EARTH_RADIUS = 6371220.0  # Earth's radius in meters
+        self.OMEGA = 7.29212e-5  # Earth's rotation rate in rad/s
+        self.G = 9.80616  # Gravitational acceleration in m/s²
+        self.R = 287.05  # Gas constant for dry air in J/(kg·K)
+        self.P0 = 1.0e5  # Reference pressure in Pa (1000 hPa)
+        self.T0 = 288.0  # Reference temperature in K
+
+        # Derived characteristic scales
+        self.L = self.EARTH_RADIUS  # Length scale
+        self.T = 1 / self.OMEGA  # Time scale
+        self.U = self.OMEGA * self.L  # Velocity scale
+        self.PHI0 = self.U * self.U  # Geopotential scale
+
+        # Dictionary mapping variables to their physical scaling
+        self.scaling_factors = {
+            "u_component_of_wind": self.U,  # Scale by characteristic velocity
+            "v_component_of_wind": self.U,  # Scale by characteristic velocity
+            "vertical_velocity": self.P0 * self.OMEGA,  # Scale omega by p₀Ω
+            "temperature": self.T0,  # Scale by reference temperature
+            "geopotential": self.PHI0,  # Scale by characteristic geopotential
+            "specific_humidity": 1.0,  # TODO
+            "relative_humidity": 100,
+            "vorticity": self.OMEGA,  # Scale by Earth's rotation rate
+            "divergence": self.OMEGA,  # Scale by Earth's rotation rate
+            "potential_temperature": self.T0,  # Scale by reference temperature
+            "10m_u_component_of_wind": self.U,
+            "10m_v_component_of_wind": self.U,
+            "2m_temperature": self.T0,
+            "surface_pressure": self.P0,
+            "mean_sea_level_pressure": self.P0,
+        }
 
         # Extract from the years in the range
         start_year = int(start_date.split("-")[0])
@@ -85,7 +108,7 @@ class ERA5Dataset(Dataset):
             self.ds = ds
 
         # Get the remaining names
-        names = [value for value in self.ds.stacked.values]
+        self.names = [value for value in self.ds.stacked.values]
 
         # Create input/output masks
         self.input_mask = torch.tensor(~np.isin(names, drop_vars_in), dtype=torch.bool)
@@ -104,27 +127,41 @@ class ERA5Dataset(Dataset):
         assert sum(self.input_mask) == self.num_in_features
         assert sum(self.output_mask) == self.num_out_features
 
-        # Load global mean and standard deviations
-        ds_stats = xr.open_dataset(os.path.join(root_dir, "stats"), engine="zarr")
-        if len(drop_inds) > 0:
-            ds_stats = ds_stats.drop_isel(stacked=drop_inds)
-
-        self.global_mean = torch.tensor(
-            ds_stats["mean"].values, dtype=self.dtype, requires_grad=False
-        )
-        self.global_std = torch.tensor(
-            ds_stats["std"].values, dtype=self.dtype, requires_grad=False
-        )
+        # Create scaling tensors based on variable names
+        self._create_scaling_tensors()
 
         # Extract latitude and longitude for the graph using the first month of this data
         self.lat = ds.latitude.values
         self.lon = ds.longitude.values
-
-        # Store the number of forecast steps in time
         self.forecast_steps = forecast_steps
 
         # Create masks for autoregression
-        names = np.array(names)
+        self._create_autoreg_maps()
+
+        logging.info(
+            f"Dataset contains: {self.num_in_features} input features, "
+            f"{self.num_out_features} output features"
+        )
+
+    def _create_scaling_tensors(self):
+        """Create scaling tensors for normalization based on physical variables."""
+        # Initialize scaling factors for all variables
+        scaling_values = []
+        for name in self.names:
+            # Extract base variable name (remove pressure level suffix if present)
+            base_name = name.split("_h")[0]
+            scaling_values.append(self.scaling_factors.get(base_name, 1.0))
+
+        # Convert to tensor
+        scaling_tensor = torch.tensor(scaling_values, dtype=self.dtype)
+
+        # Create input and output scaling tensors
+        self.input_scaling = scaling_tensor[self.input_mask]
+        self.output_scaling = scaling_tensor[self.output_mask]
+
+    def _create_autoreg_maps(self):
+        """Create masks for autoregressive prediction."""
+        names = np.array(self.names)
         names_in = names[self.input_mask]
         names_out = names[self.output_mask]
         names_indep = names[~self.output_mask]
@@ -136,18 +173,12 @@ class ERA5Dataset(Dataset):
             "indep_out": torch.tensor(np.isin(names_indep, names_in), dtype=torch.bool),
         }
 
-        logging.info(
-            f"Dataset contains: {self.num_in_features} input features, "
-            f"{self.num_out_features} output features"
-        )
-
     def __len__(self):
-        # Do not yield a value for the last time in the dataset since there
-        # is no future data
+        """Return the length of the dataset."""
         return self.length - self.forecast_steps
 
     def __getitem__(self, idx: int):
-        # Extract values from the requested indices and load array into CPU memory
+        """Extract values from the requested indices and load array into CPU memory."""
         stack = (
             self.ds["data"]
             .isel(time=slice(idx, idx + self.forecast_steps + 1))
@@ -164,16 +195,10 @@ class ERA5Dataset(Dataset):
         y_features = y[..., self.output_mask]  # [time, lat, lon, output_features]
         indep_features = y[..., ~self.output_mask]  # [time, lat, lon, static_features]
 
-        # Normalize
-        x_normalized = (
-            x_features - self.global_mean[self.input_mask]
-        ) / self.global_std[self.input_mask]
-        y_normalized = (
-            y_features - self.global_mean[self.output_mask]
-        ) / self.global_std[self.output_mask]
-        indep_normalized = (
-            indep_features - self.global_mean[~self.output_mask]
-        ) / self.global_std[~self.output_mask]
+        # Apply physical scaling
+        x_normalized = x_features / self.input_scaling
+        y_normalized = y_features / self.output_scaling
+        indep_normalized = indep_features  # Static features remain unnormalized
 
         # Permute to [channels, height, width] format
         x_grid = x_normalized.permute(2, 0, 1)  # [input_features, lat, lon]

@@ -50,8 +50,8 @@ features:
   base:
     atmospheric:
       - u_component_of_wind
-      - geopotential
       - v_component_of_wind
+      - geopotential
       - vertical_velocity
       - specific_humidity
       - temperature
