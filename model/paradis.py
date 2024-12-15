@@ -15,6 +15,14 @@ class AdvectionOperator(nn.Module):
         self.earth_radius = 6371220.0
         self.mesh_size = mesh_size
 
+        # Initialize networks with small weights
+        # This will prevents initial instability from large random velocities
+        def init_weights(m):
+            if isinstance(m, nn.Conv2d):
+                nn.init.normal_(m.weight, mean=0.0, std=0.02)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
         self.u_net = nn.Sequential(
             GeoCyclicPadding(1),
             nn.Conv2d(channels, channels, kernel_size=3, padding=0),
@@ -22,6 +30,7 @@ class AdvectionOperator(nn.Module):
             nn.SiLU(),
             nn.Conv2d(channels, 1, kernel_size=1),
         )
+        self.u_net.apply(init_weights)
 
         self.v_net = nn.Sequential(
             GeoCyclicPadding(1),
@@ -30,6 +39,7 @@ class AdvectionOperator(nn.Module):
             nn.SiLU(),
             nn.Conv2d(channels, 1, kernel_size=1),
         )
+        self.v_net.apply(init_weights)
 
         lat = torch.linspace(-torch.pi / 2, torch.pi / 2, mesh_size[0])
         lon = torch.linspace(0, 2 * torch.pi, mesh_size[1])
