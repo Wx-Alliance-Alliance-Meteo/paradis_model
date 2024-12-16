@@ -78,9 +78,9 @@ class LitParadis(L.LightningModule):
             optimizer,
             total_steps=self.trainer.estimated_stepping_batches,
             max_lr=self.lr,
-            pct_start=0.1,
+            pct_start=0.3,
             div_factor=25,
-            final_div_factor=1e4,
+            final_div_factor=1e3,
             anneal_strategy="cos",
             three_phase=True,
         )

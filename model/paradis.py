@@ -10,10 +10,28 @@ from model.padding import GeoCyclicPadding
 class AdvectionOperator(nn.Module):
     """Implements the advection operator."""
 
-    def __init__(self, channels, mesh_size):
+    def __init__(self, channels: int, mesh_size: tuple):
+        """Initialize the advection operator.
+
+        Args:
+            channels: Number of input channels
+            mesh_size: Tuple of (height, width) for the spatial dimensions
+        """
         super().__init__()
-        self.earth_radius = 6371220.0
+
         self.mesh_size = mesh_size
+        self.d_lat = torch.pi / (mesh_size[0] - 1)  # Grid spacing in radians
+        self.d_lon = 2 * torch.pi / mesh_size[1]
+
+        # Set maximum displacement and ensure padding is sufficient for interpolation
+        self.max_displacement = 6  # Integer number of grid points for max displacement
+        self.pad_size = (
+            self.max_displacement + 1
+        )  # Add one point for linear interpolation
+
+        # Precalculate maximum velocities (assuming dt=1.0)
+        self.max_u = self.max_displacement * self.d_lon
+        self.max_v = self.max_displacement * self.d_lat
 
         # Initialize networks with small weights
         # This will prevents initial instability from large random velocities
@@ -41,9 +59,9 @@ class AdvectionOperator(nn.Module):
         )
         self.v_net.apply(init_weights)
 
+        # Create and register coordinate grids
         lat = torch.linspace(-torch.pi / 2, torch.pi / 2, mesh_size[0])
         lon = torch.linspace(0, 2 * torch.pi, mesh_size[1])
-
         lat_grid, lon_grid = torch.meshgrid(lat, lon, indexing="ij")
 
         self.register_buffer("cos_lat", torch.cos(lat_grid))
@@ -51,19 +69,26 @@ class AdvectionOperator(nn.Module):
         self.register_buffer("cos_lon", torch.cos(lon_grid))
         self.register_buffer("sin_lon", torch.sin(lon_grid))
 
-        self.register_buffer("grid_y", None, persistent=False)
-        self.register_buffer("grid_x", None, persistent=False)
+    def _clip_velocities(self, u: torch.Tensor, v: torch.Tensor, dt: float) -> tuple:
+        """Clip velocities to ensure trajectories stay within padding.
 
-    def initialize_grid(self, height: int, width: int, device: torch.device):
-        """Initialize the sampling grid."""
-        if self.grid_y is None or self.grid_x is None:
-            grid_y, grid_x = torch.meshgrid(
-                torch.linspace(-1, 1, height, device=device),
-                torch.linspace(-1, 1, width, device=device),
-                indexing="ij",
-            )
-            self.register_buffer("grid_y", grid_y.clone(), persistent=False)
-            self.register_buffer("grid_x", grid_x.clone(), persistent=False)
+        Args:
+            u: Zonal velocity
+            v: Meridional velocity
+            dt: Time step
+
+        Returns:
+            Tuple of clipped (u, v)
+        """
+        # Scale maximum velocities by dt if it's not 1.0
+        max_u = self.max_u / dt if dt != 1.0 else self.max_u
+        max_v = self.max_v / dt if dt != 1.0 else self.max_v
+
+        # Clip velocities independently
+        u_clipped = torch.clamp(u, min=-max_u, max=max_u)
+        v_clipped = torch.clamp(v, min=-max_v, max=max_v)
+
+        return u_clipped, v_clipped
 
     def forward(self, x: torch.Tensor, dt: float = 1.0) -> torch.Tensor:
         """Computes the forward Semi-Lagrangian advection using great circles.
@@ -73,25 +98,25 @@ class AdvectionOperator(nn.Module):
         https://doi.org/10.1175/1520-0493(1987)115<0608:SLAOAG>2.0.CO;2
 
         Args:
-            x (torch.Tensor): The input tensor representing the initial state.
+            x (torch.Tensor): The input tensor representing the current state.
             dt (float, optional): The time step for advection. Default is 1.0.
 
         Returns:
             torch.Tensor: The tensor representing the state after advection.
         """
-        batch_size, _, height, width = x.shape
-        self.initialize_grid(height, width, x.device)
+        batch_size, _, _, _ = x.shape
 
         # Get velocities
         u = self.u_net(x)
         v = self.v_net(x)
+        u, v = self._clip_velocities(u[:, 0], v[:, 0], dt)
 
         # Convert to Cartesian velocity components
-        dx = -u[:, 0] * self.sin_lon - v[:, 0] * self.cos_lon * self.sin_lat
-        dy = u[:, 0] * self.cos_lon - v[:, 0] * self.sin_lon * self.sin_lat
-        dz = v[:, 0] * self.cos_lat
+        dx = -u * self.sin_lon - v * self.cos_lon * self.sin_lat
+        dy = u * self.cos_lon - v * self.sin_lon * self.sin_lat
+        dz = v * self.cos_lat
 
-        # Initial Cartesian coordinates
+        # Cartesian coordinates for arrival points
         x0 = self.cos_lon * self.cos_lat
         y0 = self.sin_lon * self.cos_lat
         z0 = self.sin_lat.clone()
@@ -104,10 +129,10 @@ class AdvectionOperator(nn.Module):
         )
         b = 1.0 / torch.sqrt(denominator)
 
-        # Calculate new positions
-        x1 = b * (x0 + dt * dx)
-        y1 = b * (y0 + dt * dy)
-        z1 = b * (z0 + dt * dz)
+        # Departure points
+        x1 = b * (x0 - dt * dx)
+        y1 = b * (y0 - dt * dy)
+        z1 = b * (z0 - dt * dz)
 
         # Ensure points stay on unit sphere
         norm = torch.sqrt(x1 * x1 + y1 * y1 + z1 * z1)
@@ -117,21 +142,25 @@ class AdvectionOperator(nn.Module):
 
         # Convert back to spherical coordinates
         eps = 1e-6
-        lat_new = torch.arcsin(torch.clamp(z1, min=-1 + eps, max=1 - eps))
-        lon_new = torch.atan2(y1, x1)
-        lon_new = torch.where(lon_new < 0, lon_new + 2 * torch.pi, lon_new)
+        lat_dep = torch.arcsin(torch.clamp(z1, min=-1 + eps, max=1 - eps))
+        lon_dep = torch.atan2(y1, x1)
+        lon_dep = torch.where(lon_dep < 0, lon_dep + 2 * torch.pi, lon_dep)
 
         # Convert to grid coordinates
-        grid_x = (lon_new / (2 * torch.pi)) * 2 - 1
-        grid_y = (lat_new / torch.pi) * 2
+        grid_x = (lon_dep / (2 * torch.pi)) * 2 - 1
+        grid_y = (lat_dep / torch.pi) * 2
 
+        # Create interpolation grid
         grid = torch.stack(
             [grid_x.expand(batch_size, -1, -1), grid_y.expand(batch_size, -1, -1)],
             dim=-1,
         )
 
+        # Create and fill halos
+        x_padded = GeoCyclicPadding(self.pad_size)(x)
+
         # Interpolation
-        return F.grid_sample(x, grid, align_corners=True, padding_mode="border")
+        return F.grid_sample(x_padded, grid, align_corners=True, padding_mode="border")
 
 
 class DiffusionOperator(nn.Module):
