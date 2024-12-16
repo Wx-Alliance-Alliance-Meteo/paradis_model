@@ -19,11 +19,6 @@ dataset:
   batch_size: 32          # Number of samples per batch
   num_workers: 4          # Number of workers for dataloader
 
-graph:
-  cube_resolution: 90     # Cells per cube edge (default is 1 deg resolution)
-  nearest_neighbors: 10
-  mesh_neighbors: 6
-
 trainer:
   max_epochs: 100
   num_devices: 1
