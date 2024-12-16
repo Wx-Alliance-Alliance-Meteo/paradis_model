@@ -13,6 +13,7 @@ class WeightedMSELoss(nn.Module):
         pressure_levels: torch.Tensor,
         num_features: int,
         num_surface_vars: int,
+        var_loss_weights: torch.Tensor,
     ):
         """Initialize with grid coordinates and pressure levels.
 
@@ -21,6 +22,7 @@ class WeightedMSELoss(nn.Module):
             pressure_levels: Pressure levels in hPa, shape [num_levels]
             num_features: Total number of features per grid point
             num_surface_vars: Number of surface-level variables
+            var_loss_weights: Custom weights for each feature (from the YAML configuration)
         """
         super().__init__()
 
@@ -34,6 +36,7 @@ class WeightedMSELoss(nn.Module):
         self.num_features = num_features
         self.num_surface_vars = num_surface_vars
         self.num_level_vars = num_features - num_surface_vars
+        self.var_loss_weights = var_loss_weights
 
         # Calculate combined latitude weights
         self._compute_latitude_weights(grid_lat)
@@ -79,11 +82,24 @@ class WeightedMSELoss(nn.Module):
         vars_per_level = self.num_level_vars // self.num_levels
         level_weights = self.pressure_weights.repeat_interleave(vars_per_level)
 
-        # Add weights for surface variables (no pressure level weighting)
+        # Set surface weights to one
         surface_weights = torch.ones(self.num_surface_vars, dtype=torch.float32)
 
+        # Get atmospheric variable weights following config file
+        var_atmospheric_weights = self.var_loss_weights[
+            :vars_per_level
+        ].repeat_interleave(self.num_levels)
+
+        var_surface_weights = self.var_loss_weights[vars_per_level:]
+
         # Combine and normalize
-        self.feature_weights = torch.cat([level_weights, surface_weights])
+        self.feature_weights = torch.cat(
+            [
+                level_weights * var_atmospheric_weights,
+                surface_weights * var_surface_weights,
+            ]
+        )
+
         self.feature_weights = self.feature_weights / self.feature_weights.mean()
 
         # Reshape for broadcasting with 4D input

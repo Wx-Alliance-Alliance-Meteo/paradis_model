@@ -1,15 +1,18 @@
 """ERA5 dataset handling for the model."""
 
 import logging
+from omegaconf import DictConfig
 import os
-import numpy as np
+import re
+
+import dask
 import torch
 from torch.utils.data import Dataset
 import xarray as xr
 
 
 class ERA5Dataset(Dataset):
-    """Prepare and process ERA5 dataset."""
+    """Prepare and process ERA5 dataset for Pytorch."""
 
     def __init__(
         self,
@@ -18,10 +21,13 @@ class ERA5Dataset(Dataset):
         end_date: str,
         forecast_steps: int = 1,
         dtype=torch.float32,
-        features_cfg: dict = {},
+        features_cfg: DictConfig = {},
     ) -> None:
-        self.dtype = dtype
+
         self.root_dir = root_dir
+        self.forecast_steps = forecast_steps
+        self.dtype = dtype
+        self.num_common_features = 0
 
         # Physical constants
         self.EARTH_RADIUS = 6371220.0  # Earth's radius in meters
@@ -66,165 +72,210 @@ class ERA5Dataset(Dataset):
             for year in range(start_year, end_year + 1)
         ]
 
-        # Lazy open this dataset
         ds = xr.open_mfdataset(
-            files, chunks={"time": forecast_steps + 1}, engine="zarr"
+            files, chunks={"time": self.forecast_steps + 1}, engine="zarr"
         )
+
+        # Lazy open this dataset
+        standardized_data = False
+        if standardized_data:
+
+            # Add stats to data array
+            ds_stats = xr.open_dataset(
+                os.path.join(self.root_dir, "stats"), engine="zarr"
+            )
+
+            ds["mean"] = ds_stats["mean"]
+            ds["std"] = ds_stats["std"]
+
+            # Normalize atmospheric variables
+            ds = (ds["data"] - ds["mean"]) / ds["std"]
+        else:
+            ds = ds["data"]
+
+        # Inspect the stacked variable names
+        variable_names = ds.coords["stacked"].values
+
+        # Extract and clean variable names, ensuring unique names are preserved
+        output_name_order = []
+        for name in variable_names:
+            # Remove the height suffix (_h50, _h100, etc.)
+            clean_name = re.sub(r"_h\d+$", "", name)
+
+            # Ensure unique names
+            if clean_name not in output_name_order:
+                output_name_order.append(clean_name)
+
+        # Store the cleaned variable names in self.output_name_order
+        self.output_name_order = output_name_order
 
         # Filter data to time frame requested
         ds = ds.sel(time=slice(start_date, end_date))
+
+        # Extract latitude and longitude to build the graph
+        self.lat = ds.latitude.values
+        self.lon = ds.longitude.values
 
         # The number of time instances in the dataset represents its length
         self.length = ds.time.size
         self.lat_size = ds.latitude.size
         self.lon_size = ds.longitude.size
 
-        # Extract the name of the variables after stacking
+        # Store the size of the grid (lat * lon)
+        self.grid_size = ds.latitude.size * ds.longitude.size
+
+        # Extract the name of the stacked variable
         names = [value for value in ds.stacked.values]
 
-        # Determine input and output variables
         input_names = []
         for variable in features_cfg.input.atmospheric:
             for level in features_cfg.pressure_levels:
                 input_names.append(f"{variable}_h{level}")
+
         input_names.extend(features_cfg.input.surface)
 
         output_names = []
         for variable in features_cfg.output.atmospheric:
             for level in features_cfg.pressure_levels:
                 output_names.append(f"{variable}_h{level}")
+
         output_names.extend(features_cfg.output.surface)
 
-        # Get the indices to drop from dataset
-        drop_vars_in = [name for name in names if name not in input_names]
-        drop_vars_out = [name for name in names if name not in output_names]
-        drop_vars = [var for var in drop_vars_out if var in drop_vars_in]
-        drop_inds = [names.index(drop_var) for drop_var in drop_vars]
+        # remove masks from self.output_name_order
+        output_names_nolevel = []
+        output_names_nolevel.extend(features_cfg.output.atmospheric)
+        output_names_nolevel.extend(features_cfg.output.surface)
 
-        # Store cleaned up dataset
-        if len(drop_inds) > 0:
-            self.ds = ds.drop_isel(stacked=drop_inds)
+        # Filter self.output_name_order to include only variables present in output_names
+        self.output_name_order = [
+            name for name in self.output_name_order if name in output_names_nolevel
+        ]
+
+        # Determine which variables to drop (not in config files)
+        drop_vars = []
+        for name in names:
+            if name not in input_names and name not in output_names:
+                drop_vars.append(str(name))
+
+        if len(drop_vars) > 0:
+            self.ds = ds.drop_sel(stacked=drop_vars)
         else:
             self.ds = ds
 
-        # Get the remaining names
-        self.names = [value for value in self.ds.stacked.values]
+        # Align arrays with common features first
+        common_features = []
+        input_only = []
+        output_only = []
 
-        # Create input/output masks
-        self.input_mask = torch.tensor(~np.isin(names, drop_vars_in), dtype=torch.bool)
-        self.output_mask = torch.tensor(
-            ~np.isin(names, drop_vars_out), dtype=torch.bool
-        )
+        for name in input_names:
+            if name in output_names:
+                common_features.append(name)
+            else:
+                input_only.append(name)
 
-        # Check that the number of features is consistent for inputs and outputs
-        self.num_in_features = len(features_cfg.pressure_levels) * len(
-            features_cfg.input.atmospheric
-        ) + len(features_cfg.input.surface)
-        self.num_out_features = len(features_cfg.pressure_levels) * len(
-            features_cfg.output.atmospheric
-        ) + len(features_cfg.output.surface)
+        for name in output_names:
+            if not (name in input_names):
+                output_only.append(name)
 
-        assert sum(self.input_mask) == self.num_in_features
-        assert sum(self.output_mask) == self.num_out_features
+        self.num_common_features = len(common_features)
+        self.dyn_input_features = common_features + input_only
+        self.dyn_output_features = common_features + output_only
+
+        # Ensure order is consistent with config file
+        self.ds_input = self.ds.sel(stacked=self.dyn_input_features)
+        self.ds_output = self.ds.sel(stacked=self.dyn_output_features)
+
+        # Constant input variables
+        self._load_constants(features_cfg)
 
         # Create scaling tensors based on variable names
         self._create_scaling_tensors()
 
-        # Extract latitude and longitude for the graph using the first month of this data
-        self.lat = ds.latitude.values
-        self.lon = ds.longitude.values
-        self.forecast_steps = forecast_steps
-
-        # Create masks for autoregression
-        self._create_autoreg_maps()
+        self.num_in_features = (
+            len(self.dyn_input_features) + self.constant_data.shape[-1]
+        )
+        self.num_out_features = len(self.dyn_output_features)
 
         logging.info(
-            f"Dataset contains: {self.num_in_features} input features, "
-            f"{self.num_out_features} output features"
+            "Dataset contains: %d input features, %d output features.",
+            self.num_in_features,
+            self.num_out_features,
         )
+
+    def __len__(self):
+        # Do not yield a value for the last time in the dataset since there
+        # is no future data
+        return self.length - self.forecast_steps
+
+    def __getitem__(self, ind: int):
+        # Extract values from the requested indices
+        input_data = self.ds_input.isel(time=slice(ind, ind + self.forecast_steps))
+
+        true_data = self.ds_output.isel(
+            time=slice(ind + 1, ind + self.forecast_steps + 1)
+        )
+
+        # Load arrays into CPU memory
+        input_data, true_data = dask.compute(input_data, true_data)
+
+        # Convert to tensors - data comes in [time, lat, lon, features]
+        x = torch.tensor(input_data.data, dtype=self.dtype) / self.input_scaling
+
+        # Get rid of variables that are not part of the output as well
+        y = torch.tensor(true_data.data, dtype=self.dtype) / self.output_scaling
+
+        # Add constant and forcing data to input
+        x = torch.cat([x, self.constant_data], dim=-1)
+
+        # Permute to [channels, height, width] format
+        x_grid = x.permute(0, 3, 1, 2)  # [time, input_features, lat, lon]
+        y_grid = y.permute(0, 3, 1, 2)  # [time, output_features, lat, lon]
+
+        return x_grid, y_grid
 
     def _create_scaling_tensors(self):
         """Create scaling tensors for normalization based on physical variables."""
         # Initialize scaling factors for all variables
-        scaling_values = []
-        for name in self.names:
-            # Extract base variable name (remove pressure level suffix if present)
-            base_name = name.split("_h")[0]
-            scaling_values.append(self.scaling_factors.get(base_name, 1.0))
+        input_scaling = []
+        for name in self.dyn_input_features:
+            base_name = re.sub(r"_h\d+$", "", name)
+            input_scaling.append(self.scaling_factors.get(base_name, 1.0))
+
+        output_scaling = []
+        for name in self.dyn_output_features:
+            base_name = re.sub(r"_h\d+$", "", name)
+            output_scaling.append(self.scaling_factors.get(base_name, 1.00))
 
         # Convert to tensor
-        scaling_tensor = torch.tensor(scaling_values, dtype=self.dtype)
+        self.input_scaling = torch.tensor(input_scaling, dtype=self.dtype)
+        self.output_scaling = torch.tensor(output_scaling, dtype=self.dtype)
 
-        # Create input and output scaling tensors
-        self.input_scaling = scaling_tensor[self.input_mask]
-        self.output_scaling = scaling_tensor[self.output_mask]
-
-    def _create_autoreg_maps(self):
-        """Create masks for autoregressive prediction."""
-        names = np.array(self.names)
-        names_in = names[self.input_mask]
-        names_out = names[self.output_mask]
-        names_indep = names[~self.output_mask]
-
-        self.autoreg_maps = {
-            "in": torch.tensor(np.isin(names_in, names_out), dtype=torch.bool),
-            "out": torch.tensor(np.isin(names_out, names_in), dtype=torch.bool),
-            "indep_in": torch.tensor(np.isin(names_in, names_indep), dtype=torch.bool),
-            "indep_out": torch.tensor(np.isin(names_indep, names_in), dtype=torch.bool),
-        }
-
-    def __len__(self):
-        """Return the length of the dataset."""
-        return self.length - self.forecast_steps
-
-    def __getitem__(self, idx: int):
-        """Extract values from the requested indices and load array into CPU memory."""
-        stack = (
-            self.ds["data"]
-            .isel(time=slice(idx, idx + self.forecast_steps + 1))
-            .compute()
-            .data
+    def _load_constants(self, features_cfg):
+        ds_constants = xr.open_dataset(
+            os.path.join(self.root_dir, "constants"), engine="zarr"
         )
 
-        # Convert to tensors - data comes in [time, lat, lon, features]
-        x = torch.tensor(stack[0], dtype=self.dtype)  # [lat, lon, features]
-        y = torch.tensor(stack[1:], dtype=self.dtype)  # [time, lat, lon, features]
+        # Normalize all static variables if desired
+        for var in features_cfg.input.constants:
+            ds_constants[var] = (
+                ds_constants[var] - ds_constants[var].attrs["mean"]
+            ) / ds_constants[var].attrs["std"]
 
-        # Apply feature masks
-        x_features = x[..., self.input_mask]  # [lat, lon, input_features]
-        y_features = y[..., self.output_mask]  # [time, lat, lon, output_features]
-        indep_features = y[..., ~self.output_mask]  # [time, lat, lon, static_features]
+        # Constant data will live in CPU memory
+        stacked_data = torch.stack(
+            [
+                torch.from_numpy(ds_constants[var].data)
+                for var in features_cfg.input.constants
+            ],
+            dim=0,
+        ).to(self.dtype)
 
-        # Apply physical scaling
-        x_normalized = x_features / self.input_scaling
-        y_normalized = y_features / self.output_scaling
-        indep_normalized = indep_features  # Static features remain unnormalized
-
-        # Permute to [channels, height, width] format
-        x_grid = x_normalized.permute(2, 0, 1)  # [input_features, lat, lon]
-        y_grid = y_normalized.permute(0, 3, 1, 2)  # [time, output_features, lat, lon]
-        indep_grid = indep_normalized.permute(
-            0, 3, 1, 2
-        )  # [time, static_features, lat, lon]
-
-        return x_grid, y_grid, indep_grid
-
-
-def input_from_output(input_shape, output_data, indep_output, autoreg_maps, device):
-    """Process the next input in autoregression"""
-    # Add features needed from the output
-    mask_in = autoreg_maps["in"]
-    mask_out = autoreg_maps["out"]
-
-    new_input_data = torch.empty(input_shape, dtype=output_data.dtype).to(device)
-    new_input_data[..., mask_in] = output_data[..., mask_out]
-
-    # Add features that do not exist in the output
-    mask_in = autoreg_maps["indep_in"]
-    mask_out = autoreg_maps["indep_out"]
-
-    new_input_data[..., mask_in] = indep_output[..., mask_out].to(output_data.dtype)
-    return new_input_data
+        # Make sure constant data has the right shape for multiple forecast steps
+        self.constant_data = (
+            stacked_data.permute(1, 2, 0)
+            .unsqueeze(0)
+            .expand(self.forecast_steps, -1, -1, -1)
+        )
 
 
 def split_dataset(dataset, train_ratio=0.8):

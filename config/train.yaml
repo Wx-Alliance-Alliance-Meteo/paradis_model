@@ -1,5 +1,5 @@
 model:
-  lr: 0.002               # Learning rate for the optimizer
+  lr: 0.001               # Learning rate for the optimizer
   hidden_dim: 256         # Dimension of hidden layers in the model
   forecast_steps: 1       # Number of autoregressive steps for forecasting
   num_heads: 2            # Number of attention heads in the model
@@ -18,11 +18,6 @@ dataset:
   train_ratio: 0.8        # Ratio of data used for training (rest for validation)
   batch_size: 32          # Number of samples per batch
   num_workers: 4          # Number of workers for dataloader
-
-graph:
-  cube_resolution: 90     # Cells per cube edge (default is 1 deg resolution)
-  nearest_neighbors: 10
-  mesh_neighbors: 6
 
 trainer:
   max_epochs: 100
@@ -47,14 +42,15 @@ features:
     - 850
     - 925
     - 1000
+
   base:
     atmospheric:
+      - geopotential
       - u_component_of_wind
       - v_component_of_wind
-      - geopotential
-      - vertical_velocity
       - specific_humidity
       - temperature
+      - vertical_velocity
 
   input:
     atmospheric: ${features.base.atmospheric} # Same as output and base
@@ -62,9 +58,18 @@ features:
       - 10m_u_component_of_wind
       - 10m_v_component_of_wind
       - 2m_temperature
+      - mean_sea_level_pressure
+    constants:
       - geopotential_at_surface
       - land_sea_mask
-      - mean_sea_level_pressure
+      - cos_latitude
+      - cos_longitude
+      - sin_longitude
+    forcings:
+      - sin_time_of_day
+      - cos_time_of_day
+      - sin_year_progress
+      - cos_year_progress
 
   output:
     atmospheric: ${features.base.atmospheric} # Same as input and base
@@ -74,3 +79,18 @@ features:
       - 2m_temperature
       - mean_sea_level_pressure
       - total_precipitation_6hr # precipitation is only an output
+
+variable_loss_weights:
+  atmospheric:
+    u_component_of_wind: 1.0
+    geopotential: 1.0
+    v_component_of_wind: 1.0
+    vertical_velocity: 1.0
+    specific_humidity: 1.0
+    temperature: 1.0
+  surface:
+    mean_sea_level_pressure: 0.0714
+    10m_u_component_of_wind: 0.0714
+    2m_temperature: 0.0714
+    total_precipitation_6hr: 0.0714
+    10m_v_component_of_wind: 0.0714

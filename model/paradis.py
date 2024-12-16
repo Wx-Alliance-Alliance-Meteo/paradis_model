@@ -274,13 +274,10 @@ class Paradis(nn.Module):
         self.splitting_scheme = cfg.model.get("splitting_scheme", "lie")
 
         # Setup static and dynamic channels
-        static_vars = ["geopotential_at_surface", "land_sea_mask"]
-        self.static_channels = len(
-            [var for var in cfg.features.input.surface if var in static_vars]
-        )
+        self.static_channels = len(cfg.features.input.constants)
         self.dynamic_channels = self.input_dim - self.static_channels
 
-        # Input projections
+        # Input projectionsc
         self.static_proj = nn.Conv2d(self.static_channels, self.hidden_dim // 4, 1)
         self.dynamic_proj = nn.Conv2d(self.dynamic_channels, self.hidden_dim, 1)
 
@@ -319,8 +316,8 @@ class Paradis(nn.Module):
             t = torch.zeros(batch_size, device=x.device)
 
         # Split into static and dynamic components
-        x_static = x[:, : self.static_channels]
-        x_dynamic = x[:, self.static_channels :]
+        x_static = x[:, self.dynamic_channels :]
+        x_dynamic = x[:, : self.dynamic_channels]
 
         # Initial projections
         z_static = self.static_proj(x_static)
