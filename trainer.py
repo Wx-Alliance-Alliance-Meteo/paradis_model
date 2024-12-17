@@ -78,9 +78,6 @@ class LitParadis(L.LightningModule):
         self.num_common_features = datamodule.num_common_features
         self.print_losses = cfg.trainer.print_losses
 
-        # Gradient scaling for mixed precision
-        self.scaler = torch.amp.GradScaler()
-
         self.epoch_start_time = None
 
     def configure_optimizers(self):
@@ -147,7 +144,6 @@ class LitParadis(L.LightningModule):
         batch_loss = 0.0
 
         input_data_step = input_data[:, 0]
-
         for step in range(self.forecast_steps):
             # Call the model
             output_data = self(input_data_step, torch.tensor(step, device=self.device))
@@ -164,8 +160,7 @@ class LitParadis(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         """Training step using automatic mixed precision."""
-        with torch.amp.autocast("cuda"):
-            loss = self._common_step(batch, batch_idx)
+        loss = self._common_step(batch, batch_idx)
 
         # Log metrics
         self.log(
@@ -213,13 +208,8 @@ class LitParadis(L.LightningModule):
         # Add features needed from the output.
         # Common features have been previously sorted to ensure they are first
         # and hence simplify adding them
-        val = torch.isnan(input_data).any()
         input_data = input_data.clone()
         input_data[:, : self.num_common_features, ...] = output_data[
             :, : self.num_common_features, ...
         ]
-
-        if(torch.isnan(input_data).any()):
-            print("Autoregression instability!")
-            exit()
         return input_data

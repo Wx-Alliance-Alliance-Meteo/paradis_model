@@ -227,9 +227,9 @@ class ERA5Dataset(Dataset):
         # Add constant and forcing data to input
         x = torch.cat([x, self.constant_data], dim=-1)
 
-        # Permute to [channels, height, width] format
-        x_grid = x.permute(0, 3, 1, 2)  # [time, input_features, lat, lon]
-        y_grid = y.permute(0, 3, 1, 2)  # [time, output_features, lat, lon]
+        # Permute to [time, channels, height, width] format
+        x_grid = x.permute(0, 3, 1, 2)
+        y_grid = y.permute(0, 3, 1, 2)
 
         return x_grid, y_grid
 
@@ -244,13 +244,14 @@ class ERA5Dataset(Dataset):
         output_scaling = []
         for name in self.dyn_output_features:
             base_name = re.sub(r"_h\d+$", "", name)
-            output_scaling.append(self.scaling_factors.get(base_name, 1.00))
+            output_scaling.append(self.scaling_factors.get(base_name, 1.0))
 
         # Convert to tensor
         self.input_scaling = torch.tensor(input_scaling, dtype=self.dtype)
         self.output_scaling = torch.tensor(output_scaling, dtype=self.dtype)
 
     def _load_constants(self, features_cfg):
+        """Load constant quantities and standardize them"""
         ds_constants = xr.open_dataset(
             os.path.join(self.root_dir, "constants"), engine="zarr"
         )
@@ -275,6 +276,7 @@ class ERA5Dataset(Dataset):
             stacked_data.permute(1, 2, 0)
             .unsqueeze(0)
             .expand(self.forecast_steps, -1, -1, -1)
+            .contiguous()
         )
 
 

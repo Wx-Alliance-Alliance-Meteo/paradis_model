@@ -209,10 +209,11 @@ class ReactionOperator(nn.Module):
 class WeatherADRBlock(nn.Module):
     """Enhanced ADR block with configurable operator splitting schemes."""
 
-    def __init__(self, channels, mesh_size, is_static=False, splitting_scheme="lie"):
+    def __init__(self, channels, mesh_size, is_static=False, splitting_scheme="lie", dt=1.0):
         super().__init__()
         self.is_static = is_static
         self.splitting_scheme = splitting_scheme
+        self.dt = dt
 
         if not is_static:
             # Initialize operators
@@ -232,27 +233,26 @@ class WeatherADRBlock(nn.Module):
         if self.is_static:
             return x
 
-        dt = 1.0  # Base (scaled) timestep
         t_embed = t.reshape(-1, 1, 1, 1) * self.time_embed
 
         if self.splitting_scheme == "lie":
             # Lie splitting (first order)
-            x = self.advection(x + t_embed, dt)
-            x = self.diffusion(x, dt)
-            x = self.reaction(x, dt)
+            x = self.advection(x + t_embed, self.dt)
+            x = self.diffusion(x, self.dt)
+            x = self.reaction(x, self.dt)
 
         elif self.splitting_scheme == "strang":
             # Strang splitting (second order)
             # First half-step
-            x = self.advection(x + t_embed, dt / 2)
-            x = self.diffusion(x, dt / 2)
+            x = self.advection(x + t_embed, self.dt / 2)
+            x = self.diffusion(x, self.dt / 2)
 
             # Full step for reaction
-            x = self.reaction(x, dt)
+            x = self.reaction(x, self.dt)
 
             # Second half-step in reverse order
-            x = self.diffusion(x, dt / 2)
-            x = self.advection(x, dt / 2)
+            x = self.diffusion(x, self.dt / 2)
+            x = self.advection(x, self.dt / 2)
 
         else:
             raise ValueError(f"Unknown splitting scheme: {self.splitting_scheme}")
@@ -281,6 +281,8 @@ class Paradis(nn.Module):
         self.static_proj = nn.Conv2d(self.static_channels, self.hidden_dim // 4, 1)
         self.dynamic_proj = nn.Conv2d(self.dynamic_channels, self.hidden_dim, 1)
 
+        self.base_dt = cfg.model.base_dt
+
         # ADR processing layers
         self.adr_layers = nn.ModuleList()
         for _ in range(cfg.model.num_layers):
@@ -289,12 +291,14 @@ class Paradis(nn.Module):
                 self.mesh_size,
                 is_static=True,
                 splitting_scheme=self.splitting_scheme,
+                dt=self.base_dt
             )
             dynamic_block = WeatherADRBlock(
                 self.hidden_dim,
                 self.mesh_size,
                 is_static=False,
                 splitting_scheme=self.splitting_scheme,
+                dt=self.base_dt
             )
             self.adr_layers.append(
                 nn.ModuleDict({"static": static_block, "dynamic": dynamic_block})
@@ -329,5 +333,5 @@ class Paradis(nn.Module):
             z_dynamic = layer["dynamic"](z_dynamic, t)
 
         # Combine and project to output space
-        z_combined = torch.cat([z_static, z_dynamic], dim=1)
+        z_combined = torch.cat([z_dynamic, z_static], dim=1)
         return self.output_proj(z_combined)
