@@ -18,7 +18,9 @@ class LitParadis(L.LightningModule):
         self.model = Paradis(datamodule, cfg)
         self.lr = cfg.model.lr
 
-        print(f"Number of trainable parameters: {sum(p.numel() for p in self.model.parameters() if p.requires_grad):,}")
+        print(
+            f"Number of trainable parameters: {sum(p.numel() for p in self.model.parameters() if p.requires_grad):,}"
+        )
 
         self.warmup_steps = cfg.model.get("warmup_steps", 1000)
         self.gradient_clip_val = cfg.model.get("gradient_clip_val", 1.0)
@@ -109,7 +111,7 @@ class LitParadis(L.LightningModule):
         for step in range(self.forecast_steps):
             # Call the model
             output_data = self(current_input, torch.tensor(step, device=self.device))
-            loss = self.loss_fn(output_data, true_data[step])
+            loss = self.loss_fn(output_data, true_data[:, step])
             batch_loss += loss
 
             # Use output dataset as input for next forecasting step
