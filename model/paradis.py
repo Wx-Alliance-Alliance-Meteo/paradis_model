@@ -209,7 +209,9 @@ class ReactionOperator(nn.Module):
 class WeatherADRBlock(nn.Module):
     """Enhanced ADR block with configurable operator splitting schemes."""
 
-    def __init__(self, channels, mesh_size, is_static=False, splitting_scheme="lie", dt=1.0):
+    def __init__(
+        self, channels, mesh_size, is_static=False, splitting_scheme="lie", dt=1.0
+    ):
         super().__init__()
         self.is_static = is_static
         self.splitting_scheme = splitting_scheme
@@ -277,7 +279,7 @@ class Paradis(nn.Module):
         self.static_channels = len(cfg.features.input.constants)
         self.dynamic_channels = self.input_dim - self.static_channels
 
-        # Input projectionsc
+        # Input projections
         self.static_proj = nn.Conv2d(self.static_channels, self.hidden_dim // 4, 1)
         self.dynamic_proj = nn.Conv2d(self.dynamic_channels, self.hidden_dim, 1)
 

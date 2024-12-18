@@ -67,6 +67,7 @@ features:
       - cos_longitude
       - sin_longitude
     forcings:
+      - toa_radiation
       - sin_time_of_day
       - cos_time_of_day
       - sin_year_progress

@@ -10,6 +10,8 @@ import torch
 from torch.utils.data import Dataset
 import xarray as xr
 
+from data.forcings import time_forcings, toa_radiation
+
 
 class ERA5Dataset(Dataset):
     """Prepare and process ERA5 dataset for Pytorch."""
@@ -28,6 +30,7 @@ class ERA5Dataset(Dataset):
         self.forecast_steps = forecast_steps
         self.dtype = dtype
         self.num_common_features = 0
+        self.forcing_inputs = features_cfg.input.forcings
 
         # Physical constants
         self.EARTH_RADIUS = 6371220.0  # Earth's radius in meters
@@ -42,6 +45,7 @@ class ERA5Dataset(Dataset):
         self.T = 1 / self.OMEGA  # Time scale
         self.U = self.OMEGA * self.L  # Velocity scale
         self.PHI0 = self.U * self.U  # Geopotential scale
+        self.TSI = 1361  # Baseline solar irradiance in W/m^2
 
         # Dictionary mapping variables to their physical scaling
         self.scaling_factors = {
@@ -60,6 +64,7 @@ class ERA5Dataset(Dataset):
             "2m_temperature": self.T0,
             "surface_pressure": self.P0,
             "mean_sea_level_pressure": self.P0,
+            "toa_radiation": self.TSI * 3600,  # Since it is integrated for 1h
         }
 
         # Extract from the years in the range
@@ -192,8 +197,11 @@ class ERA5Dataset(Dataset):
         self._create_scaling_tensors()
 
         self.num_in_features = (
-            len(self.dyn_input_features) + self.constant_data.shape[-1]
+            len(self.dyn_input_features)
+            + self.constant_data.shape[-1]
+            + len(self.forcing_inputs)
         )
+
         self.num_out_features = len(self.dyn_output_features)
 
         logging.info(
@@ -224,7 +232,13 @@ class ERA5Dataset(Dataset):
         # Get rid of variables that are not part of the output as well
         y = torch.tensor(true_data.data, dtype=self.dtype) / self.output_scaling
 
-        # Add constant and forcing data to input
+        # Compute forcings
+        forcings = self._compute_forcings(input_data)
+
+        if forcings is not None:
+            x = torch.cat([x, forcings], dim=-1)
+
+        # Add constants to input
         x = torch.cat([x, self.constant_data], dim=-1)
 
         # Permute to [time, channels, height, width] format
@@ -278,6 +292,41 @@ class ERA5Dataset(Dataset):
             .expand(self.forecast_steps, -1, -1, -1)
             .contiguous()
         )
+
+    def _compute_forcings(self, input_data):
+        """Computes forcing paramters based in input_data array"""
+
+        forcings_time_ds = time_forcings(input_data)
+
+        forcings = []
+        for var in self.forcing_inputs:
+            if var == "toa_radiation":
+                # Get the top of the atmosphere radiation
+                forcings_toa = toa_radiation(input_data)
+                forcings_toa = (
+                    torch.tensor(
+                        forcings_toa.data / self.scaling_factors["toa_radiation"],
+                        dtype=self.dtype,
+                    )
+                    .permute(1, 2, 0)
+                    .reshape(self.forecast_steps, self.lat_size, self.lon_size, 1)
+                )
+                forcings.append(forcings_toa)
+            else:
+                # Get the time forcings
+                if var in forcings_time_ds:
+                    var_ds = forcings_time_ds[var]
+                    value = (
+                        torch.tensor(var_ds.data, dtype=self.dtype)
+                        .unsqueeze(1)
+                        .unsqueeze(2)
+                        .expand(self.forecast_steps, self.lat_size, self.lon_size, 1)
+                    )
+                    forcings.append(value)
+
+        if len(forcings) > 0:
+            return torch.cat(forcings, dim=-1)
+        return
 
 
 def split_dataset(dataset, train_ratio=0.8):
