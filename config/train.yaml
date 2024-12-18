@@ -1,5 +1,5 @@
 model:
-  lr: 0.005              # Learning rate for the optimizer
+  lr: 0.001              # Learning rate for the optimizer
   hidden_dim: 256         # Dimension of hidden layers in the model
   forecast_steps: 1       # Number of autoregressive steps for forecasting
   num_heads: 2            # Number of attention heads in the model
