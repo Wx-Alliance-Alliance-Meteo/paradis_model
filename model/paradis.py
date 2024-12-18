@@ -223,9 +223,6 @@ class WeatherADRBlock(nn.Module):
             self.diffusion = DiffusionOperator(channels, mesh_size)
             self.reaction = ReactionOperator(channels)
 
-            # Time embedding
-            self.time_embed = nn.Parameter(torch.randn(1, channels, 1, 1) * 1e-4)
-
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """Apply operators following the specified splitting scheme.
 
@@ -235,18 +232,16 @@ class WeatherADRBlock(nn.Module):
         if self.is_static:
             return x
 
-        t_embed = t.reshape(-1, 1, 1, 1) * self.time_embed
-
         if self.splitting_scheme == "lie":
             # Lie splitting (first order)
-            x = self.advection(x + t_embed, self.dt)
+            x = self.advection(x, self.dt)
             x = self.diffusion(x, self.dt)
             x = self.reaction(x, self.dt)
 
         elif self.splitting_scheme == "strang":
             # Strang splitting (second order)
             # First half-step
-            x = self.advection(x + t_embed, self.dt / 2)
+            x = self.advection(x, self.dt / 2)
             x = self.diffusion(x, self.dt / 2)
 
             # Full step for reaction
@@ -293,14 +288,14 @@ class Paradis(nn.Module):
                 self.mesh_size,
                 is_static=True,
                 splitting_scheme=self.splitting_scheme,
-                dt=self.base_dt
+                dt=self.base_dt,
             )
             dynamic_block = WeatherADRBlock(
                 self.hidden_dim,
                 self.mesh_size,
                 is_static=False,
                 splitting_scheme=self.splitting_scheme,
-                dt=self.base_dt
+                dt=self.base_dt,
             )
             self.adr_layers.append(
                 nn.ModuleDict({"static": static_block, "dynamic": dynamic_block})
