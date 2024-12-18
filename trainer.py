@@ -5,7 +5,6 @@ import time
 import lightning as L
 import torch
 
-from data.era5_dataset import input_from_output
 from model.paradis import Paradis
 from utils.loss import WeightedMSELoss
 
@@ -27,6 +26,44 @@ class LitParadis(L.LightningModule):
 
         # Custom loss function
         num_surface_vars = len(cfg.features.output.surface)
+
+        # Access output_name_order from configuration
+        self.output_name_order = datamodule.output_name_order
+
+        # Construct variable_loss_weights tensor from YAML configuration
+        atmospheric_weights = torch.tensor(
+            [
+                cfg.variable_loss_weights.atmospheric[var]
+                for var in cfg.features.output.atmospheric
+            ],
+            dtype=torch.float32,
+        )
+        surface_weights = torch.tensor(
+            [
+                cfg.variable_loss_weights.surface[var]
+                for var in cfg.features.output.surface
+            ],
+            dtype=torch.float32,
+        )
+        # Concatenate atmospheric and surface weights
+        var_loss_weights = torch.cat([atmospheric_weights, surface_weights])
+
+        # Create a mapping of variable names to their weights
+        atmospheric_vars = cfg.features.output.atmospheric
+        surface_vars = cfg.features.output.surface
+        var_name_to_weight = {
+            **{var: atmospheric_weights[i] for i, var in enumerate(atmospheric_vars)},
+            **{var: surface_weights[i] for i, var in enumerate(surface_vars)},
+        }
+
+        # Initialize reordered weights tensor
+        var_loss_weights_reordered = torch.zeros_like(var_loss_weights)
+
+        # Reorder based on self.output_name_order
+        for i, var in enumerate(self.output_name_order):
+            if var in var_name_to_weight:
+                var_loss_weights_reordered[i] = var_name_to_weight[var]
+
         self.loss_fn = WeightedMSELoss(
             grid_lat=torch.from_numpy(datamodule.lat),
             pressure_levels=torch.tensor(
@@ -34,14 +71,12 @@ class LitParadis(L.LightningModule):
             ),
             num_features=datamodule.num_out_features,
             num_surface_vars=num_surface_vars,
+            var_loss_weights=var_loss_weights_reordered,
         )
 
         self.forecast_steps = cfg.model.forecast_steps
-        self.autoreg_maps = datamodule.autoreg_maps
+        self.num_common_features = datamodule.num_common_features
         self.print_losses = cfg.trainer.print_losses
-
-        # Gradient scaling for mixed precision
-        self.scaler = torch.amp.GradScaler()
 
         self.epoch_start_time = None
 
@@ -104,42 +139,28 @@ class LitParadis(L.LightningModule):
     # pylint: disable=W0613
     def _common_step(self, batch, batch_idx):
         """Common step for both training and validation."""
-        input_data, true_data, static_data = batch
-        batch_loss = 0.0
-        current_input = input_data
+        input_data, true_data = batch
 
+        batch_loss = 0.0
+
+        input_data_step = input_data[:, 0]
         for step in range(self.forecast_steps):
             # Call the model
-            output_data = self(current_input, torch.tensor(step, device=self.device))
+            output_data = self(input_data_step, torch.tensor(step, device=self.device))
             loss = self.loss_fn(output_data, true_data[:, step])
             batch_loss += loss
 
             # Use output dataset as input for next forecasting step
             if step + 1 < self.forecast_steps:
-                output_flat = output_data.permute(0, 2, 3, 1).reshape(
-                    output_data.shape[0], -1, output_data.shape[1]
+                input_data_step = self._autoregression_input_from_output(
+                    input_data[:, step + 1], output_data
                 )
-                static_flat = (
-                    static_data[step]
-                    .permute(0, 2, 3, 1)
-                    .reshape(static_data.shape[1], -1, static_data.shape[2])
-                )
-
-                next_input = input_from_output(
-                    current_input.shape,
-                    output_flat,
-                    static_flat,
-                    self.autoreg_maps,
-                    self.device,
-                )
-                current_input = next_input
 
         return batch_loss / self.forecast_steps
 
     def training_step(self, batch, batch_idx):
         """Training step using automatic mixed precision."""
-        with torch.amp.autocast("cuda"):
-            loss = self._common_step(batch, batch_idx)
+        loss = self._common_step(batch, batch_idx)
 
         # Log metrics
         self.log(
@@ -180,3 +201,15 @@ class LitParadis(L.LightningModule):
                     f"LR: {current_lr:.2e} | "
                     f"Elapsed time: {elapsed_time:.2f}s"
                 )
+
+    def _autoregression_input_from_output(self, input_data, output_data):
+        """Process the next input in autoregression"""
+
+        # Add features needed from the output.
+        # Common features have been previously sorted to ensure they are first
+        # and hence simplify adding them
+        input_data = input_data.clone()
+        input_data[:, : self.num_common_features, ...] = output_data[
+            :, : self.num_common_features, ...
+        ]
+        return input_data
