@@ -93,8 +93,7 @@ def local_solar_time_rad(longitude_deg, julian_day):
     out_ravel = out.ravel()
     lon_ravel = longitude_deg.ravel()
     mod_day = np.float32(np.mod(julian_day, 1) * 2 * np.pi)
-    for ii in range(longitude_deg.size):
-        out_ravel[ii] = lon_ravel[ii] * np.pi / 180 + mod_day
+    out_ravel[:] = lon_ravel * np.pi / 180 + mod_day
     return out
 
 
@@ -107,15 +106,18 @@ def cos_zenith_angle(latitude, declination, true_local_solar_time_rad, weight):
     ni = latitude.shape[0]
     nj = true_local_solar_time_rad.shape[1]
     out = np.empty((ni, nj), dtype=np.float32)
-    # out = np.zeros(np.broadcast_shapes(latitude.shape,true_local_solar_time_rad.shape),dtype=np.float32)
+
     sdec = np.sin(declination)
     cdec = np.cos(declination)
     clst = np.cos(true_local_solar_time_rad[0, :])
-    for ii in range(ni):
-        slat = np.sin(latitude[ii, 0])
-        clat = np.cos(latitude[ii, 0])
-        for jj in range(nj):
-            out[ii, jj] = max(0, slat * sdec + clat * cdec * clst[jj]) * weight
+
+    # Compute sine and cosine of latitude
+    slat = np.sin(latitude)
+    clat = np.cos(latitude)
+
+    # Vectorized computation
+    cos_zenith = slat * sdec + clat * cdec * clst  # Shape: (ni, nj)
+    out[:] = np.maximum(0, cos_zenith) * weight  # Apply max and weight
     return out
 
 
