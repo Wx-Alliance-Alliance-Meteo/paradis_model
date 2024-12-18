@@ -111,13 +111,10 @@ def cos_zenith_angle(latitude, declination, true_local_solar_time_rad, weight):
     cdec = np.cos(declination)
     clst = np.cos(true_local_solar_time_rad[0, :])
 
-    # Compute sine and cosine of latitude
-    slat = np.sin(latitude)
-    clat = np.cos(latitude)
+    slat = np.sin(latitude[:, 0])
+    clat = np.cos(latitude[:, 0])
 
-    # Vectorized computation
-    cos_zenith = slat * sdec + clat * cdec * clst  # Shape: (ni, nj)
-    out[:] = np.maximum(0, cos_zenith) * weight  # Apply max and weight
+    out = np.maximum(0, slat[:, np.newaxis] * sdec + clat[:, np.newaxis] * cdec * clst) * weight
     return out
 
 
