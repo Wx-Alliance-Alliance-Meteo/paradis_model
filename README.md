@@ -27,7 +27,7 @@ Currently, the 4-degree, 13 layer dataset is located at `/home/cap003/hall5/gatm
 
 Alternatively, you can download a subset of the data using
 ```
-wget https://hpfx.collab.science.gc.ca/~mmo000/ERA5_4deg_2020_2022_unified.tgz
+wget https://hpfx.collab.science.gc.ca/~mmo000/ERA5_4deg_2020_2023.tgz
 ```
 
 #### Acknowledgements
