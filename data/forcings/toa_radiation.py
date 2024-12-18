@@ -25,7 +25,6 @@
 ## copy of forecast/toa_radiation.py
 import numpy as np
 import xarray
-import numba
 
 # Per https://en.wikipedia.org/wiki/Julian_day, Julian 0
 # is at 4713BCE 1 January, noon UTC.  This is inconventient
@@ -40,7 +39,6 @@ julian_refday = 2451545
 # Solar angles and distances, per https://aa.usno.navy.mil/faq/sun_approx
 # see also https://hal.science/hal-02175988/document
 # and https://squarewidget.com/solar-coordinates/
-@numba.jit(["UniTuple(float64,6)(float64)"], nopython=True)
 def solar_parameters(datetime_float):
     # modified_julian_day = ((datetime_us - julian_refdatetime) / np.timedelta64(1,'D')).astype(np.float64)
     modified_julian_day = (datetime_float - julian_refdatetime_float) / 86400e6
@@ -83,37 +81,24 @@ def solar_parameters(datetime_float):
 
 
 # Equation of time, per https://en.wikipedia.org/wiki/Equation_of_time#Right_ascension_calculation and navy.mil link
-@numba.vectorize(["float64(float64,float64)"], nopython=True)  # ,nogil=True)
 def equation_of_time(mean_longitude, ascension):
     # Note input values are in radians, and output is in radian angle
     return np.mod(mean_longitude - ascension + np.pi, 2 * np.pi) - np.pi
 
 
 # Local solar time, based on longitude and adjusted day (mean time + EOT, in days)
-@numba.jit(["float32[:,:](float32[:,:],float64)"], nopython=True)  # ,parallel=True)
 def local_solar_time_rad(longitude_deg, julian_day):
     # return (longitude_deg*np.pi/180 + np.mod(julian_day,1)*2*np.pi)
     out = np.empty_like(longitude_deg, dtype=np.float32)
     out_ravel = out.ravel()
     lon_ravel = longitude_deg.ravel()
     mod_day = np.float32(np.mod(julian_day, 1) * 2 * np.pi)
-    for ii in numba.prange(longitude_deg.size):
+    for ii in range(longitude_deg.size):
         out_ravel[ii] = lon_ravel[ii] * np.pi / 180 + mod_day
     return out
 
 
 # Cosine of the zenith angle, given latitude and local true solar time
-# def cos_zenith_angle(latitude,declination,true_local_solar_time_rad):
-#     # See eqn 3-15 of hal.science document; latitude, declination, and true local solar times are all
-#     # in radians
-#     return np.maximum(0,np.sin(latitude)*np.sin(declination) + np.cos(latitude)*np.cos(declination)*np.cos(true_local_solar_time_rad))
-
-
-@numba.jit(
-    ["float32[:,:](float32[:,:],float32,float32[:,:],float32)"],
-    nopython=True,
-    nogil=True,
-)  # ,parallel=True)
 def cos_zenith_angle(latitude, declination, true_local_solar_time_rad, weight):
     # See eqn 3-15 of hal.science document; latitude, declination, and true local solar times are all
     # in radians
@@ -126,7 +111,7 @@ def cos_zenith_angle(latitude, declination, true_local_solar_time_rad, weight):
     sdec = np.sin(declination)
     cdec = np.cos(declination)
     clst = np.cos(true_local_solar_time_rad[0, :])
-    for ii in numba.prange(ni):
+    for ii in range(ni):
         slat = np.sin(latitude[ii, 0])
         clat = np.cos(latitude[ii, 0])
         for jj in range(nj):
@@ -156,14 +141,12 @@ def toa_radiation_integrated(latitude, longitude, times, weights):
             mean_anomaly_rad,
             apparent_longitude_rad,
         ) = solar_parameters(time)
-        # sdec = np.sin(declination)
-        # cdec = np.cos(declination)
+
         eot = equation_of_time(mean_longitude, ascension) / (
             2 * np.pi
         )  # convert radians to days
         true_local_solar_time = local_solar_time_rad(longitude, julian_day + eot)
         declination = np.float32(declination)
-        # toa_radiation += cos_zenith_angle(lat_deg,declination,true_local_solar_time)*(1360.56/distance**2)*weight
         toa_radiation += cos_zenith_angle(
             lat_deg,
             declination,
@@ -178,11 +161,6 @@ def toa_radiation_integrated(latitude, longitude, times, weights):
 
 
 # Trapezoidal rule
-# qorder = 31
-# qnodes = np.linspace(-1,1,qorder)
-# qweights = np.ones(qnodes.shape)
-# qweights[[0,-1]] /= 2
-# qweights /= 0.5*np.sum(qweights)
 def toa_radiation_1h(latitude, longitude, final_time_us):
     quad_times_us = final_time_us - 3600e6 * 1 * (1 + qnodes) / 2
     quad_weights = 3600 * 1 * qweights / 2
