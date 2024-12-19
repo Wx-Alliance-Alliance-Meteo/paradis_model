@@ -3,6 +3,7 @@
 import torch
 from typing import Dict, Any
 
+
 def load_checkpoint(
     filename: str,
     litmodel: torch.nn.Module,

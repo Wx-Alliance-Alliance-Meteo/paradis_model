@@ -3,6 +3,7 @@
 import torch
 import torch.nn as nn
 
+
 class GeoCyclicPadding(nn.Module):
     """Cyclic padding for geographical data."""
 

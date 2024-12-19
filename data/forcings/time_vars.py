@@ -47,7 +47,7 @@ def time_forcings(ds: xr.Dataset):
             "sin_year_progress": (("time"), sine_year_progress),
             "cos_year_progress": (("time"), cosine_year_progress),
         },
-        coords={"time": ds["time"]}  # Add the same 'time' coordinate
+        coords={"time": ds["time"]},  # Add the same 'time' coordinate
     )
 
     return time_forcings_ds

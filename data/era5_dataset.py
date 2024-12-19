@@ -318,9 +318,7 @@ class ERA5Dataset(Dataset):
                     var_ds = forcings_time_ds[var]
                     value = (
                         torch.tensor(var_ds.data, dtype=self.dtype)
-                        .unsqueeze(1)
-                        .unsqueeze(2)
-                        .unsqueeze(3)
+                        .view(-1, 1, 1, 1)
                         .expand(self.forecast_steps, self.lat_size, self.lon_size, 1)
                     )
                     forcings.append(value)

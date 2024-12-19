@@ -32,7 +32,7 @@ class MetricsLogger:
         use_tensorboard: bool = True,
     ) -> None:
         """Initialize metrics logger.
-        
+
         Args:
             log_dir: Directory to store logs
             experiment_name: Name of current experiment
@@ -40,21 +40,21 @@ class MetricsLogger:
         """
         self.log_dir = Path(log_dir)
         self.experiment_name = experiment_name
-        
+
         # Create log directory
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Setup CSV logging
         self.csv_path = self.log_dir / f"{experiment_name}_metrics.csv"
-        self.csv_file = open(self.csv_path, 'w', newline='')
+        self.csv_file = open(self.csv_path, "w", newline="")
         self.csv_writer = csv.writer(self.csv_file)
-        self.csv_writer.writerow(['epoch', 'step', 'metric', 'value'])
-        
+        self.csv_writer.writerow(["epoch", "step", "metric", "value"])
+
         # Setup TensorBoard
         self.use_tensorboard = use_tensorboard
         if use_tensorboard:
             self.tb_writer = SummaryWriter(
-                log_dir=str(self.log_dir / 'tensorboard' / experiment_name)
+                log_dir=str(self.log_dir / "tensorboard" / experiment_name)
             )
 
     def log_metric(
@@ -65,7 +65,7 @@ class MetricsLogger:
         step: Optional[int] = None,
     ) -> None:
         """Log a metric value.
-        
+
         Args:
             metric_name: Name of the metric
             value: Metric value
@@ -75,42 +75,35 @@ class MetricsLogger:
         # Log to CSV
         self.csv_writer.writerow([epoch, step or 0, metric_name, value])
         self.csv_file.flush()
-        
+
         # Log to TensorBoard
         if self.use_tensorboard:
             self.tb_writer.add_scalar(
-                f"metrics/{metric_name}",
-                value,
-                epoch if step is None else epoch * step
+                f"metrics/{metric_name}", value, epoch if step is None else epoch * step
             )
 
-    def log_model_graph(
-        self,
-        model: torch.nn.Module,
-        input_size: tuple
-    ) -> None:
+    def log_model_graph(self, model: torch.nn.Module, input_size: tuple) -> None:
         """Log model architecture to TensorBoard.
-        
+
         Args:
             model: Model to log
             input_size: Input tensor size for model visualization
         """
         if self.use_tensorboard:
             self.tb_writer.add_graph(
-                model,
-                torch.zeros(input_size, dtype=torch.float32)
+                model, torch.zeros(input_size, dtype=torch.float32)
             )
 
     def log_hyperparameters(self, hparams: Dict[str, Any]) -> None:
         """Log hyperparameters.
-        
+
         Args:
             hparams: Dictionary of hyperparameters
         """
         # Save to JSON
-        with open(self.log_dir / f"{self.experiment_name}_hparams.json", 'w') as f:
+        with open(self.log_dir / f"{self.experiment_name}_hparams.json", "w") as f:
             json.dump(hparams, f, indent=2)
-        
+
         # Log to TensorBoard
         if self.use_tensorboard:
             self.tb_writer.add_hparams(hparams, {})
@@ -133,7 +126,7 @@ class TrainingLogger:
         file_level: int = logging.DEBUG,
     ) -> None:
         """Initialize training logger.
-        
+
         Args:
             log_dir: Directory to store logs
             experiment_name: Name of current experiment
@@ -142,25 +135,25 @@ class TrainingLogger:
         """
         self.log_dir = Path(log_dir)
         self.experiment_name = experiment_name
-        
+
         # Create logger
         self.logger = logging.getLogger(experiment_name)
         self.logger.setLevel(logging.DEBUG)
-        
+
         # Create formatters
         console_formatter = logging.Formatter(
-            '%(asctime)s - %(levelname)s - %(message)s'
+            "%(asctime)s - %(levelname)s - %(message)s"
         )
         file_formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         )
-        
+
         # Console handler
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(console_level)
         console_handler.setFormatter(console_formatter)
         self.logger.addHandler(console_handler)
-        
+
         # File handler
         self.log_dir.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(
@@ -169,13 +162,13 @@ class TrainingLogger:
         file_handler.setLevel(file_level)
         file_handler.setFormatter(file_formatter)
         self.logger.addHandler(file_handler)
-        
+
         # Progress bar
         self.pbar = None
 
     def info(self, msg: str) -> None:
         """Log info message.
-        
+
         Args:
             msg: Message to log
         """
@@ -183,7 +176,7 @@ class TrainingLogger:
 
     def debug(self, msg: str) -> None:
         """Log debug message.
-        
+
         Args:
             msg: Message to log
         """
@@ -191,7 +184,7 @@ class TrainingLogger:
 
     def warning(self, msg: str) -> None:
         """Log warning message.
-        
+
         Args:
             msg: Message to log
         """
@@ -199,7 +192,7 @@ class TrainingLogger:
 
     def error(self, msg: str) -> None:
         """Log error message.
-        
+
         Args:
             msg: Message to log
         """
@@ -207,24 +200,24 @@ class TrainingLogger:
 
     def start_epoch(self, epoch: int, total_epochs: int) -> None:
         """Start logging a new epoch.
-        
+
         Args:
             epoch: Current epoch number
             total_epochs: Total number of epochs
         """
         if self.pbar is not None:
             self.pbar.close()
-        
+
         self.pbar = tqdm(
             total=total_epochs,
             initial=epoch,
             desc=f"Epoch {epoch}/{total_epochs}",
-            unit="epoch"
+            unit="epoch",
         )
 
     def update_metrics(self, metrics: Dict[str, float]) -> None:
         """Update progress bar with current metrics.
-        
+
         Args:
             metrics: Dictionary of metric names and values
         """
@@ -248,23 +241,23 @@ def create_experiment_logger(
     use_tensorboard: bool = True,
 ) -> tuple[TrainingLogger, MetricsLogger]:
     """Create loggers for a new experiment.
-    
+
     Args:
         experiment_name: Name of the experiment
         base_dir: Base directory for logs
         use_tensorboard: Whether to use TensorBoard logging
-        
+
     Returns:
         Tuple of (TrainingLogger, MetricsLogger)
     """
     # Create timestamped experiment directory
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_dir = Path(base_dir) / f"{experiment_name}_{timestamp}"
-    
+
     # Create loggers
     training_logger = TrainingLogger(log_dir, experiment_name)
     metrics_logger = MetricsLogger(log_dir, experiment_name, use_tensorboard)
-    
+
     return training_logger, metrics_logger
 
 
@@ -273,10 +266,10 @@ def write_stats(
     epoch: int,
     loss: float,
     metrics: Optional[Dict[str, float]] = None,
-    mode: str = 'a'
+    mode: str = "a",
 ) -> None:
     """Write training statistics to file.
-    
+
     Args:
         filename: Output file path or file object
         epoch: Current epoch number
@@ -285,8 +278,8 @@ def write_stats(
         mode: File opening mode
     """
     metrics = metrics or {}
-    metrics['loss'] = loss
-    
+    metrics["loss"] = loss
+
     if isinstance(filename, str):
         os.makedirs(os.path.dirname(filename), exist_ok=True)
         with open(filename, mode) as f:
@@ -297,11 +290,11 @@ def write_stats(
 
 def _write_stats_line(f: TextIO, epoch: int, metrics: Dict[str, float]) -> None:
     """Write a single line of stats to file.
-    
+
     Args:
         f: File object to write to
         epoch: Current epoch number
         metrics: Dictionary of metrics to record
     """
-    metric_str = ','.join(f"{k}={v:.6f}" for k, v in metrics.items())
+    metric_str = ",".join(f"{k}={v:.6f}" for k, v in metrics.items())
     f.write(f"Epoch {epoch}: {metric_str}\n")
