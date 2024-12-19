@@ -52,7 +52,7 @@ class ERA5Dataset(Dataset):
             "vertical_velocity": self.P0 * self.OMEGA,  # Scale omega by p₀Ω
             "temperature": self.T0,  # Scale by reference temperature
             "geopotential": self.PHI0,  # Scale by characteristic geopotential
-            "specific_humidity": 1e-2,  # Approx to 100% relative humidity at 288K
+            "specific_humidity": 1,  # this is larger than needed, but we don't want humidity to weight to much in the loss
             "10m_u_component_of_wind": self.U,
             "10m_v_component_of_wind": self.U,
             "2m_temperature": self.T0,
