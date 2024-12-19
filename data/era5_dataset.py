@@ -35,8 +35,6 @@ class ERA5Dataset(Dataset):
         # Physical constants
         self.EARTH_RADIUS = 6371220.0  # Earth's radius in meters
         self.OMEGA = 7.29212e-5  # Earth's rotation rate in rad/s
-        self.G = 9.80616  # Gravitational acceleration in m/s²
-        self.R = 287.05  # Gas constant for dry air in J/(kg·K)
         self.P0 = 1.0e5  # Reference pressure in Pa (1000 hPa)
         self.T0 = 288.0  # Reference temperature in K
 
@@ -54,15 +52,10 @@ class ERA5Dataset(Dataset):
             "vertical_velocity": self.P0 * self.OMEGA,  # Scale omega by p₀Ω
             "temperature": self.T0,  # Scale by reference temperature
             "geopotential": self.PHI0,  # Scale by characteristic geopotential
-            "specific_humidity": 1.0,  # TODO
-            "relative_humidity": 100,
-            "vorticity": self.OMEGA,  # Scale by Earth's rotation rate
-            "divergence": self.OMEGA,  # Scale by Earth's rotation rate
-            "potential_temperature": self.T0,  # Scale by reference temperature
+            "specific_humidity": 1e-2,  # Approx to 100% relative humidity at 288K
             "10m_u_component_of_wind": self.U,
             "10m_v_component_of_wind": self.U,
             "2m_temperature": self.T0,
-            "surface_pressure": self.P0,
             "mean_sea_level_pressure": self.P0,
             "toa_radiation": self.TSI * 3600,  # Since it is integrated for 1h
         }
