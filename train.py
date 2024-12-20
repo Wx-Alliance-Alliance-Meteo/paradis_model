@@ -5,6 +5,7 @@ import hydra
 import torch
 import lightning as L
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
+from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.strategies import DDPStrategy
 from omegaconf import DictConfig
 
@@ -30,11 +31,27 @@ def main(cfg: DictConfig):
     # Initialize model
     litmodel = LitParadis(datamodule, cfg)
 
+    if cfg.model.checkpoint_path:
+        # Load the model weights if a checkpoint path is provided
+        checkpoint = torch.load(cfg.model.checkpoint_path, weights_only=True)
+        litmodel.load_state_dict(checkpoint['state_dict'])
+
     # Define callbacks
     callbacks = []
     if cfg.trainer.early_stopping:
         # Stop epochs when validation loss is not decreasing during three epochs
         callbacks.append(EarlyStopping(monitor="val_loss", mode="min", patience=3))
+
+    # Keep the last k checkpoints
+    callbacks.append(
+        ModelCheckpoint(
+            monitor="val_loss",
+            filename="{epoch}",  # Filename format for the checkpoints
+            save_top_k=10,  # Keep the last 10 checkpoints
+            save_last=True,  # Always save the most recent checkpoint
+            every_n_epochs=1,  # Save at the end of every epoch
+        )
+    )
 
     # Choose double (32-true) or mixed (16-mixed) precision via AMP
     if cfg.trainer.use_amp:

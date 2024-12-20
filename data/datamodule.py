@@ -37,6 +37,7 @@ class Era5DataModule(L.LightningDataModule):
             )
 
             # Make the autoregression maps available at a higher level
+            self.dataset = era5_dataset
             self.num_common_features = era5_dataset.num_common_features
             self.num_in_features = era5_dataset.num_in_features
             self.num_out_features = era5_dataset.num_out_features
