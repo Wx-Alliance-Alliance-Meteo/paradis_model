@@ -1,7 +1,5 @@
 """Model training implementation."""
 
-import os
-from pathlib import Path
 import time
 
 import lightning as L
@@ -83,10 +81,10 @@ class LitParadis(L.LightningModule):
         if cfg.model.compile:
             self.model = torch.compile(
                 self.model,
-                mode='reduce-overhead',
+                mode="reduce-overhead",
                 fullgraph=True,
                 dynamic=True,
-                backend='inductor'
+                backend="inductor",
             )
 
         self.epoch_start_time = None
