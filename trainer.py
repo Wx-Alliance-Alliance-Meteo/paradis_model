@@ -1,5 +1,7 @@
 """Model training implementation."""
 
+import os
+from pathlib import Path
 import time
 
 import lightning as L
@@ -77,6 +79,15 @@ class LitParadis(L.LightningModule):
         self.forecast_steps = cfg.model.forecast_steps
         self.num_common_features = datamodule.num_common_features
         self.print_losses = cfg.trainer.print_losses
+
+        if cfg.model.compile:
+            self.model = torch.compile(
+                self.model,
+                mode='reduce-overhead',
+                fullgraph=True,
+                dynamic=True,
+                backend='inductor'
+            )
 
         self.epoch_start_time = None
 

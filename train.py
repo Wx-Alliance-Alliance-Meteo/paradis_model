@@ -30,9 +30,6 @@ def main(cfg: DictConfig):
     # Initialize model
     litmodel = LitParadis(datamodule, cfg)
 
-    if cfg.model.compile:
-        litmodel = torch.compile(litmodel, fullgraph=True)
-
     # Define callbacks
     callbacks = []
     if cfg.trainer.early_stopping:
