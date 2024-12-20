@@ -41,7 +41,7 @@ def plot_forecast(output_data, true_data, datamodule, feature):
     )
 
     plt.suptitle("2m Temperature")
-    ax[0].set_title("GATmosphere")
+    ax[0].set_title("PARADIS")
     ax[1].set_title("ERA5")
 
     plt.tight_layout()
