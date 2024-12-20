@@ -1,8 +1,8 @@
 model:
-  lr: 0.001              # Learning rate for the optimizer
+  lr: 0.005              # Learning rate for the optimizer
   hidden_dim: 256         # Dimension of hidden layers in the model
-  forecast_steps: 1       # Number of autoregressive steps for forecasting
-  num_heads: 2            # Number of attention heads in the model
+  forecast_steps:  1      # Number of autoregressive steps for forecasting
+  num_heads: 1            # Number of attention heads in the model
   dropout: 0.1            # Dropout rate for regularization
   use_layer_norm: true    # Whether to use layer norm in model
   compile: false          # Whether to compile the model
@@ -15,18 +15,23 @@ model:
 
 dataset:
   dataset_dir: /path/to/dataset/
-  start_date: 1970-01-01  # Start date for the dataset (YYYY-MM-DD)
-  end_date: 1970-03-31    # End date for the dataset (YYYY-MM-DD)
+  start_date: 1970-02-01  # Start date for the dataset (YYYY-MM-DD)
+  end_date: 1970-02-28    # End date for the dataset (YYYY-MM-DD)
   train_ratio: 0.8        # Ratio of data used for training (rest for validation)
-  batch_size: 32          # Number of samples per batch
-  num_workers: 4          # Number of workers for dataloader
+  batch_size: 1          # Number of samples per batch
+  num_workers: 0          # Number of workers for dataloader
+
+graph:
+  cube_resolution: 20     # Cells per cube edge (default is 1 deg resolution)
+  nearest_neighbors: 10
+  mesh_neighbors: 6
 
 trainer:
-  max_epochs: 100
+  max_epochs: 1000
   num_devices: 1
-  accelerator: gpu
-  use_amp: false
-  early_stopping: false
+  accelerator: cpu
+  use_amp: true
+  early_stopping: true
   print_losses: false
 
 features:
@@ -83,6 +88,7 @@ features:
       - mean_sea_level_pressure
       - total_precipitation_6hr # precipitation is only an output
 
+
 variable_loss_weights:
   atmospheric:
     u_component_of_wind: 1.0
@@ -97,3 +103,4 @@ variable_loss_weights:
     2m_temperature: 1.0
     total_precipitation_6hr: 1.0
     10m_v_component_of_wind: 1.0
+
