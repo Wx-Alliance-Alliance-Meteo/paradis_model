@@ -26,8 +26,8 @@ class AdvectionOperator(nn.Module):
         # Set maximum displacement and ensure padding is sufficient for interpolation
         self.max_displacement = 6  # Integer number of grid points for max displacement
         self.pad_size = (
-            self.max_displacement + 1
-        )  # Add one point for linear interpolation
+            self.max_displacement + 2
+        )  # Add two points for cubic interpolation
 
         # Precalculate maximum velocities (assuming dt=1.0)
         self.max_u = self.max_displacement * self.d_lon
@@ -44,7 +44,9 @@ class AdvectionOperator(nn.Module):
         self.u_net = nn.Sequential(
             GeoCyclicPadding(1),
             nn.Conv2d(channels, channels, kernel_size=3, padding=0),
-            nn.InstanceNorm2d(channels, affine=True),
+            nn.LayerNorm(
+                [channels, mesh_size[0], mesh_size[1]], elementwise_affine=True
+            ),
             nn.SiLU(),
             nn.Conv2d(channels, 1, kernel_size=1),
         )
@@ -53,7 +55,9 @@ class AdvectionOperator(nn.Module):
         self.v_net = nn.Sequential(
             GeoCyclicPadding(1),
             nn.Conv2d(channels, channels, kernel_size=3, padding=0),
-            nn.InstanceNorm2d(channels, affine=True),
+            nn.LayerNorm(
+                [channels, mesh_size[0], mesh_size[1]], elementwise_affine=True
+            ),
             nn.SiLU(),
             nn.Conv2d(channels, 1, kernel_size=1),
         )
@@ -160,7 +164,9 @@ class AdvectionOperator(nn.Module):
         x_padded = GeoCyclicPadding(self.pad_size)(x)
 
         # Interpolation
-        return F.grid_sample(x_padded, grid, align_corners=True, padding_mode="border")
+        return F.grid_sample(
+            x_padded, grid, align_corners=True, mode="bicubic", padding_mode="border"
+        )
 
 
 class DiffusionOperator(nn.Module):
@@ -175,7 +181,9 @@ class DiffusionOperator(nn.Module):
 
         # Initialize diffusion kernel
         self.conv = nn.Conv2d(channels, channels, kernel_size=5, padding=0, bias=False)
-        self.norm = nn.InstanceNorm2d(channels, affine=True)
+        self.norm = nn.LayerNorm(
+            [channels, mesh_size[0], mesh_size[1]], elementwise_affine=True
+        )
 
     def forward(self, x: torch.Tensor, dt: float = 1.0) -> torch.Tensor:
         """Apply diffusion operator for time step dt with proper padding."""
@@ -192,11 +200,13 @@ class DiffusionOperator(nn.Module):
 class ReactionOperator(nn.Module):
     """Implements the reaction operator."""
 
-    def __init__(self, channels):
+    def __init__(self, channels, mesh_size):
         super().__init__()
         self.net = nn.Sequential(
             nn.Conv2d(channels, channels * 2, kernel_size=1),
-            nn.InstanceNorm2d(channels * 2, affine=True),
+            nn.LayerNorm(
+                [channels * 2, mesh_size[0], mesh_size[1]], elementwise_affine=True
+            ),
             nn.SiLU(),
             nn.Conv2d(channels * 2, channels, kernel_size=1),
         )
@@ -221,7 +231,7 @@ class WeatherADRBlock(nn.Module):
             # Initialize operators
             self.advection = AdvectionOperator(channels, mesh_size)
             self.diffusion = DiffusionOperator(channels, mesh_size)
-            self.reaction = ReactionOperator(channels)
+            self.reaction = ReactionOperator(channels, mesh_size)
 
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """Apply operators following the specified splitting scheme.
@@ -304,7 +314,10 @@ class Paradis(nn.Module):
         # Output projection
         self.output_proj = nn.Sequential(
             nn.Conv2d(self.hidden_dim + self.hidden_dim // 4, self.hidden_dim, 1),
-            nn.InstanceNorm2d(self.hidden_dim, affine=True),
+            nn.LayerNorm(
+                [self.hidden_dim, self.mesh_size[0], self.mesh_size[1]],
+                elementwise_affine=True,
+            ),
             nn.SiLU(),
             nn.Conv2d(self.hidden_dim, self.output_dim, 1),
         )

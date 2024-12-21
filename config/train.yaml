@@ -2,10 +2,7 @@ model:
   lr: 0.001              # Learning rate for the optimizer
   hidden_dim: 256         # Dimension of hidden layers in the model
   forecast_steps: 1       # Number of autoregressive steps for forecasting
-  num_heads: 2            # Number of attention heads in the model
-  dropout: 0.1            # Dropout rate for regularization
-  use_layer_norm: true    # Whether to use layer norm in model
-  compile: false          # Whether to compile the model
+  compile: true           # Whether to compile the model
   num_layers: 4           # Number of ADR processing layers
   splitting_scheme: "lie" # Operator splitting method: "lie" or "strang"
   warmup_steps: 1000
@@ -25,7 +22,7 @@ trainer:
   max_epochs: 100
   num_devices: 1
   accelerator: gpu
-  use_amp: false
+  use_amp: true
   early_stopping: false
   print_losses: false
 

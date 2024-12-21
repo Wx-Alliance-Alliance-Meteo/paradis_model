@@ -2,10 +2,7 @@ model:
   lr: 0.005              # Learning rate for the optimizer
   hidden_dim: 256         # Dimension of hidden layers in the model
   forecast_steps:  1      # Number of autoregressive steps for forecasting
-  num_heads: 1            # Number of attention heads in the model
-  dropout: 0.1            # Dropout rate for regularization
-  use_layer_norm: true    # Whether to use layer norm in model
-  compile: false          # Whether to compile the model
+  compile: true           # Whether to compile the model
   num_layers: 4           # Number of ADR processing layers
   splitting_scheme: "lie" # Operator splitting method: "lie" or "strang"
   warmup_steps: 1000
@@ -20,11 +17,6 @@ dataset:
   train_ratio: 0.8        # Ratio of data used for training (rest for validation)
   batch_size: 1          # Number of samples per batch
   num_workers: 0          # Number of workers for dataloader
-
-graph:
-  cube_resolution: 20     # Cells per cube edge (default is 1 deg resolution)
-  nearest_neighbors: 10
-  mesh_neighbors: 6
 
 trainer:
   max_epochs: 1000
