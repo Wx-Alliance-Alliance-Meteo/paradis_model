@@ -7,7 +7,7 @@ model:
   splitting_scheme: "lie" # Operator splitting method: "lie" or "strang"
   warmup_steps: 1000
   gradient_clip_val: 1.0
-  base_dt: 1.0
+  base_dt: 21600          # 6 hours * 3600 seconds
   checkpoint_path: null
 
 dataset:

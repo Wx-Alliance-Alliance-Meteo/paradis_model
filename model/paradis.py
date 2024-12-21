@@ -20,27 +20,25 @@ class AdvectionOperator(nn.Module):
         super().__init__()
 
         self.mesh_size = mesh_size
-        self.d_lat = torch.pi / (mesh_size[0] - 1)  # Grid spacing in radians
+
+        # Grid spacing in radians
+        self.d_lat = torch.pi / (mesh_size[0] - 1)
         self.d_lon = 2 * torch.pi / mesh_size[1]
 
-        # Set maximum displacement and ensure padding is sufficient for interpolation
-        self.max_displacement = 6  # Integer number of grid points for max displacement
-        self.pad_size = (
-            self.max_displacement + 2
-        )  # Add two points for cubic interpolation
+        # Set maximum displacement and ensure padding is sufficient
+        self.max_displacement = 6
+        # Add two points for cubic interpolation
+        self.pad_size = self.max_displacement + 2
 
-        # Precalculate maximum velocities (assuming dt=1.0)
-        self.max_u = self.max_displacement * self.d_lon
-        self.max_v = self.max_displacement * self.d_lat
-
-        # Initialize networks with small weights
-        # This will prevents initial instability from large random velocities
+        # Initialize velocity networks with small weights
+        # this prevents generating supersonic motions at the start of training ...
         def init_weights(m):
             if isinstance(m, nn.Conv2d):
-                nn.init.normal_(m.weight, mean=0.0, std=0.02)
+                nn.init.normal_(m.weight, mean=0.0, std=2e-5)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
 
+        # Neural networks that will learn an effective velocity along the trajectory
         self.u_net = nn.Sequential(
             GeoCyclicPadding(1),
             nn.Conv2d(channels, channels, kernel_size=3, padding=0),
@@ -63,15 +61,50 @@ class AdvectionOperator(nn.Module):
         )
         self.v_net.apply(init_weights)
 
-        # Create and register coordinate grids
+        # Create coordinate grids
         lat = torch.linspace(-torch.pi / 2, torch.pi / 2, mesh_size[0])
         lon = torch.linspace(0, 2 * torch.pi, mesh_size[1])
         lat_grid, lon_grid = torch.meshgrid(lat, lon, indexing="ij")
 
-        self.register_buffer("cos_lat", torch.cos(lat_grid))
-        self.register_buffer("sin_lat", torch.sin(lat_grid))
-        self.register_buffer("cos_lon", torch.cos(lon_grid))
-        self.register_buffer("sin_lon", torch.sin(lon_grid))
+        # Register buffers for coordinates (without prior assignment)
+        self.register_buffer("lat_grid", lat_grid.clone())
+        self.register_buffer("lon_grid", lon_grid.clone())
+
+    def _transform_to_latlon(
+        self,
+        lat_prime: torch.Tensor,
+        lon_prime: torch.Tensor,
+        lat_p: torch.Tensor,
+        lon_p: torch.Tensor,
+    ) -> tuple:
+        """Transform from local rotated coordinates back to standard latlon coordinates.
+
+        Args:
+            lat_prime, lon_prime: Coordinates in rotated system
+            lat_p, lon_p: Coordinates of the rotation point P
+
+        Returns:
+            tuple: (latitude, longitude) in standard coordinates
+        """
+        # Compute standard latitude
+        sin_lat = torch.sin(lat_prime) * torch.cos(lat_p) + torch.cos(
+            lat_prime
+        ) * torch.cos(lon_prime) * torch.sin(lat_p)
+        lat = torch.arcsin(torch.clamp(sin_lat, -1 + 1e-6, 1 - 1e-6))
+
+        # Compute standard longitude
+        num = torch.cos(lat_prime) * torch.sin(lon_prime)
+        den = torch.cos(lat_prime) * torch.cos(lon_prime) * torch.cos(
+            lat_p
+        ) - torch.sin(lat_prime) * torch.sin(lat_p)
+
+        lon = lon_p + torch.atan2(num, den)
+
+        # Normalize longitude to [0, 2π]
+        lon = torch.where(lon < 0, lon + 2 * torch.pi, lon)
+        lon = torch.where(lon > 2 * torch.pi, lon - 2 * torch.pi, lon)
+
+        return lat, lon
 
     def _clip_velocities(self, u: torch.Tensor, v: torch.Tensor, dt: float) -> tuple:
         """Clip velocities to ensure trajectories stay within padding.
@@ -84,73 +117,43 @@ class AdvectionOperator(nn.Module):
         Returns:
             Tuple of clipped (u, v)
         """
-        # Scale maximum velocities by dt if it's not 1.0
-        max_u = self.max_u / dt if dt != 1.0 else self.max_u
-        max_v = self.max_v / dt if dt != 1.0 else self.max_v
+        max_u = self.max_displacement * self.d_lon / dt
+        max_v = self.max_displacement * self.d_lat / dt
 
-        # Clip velocities independently
         u_clipped = torch.clamp(u, min=-max_u, max=max_u)
         v_clipped = torch.clamp(v, min=-max_v, max=max_v)
 
         return u_clipped, v_clipped
 
     def forward(self, x: torch.Tensor, dt: float = 1.0) -> torch.Tensor:
-        """Computes the forward Semi-Lagrangian advection using great circles.
-
-        Inspired by Ritchie, H. (1987). "Semi-Lagrangian advection on a Gaussian grid."
-        *Monthly Weather Review*, 115(2), 608-619.
-        https://doi.org/10.1175/1520-0493(1987)115<0608:SLAOAG>2.0.CO;2
+        """Compute advection using rotated coordinate system.
 
         Args:
-            x (torch.Tensor): The input tensor representing the current state.
-            dt (float, optional): The time step for advection. Default is 1.0.
+            x: Input tensor [batch, channels, lat, lon]
+            dt: Time step
 
         Returns:
-            torch.Tensor: The tensor representing the state after advection.
+            Advected tensor
         """
-        batch_size, _, _, _ = x.shape
+        batch_size = x.shape[0]
 
-        # Get velocities
+        # Get learned velocities
         u = self.u_net(x)
         v = self.v_net(x)
         u, v = self._clip_velocities(u[:, 0], v[:, 0], dt)
 
-        # Convert to Cartesian velocity components
-        dx = -u * self.sin_lon - v * self.cos_lon * self.sin_lat
-        dy = u * self.cos_lon - v * self.sin_lon * self.sin_lat
-        dz = v * self.cos_lat
+        # For each grid point (lat_p, lon_p), compute departure point
+        # in a local rotated coordinate system in which the origin
+        # of latitude and longitude is moved to the arrival point
+        lon_prime = -u * dt
+        lat_prime = -v * dt
 
-        # Cartesian coordinates for arrival points
-        x0 = self.cos_lon * self.cos_lat
-        y0 = self.sin_lon * self.cos_lat
-        z0 = self.sin_lat.clone()
-
-        # Compute correction factor
-        velocity_squared = dx * dx + dy * dy + dz * dz
-        position_dot_velocity = dx * x0 + dy * y0 + dz * z0
-        denominator = (
-            1.0 + dt * dt * velocity_squared - 2.0 * dt * position_dot_velocity
+        # Transform from rotated coordinates back to standard coordinates
+        lat_dep, lon_dep = self._transform_to_latlon(
+            lat_prime, lon_prime, self.lat_grid, self.lon_grid
         )
-        b = 1.0 / torch.sqrt(denominator)
 
-        # Departure points
-        x1 = b * (x0 - dt * dx)
-        y1 = b * (y0 - dt * dy)
-        z1 = b * (z0 - dt * dz)
-
-        # Ensure points stay on unit sphere
-        norm = torch.sqrt(x1 * x1 + y1 * y1 + z1 * z1)
-        x1 = x1 / norm
-        y1 = y1 / norm
-        z1 = z1 / norm
-
-        # Convert back to spherical coordinates
-        eps = 1e-6
-        lat_dep = torch.arcsin(torch.clamp(z1, min=-1 + eps, max=1 - eps))
-        lon_dep = torch.atan2(y1, x1)
-        lon_dep = torch.where(lon_dep < 0, lon_dep + 2 * torch.pi, lon_dep)
-
-        # Convert to grid coordinates
+        # Convert to normalized grid coordinates [-1, 1]
         grid_x = (lon_dep / (2 * torch.pi)) * 2 - 1
         grid_y = (lat_dep / torch.pi) * 2
 
@@ -160,10 +163,10 @@ class AdvectionOperator(nn.Module):
             dim=-1,
         )
 
-        # Create and fill halos
+        # Apply padding
         x_padded = GeoCyclicPadding(self.pad_size)(x)
 
-        # Interpolation
+        # Interpolate using grid sampling
         return F.grid_sample(
             x_padded, grid, align_corners=True, mode="bicubic", padding_mode="border"
         )
@@ -288,7 +291,9 @@ class Paradis(nn.Module):
         self.static_proj = nn.Conv2d(self.static_channels, self.hidden_dim // 4, 1)
         self.dynamic_proj = nn.Conv2d(self.dynamic_channels, self.hidden_dim, 1)
 
-        self.base_dt = cfg.model.base_dt
+        # Rescale the time step size for consistency with the normalization scheme
+        OMEGA = 7.29212e-5  # Earth's rotation rate in rad/s.
+        self.base_dt = cfg.model.base_dt * OMEGA  # The time scale is 1/Ω
 
         # ADR processing layers
         self.adr_layers = nn.ModuleList()
