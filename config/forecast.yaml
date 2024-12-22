@@ -1,9 +1,9 @@
 model:
-  lr: 0.001              # Learning rate for the optimizer
+  lr: 0.001               # Learning rate for the optimizer
   hidden_dim: 256         # Dimension of hidden layers in the model
   forecast_steps: 1       # Number of autoregressive steps for forecasting
   compile: true           # Whether to compile the model
-  num_layers: 4           # Number of ADR processing layers
+  num_layers: 1           # Number of ADR processing layers
   splitting_scheme: "lie" # Operator splitting method: "lie" or "strang"
   warmup_steps: 1000
   gradient_clip_val: 1.0

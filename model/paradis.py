@@ -180,10 +180,16 @@ class DiffusionOperator(nn.Module):
         self.channels = channels
         self.mesh_size = mesh_size
         self.padding = GeoCyclicPadding(2)
+
+        # One learnable coefficient per channel
         self.kappa = nn.Parameter(torch.ones(channels, 1, 1))
 
         # Initialize diffusion kernel
-        self.conv = nn.Conv2d(channels, channels, kernel_size=5, padding=0, bias=False)
+        # Channel-wise convolution (groups=channels means each channel has its own kernel)
+        self.conv = nn.Conv2d(
+            channels, channels, kernel_size=5, padding=0, bias=False, groups=channels
+        )
+
         self.norm = nn.LayerNorm(
             [channels, mesh_size[0], mesh_size[1]], elementwise_affine=True
         )
