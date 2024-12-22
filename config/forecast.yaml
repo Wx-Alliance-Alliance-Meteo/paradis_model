@@ -1,7 +1,7 @@
 model:
-  lr: 0.005              # Learning rate for the optimizer
+  lr: 0.001              # Learning rate for the optimizer
   hidden_dim: 256         # Dimension of hidden layers in the model
-  forecast_steps:  1      # Number of autoregressive steps for forecasting
+  forecast_steps: 1       # Number of autoregressive steps for forecasting
   compile: true           # Whether to compile the model
   num_layers: 4           # Number of ADR processing layers
   splitting_scheme: "lie" # Operator splitting method: "lie" or "strang"
@@ -12,18 +12,18 @@ model:
 
 dataset:
   dataset_dir: /path/to/dataset/
-  start_date: 1970-02-01  # Start date for the dataset (YYYY-MM-DD)
-  end_date: 1970-02-28    # End date for the dataset (YYYY-MM-DD)
+  start_date: 1970-01-01  # Start date for the dataset (YYYY-MM-DD)
+  end_date: 1970-03-31    # End date for the dataset (YYYY-MM-DD)
   train_ratio: 0.8        # Ratio of data used for training (rest for validation)
-  batch_size: 1          # Number of samples per batch
-  num_workers: 0          # Number of workers for dataloader
+  batch_size: 32          # Number of samples per batch
+  num_workers: 4          # Number of workers for dataloader
 
 trainer:
-  max_epochs: 1000
+  max_epochs: 100
   num_devices: 1
-  accelerator: cpu
+  accelerator: gpu
   use_amp: true
-  early_stopping: true
+  early_stopping: false
   print_losses: false
 
 features:
@@ -80,7 +80,6 @@ features:
       - mean_sea_level_pressure
       - total_precipitation_6hr # precipitation is only an output
 
-
 variable_loss_weights:
   atmospheric:
     u_component_of_wind: 1.0
@@ -95,4 +94,3 @@ variable_loss_weights:
     2m_temperature: 1.0
     total_precipitation_6hr: 1.0
     10m_v_component_of_wind: 1.0
-
