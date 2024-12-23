@@ -1,5 +1,5 @@
 model:
-  lr: 0.001              # Learning rate for the optimizer
+  lr: 0.002              # Learning rate for the optimizer
   hidden_dim: 256         # Dimension of hidden layers in the model
   forecast_steps: 1       # Number of autoregressive steps for forecasting
   compile: true           # Whether to compile the model

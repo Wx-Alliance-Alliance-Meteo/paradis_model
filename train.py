@@ -34,7 +34,7 @@ def main(cfg: DictConfig):
     if cfg.model.checkpoint_path:
         # Load the model weights if a checkpoint path is provided
         checkpoint = torch.load(cfg.model.checkpoint_path, weights_only=True)
-        litmodel.load_state_dict(checkpoint['state_dict'])
+        litmodel.load_state_dict(checkpoint["state_dict"])
 
     # Define callbacks
     callbacks = []

@@ -195,7 +195,7 @@ class DiffusionOperator(nn.Module):
         )
 
     def forward(self, x: torch.Tensor, dt: float = 1.0) -> torch.Tensor:
-        """Apply diffusion operator for time step dt with proper padding."""
+        """Apply diffusion operator for time step dt."""
         # Apply padding with size check
         padded = self.padding(x)
 
@@ -245,7 +245,7 @@ class WeatherADRBlock(nn.Module):
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """Apply operators following the specified splitting scheme.
 
-        For Lie splitting: A -> D -> R
+        For Lie splitting: A -> R -> D
         For Strang splitting: A -> D -> R -> R -> D -> A
         """
         if self.is_static:
@@ -254,8 +254,8 @@ class WeatherADRBlock(nn.Module):
         if self.splitting_scheme == "lie":
             # Lie splitting (first order)
             x = self.advection(x, self.dt)
-            x = self.diffusion(x, self.dt)
             x = self.reaction(x, self.dt)
+            x = self.diffusion(x, self.dt)
 
         elif self.splitting_scheme == "strang":
             # Strang splitting (second order)
