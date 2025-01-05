@@ -15,7 +15,7 @@ pip install -r requirements.txt --break-system-packages
 
 #### Usage
 ##### Training
-For training, the `train.yaml` file in the `config/` directory is used to manage inputs
+For training, the `paradis_settings.yaml` file in the `config/` directory is used to manage inputs
 ```
 python train.py [override_args]
 ```
