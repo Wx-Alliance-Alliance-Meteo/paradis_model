@@ -1,10 +1,27 @@
-"""Custom loss functions for the GATmosphere weather forecasting model."""
+"""Loss functions for the weather forecasting model."""
 
 import torch
 
 
-class WeightedMSELoss(torch.nn.Module):
-    """MSE loss with enhanced weighting for mid-latitudes, jet stream levels, and area correction."""
+class WeightedHybridLoss(torch.nn.Module):
+    """Loss function that combines MAE and RMSE metrics.
+
+    This loss function implements a weighting scheme that accounts for three key aspects
+    of meteorological data:
+
+    1. Spatial weighting: Applies latitude-dependent weights to account for the varying grid cell
+       areas on a spherical surface, ensuring proper representation of polar and equatorial regions.
+
+    2. Vertical weighting: Implements pressure-level dependent weights that decrease with altitude.
+
+    3. Variable-specific weighting: Allows different weights for various meteorological variables
+       (e.g., temperature, wind, precipitation) to balance their relative importance in the total
+       loss calculation.
+
+    The final loss is computed as a weighted combination of MAE and RMSE:
+        loss = α * MAE + (1-α) * RMSE
+    where α is a user-provided parameter that balances the contribution of each metric.
+    """
 
     def __init__(
         self,
@@ -12,139 +29,180 @@ class WeightedMSELoss(torch.nn.Module):
         pressure_levels: torch.Tensor,
         num_features: int,
         num_surface_vars: int,
-        var_loss_weights: torch.Tensor,  # Added Var_loss_weights as an argument
-    ):
-        """Initialize with grid coordinates and pressure levels.
+        var_loss_weights: torch.Tensor,
+        output_name_order: list,
+        alpha: float,
+    ) -> None:
+        """Initialize the weighted hybrid loss function.
 
         Args:
-            grid_lat: Latitude values in degrees, shape [num_lats]
-            pressure_levels: Pressure levels in hPa, shape [num_levels]
-            num_features: Total number of features per grid point
-            num_surface_vars: Number of surface-level variables
-            var_loss_weights: Custom weights for each feature (from the YAML configuration)
+            grid_lat (torch.Tensor): Latitude values in degrees for each grid point
+            pressure_levels (torch.Tensor): Pressure levels in hPa used in the model
+            num_features (int): Total number of features in the output
+            num_surface_vars (int): Number of surface-level variables
+            var_loss_weights (torch.Tensor): Variable-specific weights for the loss calculation
+            output_name_order (list): List of variable names in order of output features
+            alpha (float, optional): Balance factor between MAE (alpha) and RMSE (1-alpha).
         """
         super().__init__()
 
         # Ensure inputs are float32
         grid_lat = grid_lat.to(torch.float32)
-        pressure_levels = pressure_levels.to(torch.float32)
+        self.pressure_levels = pressure_levels.to(torch.float32)
 
         # Store dimensions
         self.num_lats = len(grid_lat)
         self.num_levels = len(pressure_levels)
         self.num_features = num_features
         self.num_surface_vars = num_surface_vars
-        self.num_level_vars = num_features - num_surface_vars
+        self.num_level_vars = (num_features - num_surface_vars) // self.num_levels
         self.var_loss_weights = var_loss_weights
+        self.output_name_order = output_name_order
+        self.alpha = alpha
 
         # Calculate combined latitude weights
         self.lat_weights = self._compute_latitude_weights(grid_lat)
 
-        # Calculate pressure level weights with Gaussian jet stream emphasis
-        self.pressure_weights = self._compute_pressure_weights(pressure_levels)
-
         # Create combined feature weights
         self.feature_weights = self._create_feature_weights()
 
-    def _gaussian_weight(
-        self, x: torch.Tensor, mu: float, sigma: float
-    ) -> torch.Tensor:
-        """Compute Gaussian weights centered at mu with standard deviation sigma."""
-        return torch.exp(-0.5 * ((x - mu) / sigma) ** 2)
+    def _check_uniform_spacing(self, grid: torch.Tensor) -> float:
+        """Check if grid has uniform spacing and return the delta.
+
+        Args:
+            grid: Input coordinate grid tensor
+
+        Returns:
+            Grid spacing delta
+
+        Raises:
+            ValueError: If grid spacing is not uniform
+        """
+        diff = torch.diff(grid)
+        if not torch.allclose(diff, diff[0]):
+            raise ValueError(f"Grid {grid} is not uniformly spaced")
+        return diff[0].item()
 
     def _compute_latitude_weights(self, grid_lat: torch.Tensor) -> torch.Tensor:
-        """Compute latitude weights combining area correction and mid-latitude emphasis."""
-        # Basic area weights (cos(lat) weighting)
-        delta_lat = torch.abs(grid_lat[1] - grid_lat[0])
-        pole_threshold = torch.tensor(90.0, dtype=torch.float32)
-        has_poles = torch.any(torch.isclose(torch.abs(grid_lat), pole_threshold))
+        """Compute latitude weights based on grid cell areas.
+
+        For a latitude grid, this handles two cases:
+        1. Grids without poles: Points represent slices between lat±Δλ/2
+           Weight proportional to cos(lat)
+        2. Grids with poles: Points at poles represent half-slices
+           For non-pole points: weight ∝ cos(λ)⋅sin(Δλ/2)
+           For pole points: weight ∝ sin(Δλ/4)²
+
+        Args:
+            grid_lat: Latitude coordinates in degrees
+
+        Returns:
+            Normalized weights with unit mean
+
+        Raises:
+            ValueError: If grid is not uniformly spaced or has invalid endpoints
+        """
+        # Validate uniform spacing
+        delta_lat = torch.abs(torch.tensor(self._check_uniform_spacing(grid_lat)))
+
+        # Check if grid includes poles
+        has_poles = torch.any(torch.isclose(torch.abs(grid_lat), torch.tensor(90.0)))
 
         if has_poles:
-            area_weights = torch.cos(torch.deg2rad(grid_lat)) * torch.sin(
+            # Validate grid endpoints
+            if not (
+                torch.isclose(grid_lat.max(), torch.tensor(90.0))
+                and torch.isclose(grid_lat.min(), torch.tensor(-90.0))
+            ):
+                raise ValueError("Grid with poles must span [-90°, 90°]")
+
+            # Basic weights for non-pole points
+            weights = torch.cos(torch.deg2rad(grid_lat)) * torch.sin(
                 torch.deg2rad(delta_lat / 2)
             )
+
+            # Special handling for pole points
             pole_indices = torch.where(
-                torch.isclose(torch.abs(grid_lat), pole_threshold)
+                torch.isclose(torch.abs(grid_lat), torch.tensor(90.0))
             )[0]
             pole_weight = torch.sin(torch.deg2rad(delta_lat / 4)) ** 2
-            area_weights[pole_indices] = pole_weight
+            weights[pole_indices] = pole_weight
+
         else:
-            area_weights = torch.cos(torch.deg2rad(grid_lat))
+            # Validate grid endpoints
+            if not (
+                torch.isclose(
+                    torch.abs(grid_lat.max()),
+                    (90.0 - delta_lat / 2) * torch.ones_like(grid_lat.max()),
+                )
+            ):
+                raise ValueError("Grid without poles must end at ±(90° - Δλ/2)")
 
-        # Mid-latitude emphasis parameters
-        mid_lat_center = 50.0  # Center of emphasis in Northern Hemisphere
-        mid_lat_spread = 15.0  # Spread of the emphasis region
-        mid_lat_enhancement = 2.0  # Maximum enhancement factor
-
-        # Calculate mid-latitude enhancement
-        mid_lat_weights = self._gaussian_weight(
-            grid_lat, mid_lat_center, mid_lat_spread
-        )
-        enhancement_factor = 1.0 + (mid_lat_enhancement - 1.0) * mid_lat_weights
-
-        # Combine area weights with mid-latitude enhancement
-        combined_weights = area_weights * enhancement_factor
-
-        return combined_weights / combined_weights.mean()
-
-    def _compute_pressure_weights(self, pressure_levels: torch.Tensor) -> torch.Tensor:
-        """Compute pressure level weights with Gaussian jet stream emphasis."""
-        # Basic pressure-proportional weights
-        base_weights = pressure_levels / pressure_levels.mean()
-
-        # Parameters for jet stream Gaussian
-        jet_center = 250.0  # Center of jet stream (hPa)
-        jet_width = 50.0  # Width of jet stream region (hPa)
-        jet_enhancement = 2.0  # Maximum enhancement factor
-
-        # Compute Gaussian weights centered on jet stream level
-        gaussian_weights = self._gaussian_weight(pressure_levels, jet_center, jet_width)
-        enhancement_factor = 1.0 + (jet_enhancement - 1.0) * gaussian_weights
-
-        # Combine base weights with jet stream enhancement
-        weights = base_weights * enhancement_factor
+            # Simple cosine weights for grids without poles
+            weights = torch.cos(torch.deg2rad(grid_lat))
 
         return weights / weights.mean()
 
     def _create_feature_weights(self) -> torch.Tensor:
-        """Create weights for all features, including both pressure-level and surface variables."""
-        vars_per_level = self.num_level_vars // self.num_levels
-        level_weights = self.pressure_weights.repeat(vars_per_level)
-        # Repeat the first 6 components 13 times
-        var_atmospheric_weights = self.var_loss_weights[
-            :vars_per_level
-        ].repeat_interleave(self.num_levels)
-        var_surface_weights = self.var_loss_weights[vars_per_level:]
-        surface_weights = torch.ones(self.num_surface_vars, dtype=torch.float32)
-        feature_weights = torch.cat(
-            [
-                level_weights * var_atmospheric_weights,
-                surface_weights * var_surface_weights,
-            ]
-        )
+        """Create weights for all features."""
+        # Initialize weights tensor for all features
+        feature_weights = torch.zeros(self.num_features, dtype=torch.float32)
 
-        return feature_weights / feature_weights.mean()
+        # Standard pressure weights normalized by number of levels
+        pressure_weights = (self.pressure_levels / self.pressure_levels[-1]).to(
+            torch.float32
+        ) / self.num_levels
+
+        # Process atmospheric variables (with pressure levels)
+        for var_idx in range(self.num_level_vars):
+            base_weight = self.var_loss_weights[var_idx]
+            var_name = self.output_name_order[var_idx]
+
+            for level_idx in range(self.num_levels):
+                feature_idx = var_idx * self.num_levels + level_idx
+
+                # For geopotential, use reversed pressure weights
+                if var_name == "geopotential":
+                    feature_weights[feature_idx] = (
+                        base_weight * pressure_weights[-(level_idx + 1)]
+                    )
+                else:
+                    feature_weights[feature_idx] = (
+                        base_weight * pressure_weights[level_idx]
+                    )
+
+        # Process surface variables
+        surface_start = self.num_level_vars * self.num_levels
+        feature_weights[surface_start:] = self.var_loss_weights[self.num_level_vars :]
+
+        return feature_weights
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """Calculate weighted MSE loss.
+        """Calculate weighted hybrid loss combining MAE and RMSE components.
 
         Args:
-            pred: Predicted values, shape [batch, channels, height, width]
-            target: Target values, shape [batch, channels, height, width]
+            pred: Predicted values
+            target: Target values
 
         Returns:
-            Weighted MSE loss value
+            Combined weighted loss value
         """
-        # Calculate squared errors
-        squared_errors = (pred - target) ** 2
-
-        # Prepare latitude weights
-        lat_weights = self.lat_weights.view(-1, 1).to(pred.device)
-
-        # Prepare feature weights
+        # Prepare weights with correct shapes for broadcasting
+        lat_weights = self.lat_weights.view(1, 1, -1, 1).to(pred.device)
         feature_weights = self.feature_weights.view(1, -1, 1, 1).to(pred.device)
 
-        # Apply all weights
-        weighted_errors = squared_errors * lat_weights * feature_weights
+        # Compute errors
+        error = pred - target
+        abs_error = torch.abs(error)
+        squared_error = error**2
 
-        return weighted_errors.mean()
+        # Apply weights to both MAE and MSE components
+        weighted_abs_error = abs_error * lat_weights * feature_weights
+        weighted_squared_error = squared_error * lat_weights * feature_weights
+
+        # Compute final hybrid loss
+        mae_component = weighted_abs_error.mean()
+        mse_component = weighted_squared_error.mean()
+        rmse_component = torch.sqrt(mse_component)
+
+        return self.alpha * mae_component + (1 - self.alpha) * rmse_component

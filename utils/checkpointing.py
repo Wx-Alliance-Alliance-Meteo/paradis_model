@@ -1,7 +1,7 @@
 """Utilities for model checkpointing."""
 
-import torch
 from typing import Dict, Any
+import torch
 
 
 def load_checkpoint(

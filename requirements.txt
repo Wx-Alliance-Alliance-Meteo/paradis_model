@@ -1,12 +1,11 @@
 # Deep Learning Framework
 torch>=2.0.0
 lightning>=2.4.0
+tensorboard>=2.18.0
 
 # Data Processing
 numpy>=1.24.0
-xarray>=2023.1.0
 zarr>=2.18.3
-dask>=2024.11.2
 
 #Configuration
 hydra_core>=1.3.2
@@ -16,5 +15,8 @@ matplotlib>=3.7.0
 
 # Development Tools
 black>=23.3.0
+
+# To download WeatherBench 2 dataset
+gsutil
 
 # To install : pip install -r requirements.txt --break-system-packages

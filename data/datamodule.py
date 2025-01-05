@@ -27,6 +27,9 @@ class Era5DataModule(L.LightningDataModule):
 
     def setup(self, stage=None):
         if stage == "fit" and not self.has_setup_been_called["fit"]:
+            logging.info(f"Loading WeatherBench2 dataset from {self.root_dir}")
+            logging.info(f"Date range: {self.start_date} to {self.end_date}")
+
             # Generate dataset
             era5_dataset = ERA5Dataset(
                 root_dir=self.root_dir,
@@ -48,13 +51,16 @@ class Era5DataModule(L.LightningDataModule):
             self.lon_size = era5_dataset.lon_size
 
             # Split into training and validation sets
+            logging.info("Splitting dataset into train and validation sets")
             self.train_dataset, self.val_dataset = split_dataset(
                 era5_dataset, train_ratio=self.train_ratio
             )
 
             self.has_setup_been_called["fit"] = True
+            logging.info("Dataset setup completed successfully")
 
     def train_dataloader(self):
+        """Return the training dataloader."""
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
@@ -65,6 +71,7 @@ class Era5DataModule(L.LightningDataModule):
         )
 
     def val_dataloader(self):
+        """Return the validation dataloader."""
         return DataLoader(
             self.val_dataset,
             batch_size=self.batch_size,

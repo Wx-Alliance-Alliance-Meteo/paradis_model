@@ -6,7 +6,6 @@ import torch
 import lightning as L
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks import ModelCheckpoint
-from lightning.pytorch.strategies import DDPStrategy
 from omegaconf import DictConfig
 
 from trainer import LitParadis
@@ -14,13 +13,9 @@ from data.datamodule import Era5DataModule
 
 
 # pylint: disable=E1120
-@hydra.main(version_base=None, config_path="config/", config_name="train")
+@hydra.main(version_base=None, config_path="config/", config_name="paradis_settings")
 def main(cfg: DictConfig):
     """Train the model on ERA5 dataset."""
-
-    # Set deterministic behavior for reproducibility
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
 
     # Instantiate data module
     datamodule = Era5DataModule(cfg)
@@ -38,9 +33,15 @@ def main(cfg: DictConfig):
 
     # Define callbacks
     callbacks = []
-    if cfg.trainer.early_stopping:
-        # Stop epochs when validation loss is not decreasing during three epochs
-        callbacks.append(EarlyStopping(monitor="val_loss", mode="min", patience=3))
+    if cfg.trainer.early_stopping.enabled:
+        # Stop epochs when validation loss is not decreasing during a coupe of epochs
+        callbacks.append(
+            EarlyStopping(
+                monitor="val_loss",
+                mode="min",
+                patience=cfg.trainer.early_stopping.patience,
+            )
+        )
 
     # Keep the last k checkpoints
     callbacks.append(
@@ -66,9 +67,9 @@ def main(cfg: DictConfig):
         default_root_dir="logs/",
         accelerator=cfg.trainer.accelerator,
         devices=cfg.trainer.num_devices,
-        strategy=DDPStrategy(),
+        strategy="ddp",
         max_epochs=cfg.trainer.max_epochs,
-        gradient_clip_val=1.0,
+        gradient_clip_val=cfg.trainer.gradient_clip_val,
         gradient_clip_algorithm="norm",
         log_every_n_steps=1,
         callbacks=callbacks,
