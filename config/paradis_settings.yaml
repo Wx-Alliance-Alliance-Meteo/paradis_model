@@ -1,5 +1,5 @@
 model:
-  hidden_multiplier: 2    # Automatically scale the hidden dimension with the number of input channels (hidden_dim = hidden_multiplier * nb_dynamic_channels)
+  hidden_multiplier: 4    # Automatically scale the hidden dimension with the number of input channels (hidden_dim = hidden_multiplier * nb_dynamic_channels)
   forecast_steps: 1       # Number of autoregressive steps for forecasting
   base_dt: 21600          # 6 hours * 3600 seconds
   loss_alpha: 0.6         # Balance the contribution MAE and RMSE. loss = α * MAE + (1-α) * RMSE
@@ -30,11 +30,11 @@ trainer:
     lr_final_div: 1.0e2   # Final learning rate = max_lr/lr_final_div_factor
 
   # 2. ReduceLROnPlateau - Recommended for fine-tuning a pre-trained model
-  #scheduler:
-  #  type: "reduce_lr"      # ReduceLROnPlateau scheduler
-  #  factor: 0.5            # Factor by which to reduce learning rate
-  #  patience: 5            # Number of epochs with no improvement after which LR will be reduced
-  #  min_lr: 1e-6           # Lower bound on the learning rate
+#  scheduler:
+#    type: "reduce_lr"      # ReduceLROnPlateau scheduler
+#    factor: 0.5            # Factor by which to reduce learning rate
+#    patience: 5            # Number of epochs with no improvement after which LR will be reduced
+#    min_lr: 1e-6           # Lower bound on the learning rate
 
 dataset:
   dataset_dir: /path/to/dataset/
