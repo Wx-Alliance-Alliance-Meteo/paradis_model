@@ -1,6 +1,7 @@
 """Model training implementation."""
 
 import time
+import logging
 import torch
 import lightning as L
 from model.paradis import Paradis
@@ -99,7 +100,7 @@ class LitParadis(L.LightningModule):
         """Configure optimizer and learning rate scheduler."""
         optimizer = torch.optim.AdamW(
             self.model.parameters(),
-            betas=[0.9, 0.95],
+            betas=[0.9, 0.999],
             lr=self.cfg.trainer.lr,
             weight_decay=self.cfg.trainer.weight_decay,
         )

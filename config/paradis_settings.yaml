@@ -8,7 +8,7 @@ model:
 
 trainer:
   lr: 0.01               # Learning rate (LR) for the optimizer
-  weight_decay: 0.1      # Weight decay coefficient for regularization
+  weight_decay: 0.01     # Weight decay coefficient for regularization
   gradient_clip_val: -1  # Gradient clipping value, set to -1 to disable
   max_epochs: 100
   num_devices: 1
