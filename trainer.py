@@ -1,9 +1,12 @@
 """Model training implementation."""
 
 import time
+import re
+
 import logging
 import torch
 import lightning as L
+
 from model.paradis import Paradis
 from utils.loss import WeightedHybridLoss
 
@@ -40,7 +43,7 @@ class LitParadis(L.LightningModule):
                 for var in cfg.features.output.atmospheric
             ],
             dtype=torch.float32,
-        ).repeat_interleave(num_levels)
+        )
 
         surface_weights = torch.tensor(
             [
@@ -61,12 +64,15 @@ class LitParadis(L.LightningModule):
         }
 
         # Initialize reordered weights tensor
-        var_loss_weights_reordered = torch.zeros_like(var_loss_weights)
+        num_features = len(atmospheric_weights) * num_levels + len(surface_weights)
+        var_loss_weights_reordered = torch.zeros(num_features, dtype=torch.float32)
 
         # Reorder based on self.output_name_order
         for i, var in enumerate(self.output_name_order):
-            if var in var_name_to_weight:
-                var_loss_weights_reordered[i] = var_name_to_weight[var]
+            # Get the variable name without the level
+            var_name = re.sub(r"_h\d+$", "", var)
+            if var_name in var_name_to_weight:
+                var_loss_weights_reordered[i] = var_name_to_weight[var_name]
 
         self.loss_fn = WeightedHybridLoss(
             grid_lat=torch.from_numpy(datamodule.lat),
