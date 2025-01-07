@@ -1,3 +1,4 @@
+import argparse
 import xarray as xr
 import numpy as np
 import dask
@@ -11,30 +12,34 @@ def main():
     Main function to process WeatherBench data by stacking data,
     precomputing static data, and computing statistics.
     """
+    # Setup command line arguments
+    parser = argparse.ArgumentParser(description='Preprocess WeatherBench data.')
+    parser.add_argument('-i', '--input_dir', required=True, 
+                        help='Input directory containing WeatherBench data in Zarr format')
+    parser.add_argument('-o', '--output_dir', required=True,
+                        help='Output directory for processed data')
+    args = parser.parse_args()
 
-    # Define input and output directories
-    input_base_dir = "/home/cap003/hall6/weatherbench/"
-    output_base_dir = "/home/cap003/hall6/weatherbench_5.625deg/"
 
     # Open the dataset from the input Zarr directory
-    ds = xr.open_zarr(input_base_dir)
+    ds = xr.open_zarr(args.input_dir)
 
     # Ensure the dataset dimensions are ordered as time, latitude, longitude, level
     ds = ds.transpose("time", "latitude", "longitude", "level")
 
     # Remove variables that don't have corresponding directories in the input data
     # These variables are likely placeholders or contain only NaN values
-    drop_variables = set(ds.data_vars) - set(os.listdir(input_base_dir))
+    drop_variables = set(ds.data_vars) - set(os.listdir(args.input_dir))
     ds = ds.drop_vars(drop_variables)
 
     # Step 1: Stack data for efficient storage and processing
-    stack_data(ds, output_base_dir)
+    stack_data(ds, args.output_dir)
 
     # Step 2: Precompute static data (e.g., geographic variables)
-    precompute_static_data(ds, output_base_dir)
+    precompute_static_data(ds, args.output_dir)
 
     # Step 3: Compute mean and standard deviation for atmospheric and surface variables
-    compute_statistics(output_base_dir)
+    compute_statistics(args.output_dir)
 
 
 def stack_data(ds, output_base_dir):
