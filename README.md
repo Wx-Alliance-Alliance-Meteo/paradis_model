@@ -29,21 +29,6 @@ Download the 5.625 deg ERA5 reanalysis dataset as follows:
 wget https://hpfx.collab.science.gc.ca/~mmo000/weatherbench_5.625_2010-2019.tar.gz
 ```
 
-The data directory should be organized as follow:
-```
-/path/to/ERA5/5.625deg
-├── 2010
-├── 2011
-├── 2012
-├── 2013
-├── 2014
-├── 2015
-├── 2016
-├── 2017
-├── 2018
-└── 2019
-```
-
 OR
 
 Download the original dataset from WeatherBench 2:
