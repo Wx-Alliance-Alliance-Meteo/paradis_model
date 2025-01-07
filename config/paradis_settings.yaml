@@ -2,7 +2,7 @@ model:
   hidden_multiplier: 4    # Automatically scale the hidden dimension with the number of input channels (hidden_dim = hidden_multiplier * nb_dynamic_channels)
   forecast_steps: 1       # Number of autoregressive steps for forecasting
   base_dt: 21600          # 6 hours * 3600 seconds
-  loss_alpha: 0.6         # Balance the contribution MAE and RMSE. loss = α * MAE + (1-α) * RMSE
+  loss_alpha: 0.5         # Balance the contribution MAE and RMSE. loss = α * MAE + (1-α) * RMSE
   checkpoint_path: null   # Path to model checkpoint for loading pre-trained weights
   compile: true           # Whether to compile the model using torch.compile()
 
