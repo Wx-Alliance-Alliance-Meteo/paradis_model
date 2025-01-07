@@ -23,34 +23,25 @@ where `[override_args]` can override the inputs in the config file.
 
 
 #### Dataset
-Download the 5.625 deg ERA5 reanalysis dataset from WeatherBench 2 as follows:
+Download the 5.625 deg ERA5 reanalysis dataset as follows:
 
 ```
-gsutil -m cp -r   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/.zattrs"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/.zgroup"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/.zmetadata"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/10m_u_component_of_wind"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/10m_v_component_of_wind"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/10m_wind_speed"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/2m_temperature"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/geopotential"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/geopotential_at_surface"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/land_sea_mask"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/latitude"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/level"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/longitude"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/mean_sea_level_pressure"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/specific_humidity"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/temperature"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/time"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/toa_incident_solar_radiation"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/total_precipitation_6hr"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/u_component_of_wind"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/v_component_of_wind"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/vertical_velocity"  /path/to/ERA5/5.625deg
+wget https://hpfx.collab.science.gc.ca/~mmo000/weatherbench_5.625_2010-2019.tar.gz
 ```
 
 The data directory should be organized as follow:
 ```
 /path/to/ERA5/5.625deg
-├── 10m_u_component_of_wind
-├── 10m_v_component_of_wind
-├── 10m_wind_speed
-├── 2m_temperature
-├── geopotential
-├── geopotential_at_surface
-├── land_sea_mask
-├── latitude
-├── level
-├── longitude
-├── mean_sea_level_pressure
-├── specific_humidity
-├── temperature
-├── time
-├── toa_incident_solar_radiation
-├── total_precipitation_6hr
-├── u_component_of_wind
-├── v_component_of_wind
-└── vertical_velocity
+├── 2010
+├── 2011
+├── 2012
+├── 2013
+├── 2014
+├── 2015
+├── 2016
+├── 2017
+├── 2018
+└── 2019
 ```
 
 #### Acknowledgements
