@@ -153,15 +153,20 @@ class Paradis(nn.Module):
 
         # Extract dimensions from config
         output_dim = datamodule.num_out_features
+
         mesh_size = [datamodule.lat_size, datamodule.lon_size]
 
+        num_levels = len(cfg.features.pressure_levels)
+
         # Get channel sizes
-        self.dynamic_channels = len(cfg.features.input.get("atmospheric", [])) + len(
-            cfg.features.input.get("surface", [])
-        )
+        self.dynamic_channels = len(
+            cfg.features.input.get("atmospheric", [])
+        ) * num_levels + len(cfg.features.input.get("surface", []))
+
         self.static_channels = len(cfg.features.input.get("constants", [])) + len(
             cfg.features.input.get("forcings", [])
         )
+
         hidden_dim = cfg.model.hidden_multiplier * self.dynamic_channels
 
         # Input projection for dynamic features

@@ -27,7 +27,7 @@ class Era5DataModule(L.LightningDataModule):
 
     def setup(self, stage=None):
         if stage == "fit" and not self.has_setup_been_called["fit"]:
-            logging.info(f"Loading WeatherBench2 dataset from {self.root_dir}")
+            logging.info(f"Loading dataset from {self.root_dir}")
             logging.info(f"Date range: {self.start_date} to {self.end_date}")
 
             # Generate dataset
@@ -44,7 +44,7 @@ class Era5DataModule(L.LightningDataModule):
             self.num_common_features = era5_dataset.num_common_features
             self.num_in_features = era5_dataset.num_in_features
             self.num_out_features = era5_dataset.num_out_features
-            self.output_name_order = era5_dataset.output_name_order
+            self.output_name_order = era5_dataset.dyn_output_features
             self.lat = era5_dataset.lat
             self.lon = era5_dataset.lon
             self.lat_size = era5_dataset.lat_size

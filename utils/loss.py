@@ -55,7 +55,7 @@ class WeightedHybridLoss(torch.nn.Module):
         self.num_levels = len(pressure_levels)
         self.num_features = num_features
         self.num_surface_vars = num_surface_vars
-        self.num_level_vars = (num_features - num_surface_vars) // self.num_levels
+        self.num_level_vars = (num_features // self.num_levels - num_surface_vars)
         self.var_loss_weights = var_loss_weights
         self.output_name_order = output_name_order
         self.alpha = alpha
@@ -154,27 +154,29 @@ class WeightedHybridLoss(torch.nn.Module):
         ) / self.num_levels
 
         # Process atmospheric variables (with pressure levels)
-        for var_idx in range(self.num_level_vars):
-            base_weight = self.var_loss_weights[var_idx]
-            var_name = self.output_name_order[var_idx]
+        # counter  = 0
+        # for var_idx in range(self.num_level_vars):
+        #     base_weight = self.var_loss_weights[var_idx]
+        #     var_name = self.output_name_order[var_idx]
 
-            for level_idx in range(self.num_levels):
-                feature_idx = var_idx * self.num_levels + level_idx
+        #     for level_idx in range(self.num_levels):
+        #         feature_idx = var_idx * self.num_levels + level_idx
 
-                # For geopotential, use reversed pressure weights
-                if var_name == "geopotential":
-                    feature_weights[feature_idx] = (
-                        base_weight * pressure_weights[-(level_idx + 1)]
-                    )
-                else:
-                    feature_weights[feature_idx] = (
-                        base_weight * pressure_weights[level_idx]
-                    )
+        #         # For geopotential, use reversed pressure weights
+        #         if var_name == "geopotential":
+        #             feature_weights[feature_idx] = (
+        #                 base_weight * pressure_weights[-(level_idx + 1)]
+        #             )
+        #         else:
+        #             feature_weights[feature_idx] = (
+        #                 base_weight * pressure_weights[level_idx]
+        #             )
 
-        # Process surface variables
-        surface_start = self.num_level_vars * self.num_levels
-        feature_weights[surface_start:] = self.var_loss_weights[self.num_level_vars :]
-
+        # # Process surface variables
+        # surface_start = self.num_level_vars * self.num_levels
+        # feature_weights[surface_start:] = self.var_loss_weights[self.num_level_vars :]
+        # PENDING
+        feature_weights = torch.ones(self.num_features)
         return feature_weights
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:

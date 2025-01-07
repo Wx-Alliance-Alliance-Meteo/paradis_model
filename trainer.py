@@ -31,6 +31,8 @@ class LitParadis(L.LightningModule):
         # Access output_name_order from configuration
         self.output_name_order = datamodule.output_name_order
 
+        num_levels = len(cfg.features.pressure_levels)
+
         # Construct variable_loss_weights tensor from YAML configuration
         atmospheric_weights = torch.tensor(
             [
@@ -38,7 +40,8 @@ class LitParadis(L.LightningModule):
                 for var in cfg.features.output.atmospheric
             ],
             dtype=torch.float32,
-        )
+        ).repeat_interleave(num_levels)
+
         surface_weights = torch.tensor(
             [
                 cfg.variable_loss_weights.surface[var]
