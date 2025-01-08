@@ -7,7 +7,7 @@ model:
   compile: true           # Whether to compile the model using torch.compile()
 
 trainer:
-  lr: 0.01               # Learning rate (LR) for the optimizer
+  lr: 1.0e-3             # Learning rate (LR) for the optimizer
   weight_decay: 0.01     # Weight decay coefficient for regularization
   gradient_clip_val: -1  # Gradient clipping value, set to -1 to disable
   max_epochs: 100

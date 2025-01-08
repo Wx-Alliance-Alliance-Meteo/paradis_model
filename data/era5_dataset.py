@@ -59,6 +59,14 @@ class ERA5Dataset(torch.utils.data.Dataset):
         ds["mean"] = ds_stats["mean"]
         ds["std"] = ds_stats["std"]
 
+        # Store statistics for each variable (for use in forecast.py)
+        self.var_stats = {}
+        for i, feature in enumerate(ds_stats.features.values):
+            self.var_stats[feature] = {
+                "mean": float(ds_stats["mean"].values[i]),
+                "std": float(ds_stats["std"].values[i]),
+            }
+
         # Lazily pre-normalize atmospheric variables
         ds = (ds["data"] - ds["mean"]) / ds["std"]
 
@@ -167,6 +175,10 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
         # Load arrays into CPU memory
         input_data, true_data = dask.compute(input_data, true_data)
+
+        # # Add checks for invalid values
+        if numpy.isnan(input_data.data).any() or numpy.isnan(true_data.data).any():
+            raise ValueError("NaN values detected in input/output data")
 
         # Convert to tensors - data comes in [time, lat, lon, features]
         x = torch.tensor(input_data.data, dtype=self.dtype)

@@ -13,13 +13,17 @@ def main():
     precomputing static data, and computing statistics.
     """
     # Setup command line arguments
-    parser = argparse.ArgumentParser(description='Preprocess WeatherBench data.')
-    parser.add_argument('-i', '--input_dir', required=True, 
-                        help='Input directory containing WeatherBench data in Zarr format')
-    parser.add_argument('-o', '--output_dir', required=True,
-                        help='Output directory for processed data')
+    parser = argparse.ArgumentParser(description="Preprocess WeatherBench data.")
+    parser.add_argument(
+        "-i",
+        "--input_dir",
+        required=True,
+        help="Input directory containing WeatherBench data in Zarr format",
+    )
+    parser.add_argument(
+        "-o", "--output_dir", required=True, help="Output directory for processed data"
+    )
     args = parser.parse_args()
-
 
     # Open the dataset from the input Zarr directory
     ds = xr.open_zarr(args.input_dir)
@@ -108,7 +112,9 @@ def stack_data(ds, output_base_dir):
 
         # Add descriptive attributes to the dataset
         ds_year.attrs["description"] = "Stacked dataset per lat/lon grid point"
-        ds_year.attrs["note"] = "Variables have been renamed based on their original names and levels."
+        ds_year.attrs["note"] = (
+            "Variables have been renamed based on their original names and levels."
+        )
 
         # Remove specific unwanted attributes
         attrs_to_remove = ["long_name", "short_name", "units"]
