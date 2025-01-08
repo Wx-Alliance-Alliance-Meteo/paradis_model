@@ -373,7 +373,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
             Normalized specific humidity data
         """
         # Apply normalization
-        q_norm = (numpy.log(data + self.eps) - numpy.log(self.q_min)) / (
+        q_norm = (numpy.log(numpy.clip(data, 0, self.q_max) + self.eps) - numpy.log(self.q_min)) / (
             numpy.log(self.q_max) - numpy.log(self.q_min)
         )
 
@@ -396,7 +396,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
             )
             - self.eps
         )
-        return q
+        return numpy.clip(q, 0, self.q_max)
 
     def _normalize_precipitation(self, data: numpy.ndarray) -> numpy.ndarray:
         """Normalize precipitation using logarithmic transform.
