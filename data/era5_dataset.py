@@ -7,7 +7,7 @@ import os
 
 import numpy
 import torch
-import xarray as xr
+import xarray
 
 from data.forcings import time_forcings, toa_radiation
 
@@ -49,12 +49,14 @@ class ERA5Dataset(torch.utils.data.Dataset):
         ]
 
         # Lazy open this dataset
-        ds = xr.open_mfdataset(
+        ds = xarray.open_mfdataset(
             files, chunks={"time": self.forecast_steps + 1}, engine="zarr"
         )
 
         # Add stats to data array
-        ds_stats = xr.open_dataset(os.path.join(self.root_dir, "stats"), engine="zarr")
+        ds_stats = xarray.open_dataset(
+            os.path.join(self.root_dir, "stats"), engine="zarr"
+        )
 
         ds["mean"] = ds_stats["mean"]
         ds["std"] = ds_stats["std"]
@@ -106,7 +108,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         )
 
         # Constant input variables
-        ds_constants = xr.open_dataset(
+        ds_constants = xarray.open_dataset(
             os.path.join(root_dir, "constants"), engine="zarr"
         )
 
