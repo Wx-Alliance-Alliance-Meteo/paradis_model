@@ -23,14 +23,6 @@ where `[override_args]` can override the inputs in the config file.
 
 
 #### Dataset
-Download the 5.625 deg ERA5 reanalysis dataset as follows:
-
-```
-wget https://hpfx.collab.science.gc.ca/~mmo000/weatherbench_5.625_2010-2019.tar.gz
-```
-
-OR
-
 Download the original dataset from WeatherBench 2:
 
 ```
