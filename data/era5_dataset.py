@@ -1,17 +1,16 @@
 """ERA5 dataset handling"""
 
-import dask
 import logging
-from omegaconf import DictConfig
 import os
+import re
 
+import dask
 import numpy
+from omegaconf import DictConfig
 import torch
 import xarray as xr
 
 from data.forcings import time_forcings, toa_radiation
-
-TSI = 1361  # Baseline solar irradiance in W/m^2
 
 
 class ERA5Dataset(torch.utils.data.Dataset):
@@ -27,16 +26,12 @@ class ERA5Dataset(torch.utils.data.Dataset):
         features_cfg: DictConfig = {},
     ) -> None:
 
+        self.eps = 1e-12
         self.root_dir = root_dir
         self.forecast_steps = forecast_steps
         self.dtype = dtype
         self.num_common_features = 0
         self.forcing_inputs = features_cfg.input.forcings
-
-        # Dictionary mapping variables to their physical scaling
-        self.scaling_factors = {
-            "toa_incident_solar_radiation": TSI * 3600,  # in W s/m^2
-        }
 
         # Extract from the years in the range
         start_year = int(start_date.split("-")[0])
@@ -53,14 +48,16 @@ class ERA5Dataset(torch.utils.data.Dataset):
             files, chunks={"time": self.forecast_steps + 1}, engine="zarr"
         )
 
-        # Add stats to data array
+        # Lazy open statistics
         ds_stats = xr.open_dataset(os.path.join(self.root_dir, "stats"), engine="zarr")
 
+        # Store them in main dataset for easier processing
         ds["mean"] = ds_stats["mean"]
         ds["std"] = ds_stats["std"]
-
-        # Lazily pre-normalize atmospheric variables
-        ds = (ds["data"] - ds["mean"]) / ds["std"]
+        ds["max"] = ds_stats["max"]
+        ds["min"] = ds_stats["min"]
+        ds.attrs["toa_radiation_std"] = ds_stats.attrs["toa_radiation_std"]
+        ds.attrs["toa_radiation_mean"] = ds_stats.attrs["toa_radiation_mean"]
 
         # Filter data to time frame requested
         ds = ds.sel(time=slice(start_date, end_date))
@@ -70,6 +67,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.lon = ds.longitude.values
         self.lat_size = len(self.lat)
         self.lon_size = len(self.lon)
+
         # The number of time instances in the dataset represents its length
         self.length = ds.time.size
 
@@ -135,8 +133,15 @@ class ERA5Dataset(torch.utils.data.Dataset):
         )
 
         # Pre-select the features in the right order
-        self.ds_input = ds.sel(features=self.dyn_input_features)
-        self.ds_output = ds.sel(features=self.dyn_output_features)
+        ds_input = ds.sel(features=self.dyn_input_features)
+        ds_output = ds.sel(features=self.dyn_output_features)
+
+        # Fetch data
+        self.ds_input = ds_input["data"]
+        self.ds_output = ds_output["data"]
+
+        # Get the indices to apply custom normalizations
+        self._prepare_normalization(ds_input, ds_output)
 
         # Calculate the final number of input and output features after preparation
         self.num_in_features = (
@@ -172,6 +177,9 @@ class ERA5Dataset(torch.utils.data.Dataset):
         x = torch.tensor(input_data.data, dtype=self.dtype)
         y = torch.tensor(true_data.data, dtype=self.dtype)
 
+        # Apply normalizations
+        self._apply_normalization(x, y)
+
         # Compute forcings
         forcings = self._compute_forcings(input_data)
 
@@ -187,6 +195,120 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
         return x_grid, y_grid
 
+    def _prepare_normalization(self, ds_input, ds_output):
+        """
+        Prepare indices and statistics for normalization in a vectorized fashion.
+
+        This method identifies indices for specific types of features
+        (e.g., precipitation, humidity, and others) for both input and output
+        datasets, converts them into PyTorch tensors, and retrieves
+        mean and standard deviation values for z-score normalization.
+
+        Parameters:
+            ds_input: xarray.Dataset
+                Input dataset containing mean and standard deviation values.
+            ds_output: xarray.Dataset
+                Output dataset containing mean and standard deviation values.
+        """
+
+        # Initialize lists to store indices for each feature type
+        self.norm_precip_in = []
+        self.norm_humidity_in = []
+        self.norm_zscore_in = []
+
+        self.norm_precip_out = []
+        self.norm_humidity_out = []
+        self.norm_zscore_out = []
+
+        # Process dynamic input features
+        for i, feature in enumerate(self.dyn_input_features):
+            feature_name = re.sub(
+                r"_h\d+$", "", feature
+            )  # Remove height suffix (e.g., "_h10")
+            if feature_name == "total_precipitation_6hr":
+                self.norm_precip_in.append(i)
+            elif feature_name == "specific_humidity":
+                self.norm_humidity_in.append(i)
+            else:
+                self.norm_zscore_in.append(i)
+
+        # Process dynamic output features
+        for i, feature in enumerate(self.dyn_output_features):
+            feature_name = re.sub(
+                r"_h\d+$", "", feature
+            )  # Remove height suffix (e.g., "_h10")
+            if feature_name == "total_precipitation_6hr":
+                self.norm_precip_out.append(i)
+            elif feature_name == "specific_humidity":
+                self.norm_humidity_out.append(i)
+            else:
+                self.norm_zscore_out.append(i)
+
+        # Convert lists of indices to PyTorch tensors for efficient indexing
+        self.norm_precip_in = torch.tensor(self.norm_precip_in, dtype=torch.long)
+        self.norm_precip_out = torch.tensor(self.norm_precip_out, dtype=torch.long)
+        self.norm_humidity_in = torch.tensor(self.norm_humidity_in, dtype=torch.long)
+        self.norm_humidity_out = torch.tensor(self.norm_humidity_out, dtype=torch.long)
+        self.norm_zscore_in = torch.tensor(self.norm_zscore_in, dtype=torch.long)
+        self.norm_zscore_out = torch.tensor(self.norm_zscore_out, dtype=torch.long)
+
+        # Retrieve mean and standard deviation values for z-score normalization
+        self.input_mean = torch.tensor(ds_input["mean"].data, dtype=self.dtype)
+        self.input_std = torch.tensor(ds_input["std"].data, dtype=self.dtype)
+        self.input_max = torch.tensor(ds_input["max"].data, dtype=self.dtype)
+        self.input_min = torch.tensor(ds_input["min"].data, dtype=self.dtype)
+
+        self.output_mean = torch.tensor(ds_output["mean"].data, dtype=self.dtype)
+        self.output_std = torch.tensor(ds_output["std"].data, dtype=self.dtype)
+        self.output_max = torch.tensor(ds_output["max"].data, dtype=self.dtype)
+        self.output_min = torch.tensor(ds_output["min"].data, dtype=self.dtype)
+
+        # Keep only statistics of variables that require standard normalization
+        self.input_mean = self.input_mean[self.norm_zscore_in]
+        self.input_std = self.input_std[self.norm_zscore_in]
+        self.output_mean = self.output_mean[self.norm_zscore_out]
+        self.output_std = self.output_std[self.norm_zscore_out]
+
+        # Prepare variables required in custom normalization
+
+        # Maximum and minimum specific humidity in dataset
+        self.q_max = torch.max(self.input_max[self.norm_humidity_in]).item()
+        self.q_min = torch.min(self.input_min[self.norm_humidity_in]).item()
+        self.q_min = max([self.q_min, self.eps])
+
+        # Extract the toa_radiation mean and std
+        self.toa_rad_std = ds_input.attrs["toa_radiation_std"]
+        self.toa_rad_mean = ds_input.attrs["toa_radiation_mean"]
+
+    def _apply_normalization(self, input_data, output_data):
+
+        # Apply custom normalizations to input
+        input_data[..., self.norm_precip_in] = self._normalize_precipitation(
+            input_data[..., self.norm_precip_in]
+        )
+        input_data[..., self.norm_humidity_in] = self._normalize_humidity(
+            input_data[..., self.norm_humidity_in]
+        )
+
+        # Apply custom normalizations to output
+        output_data[..., self.norm_precip_out] = self._normalize_precipitation(
+            output_data[..., self.norm_precip_out]
+        )
+        output_data[..., self.norm_humidity_out] = self._normalize_humidity(
+            output_data[..., self.norm_humidity_out]
+        )
+
+        # Apply standard normalizations to input and output
+        input_data[..., self.norm_zscore_in] = self._normalize_standard(
+            input_data[..., self.norm_zscore_in],
+            self.input_mean,
+            self.input_std,
+        )
+
+        output_data[..., self.norm_zscore_out] = self._normalize_standard(
+            output_data[..., self.norm_zscore_out], self.output_mean, self.output_std
+        )
+
     def _compute_forcings(self, input_data):
         """Computes forcing paramters based in input_data array"""
 
@@ -197,7 +319,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
             if var == "toa_incident_solar_radiation":
                 toa_rad = toa_radiation(input_data["time"].values, self.lat, self.lon)
                 toa_rad = torch.tensor(
-                    toa_rad / self.scaling_factors["toa_incident_solar_radiation"],
+                    (toa_rad - self.toa_rad_mean) / self.toa_rad_std,
                     dtype=self.dtype,
                 )
                 if len(toa_rad.shape) == 3:  # If time dimension is present
@@ -221,6 +343,9 @@ class ERA5Dataset(torch.utils.data.Dataset):
             return torch.cat(forcings, dim=-1)
         return
 
+    def _normalize_standard(self, input_data, mean, std):
+        return (input_data - mean) / std
+
     def _normalize_humidity(self, data: numpy.ndarray) -> numpy.ndarray:
         """Normalize specific humidity using physically-motivated logarithmic transform.
 
@@ -233,15 +358,9 @@ class ERA5Dataset(torch.utils.data.Dataset):
         Returns:
             Normalized specific humidity data
         """
-        q_min = 1e-6  # Minimum specific humidity in kg/kg (stratospheric value)
-        q_max = 0.035  # Maximum specific humidity in kg/kg (tropical surface maximum)
-
-        # Add small epsilon to prevent log(0)
-        epsilon = 1e-12
-
         # Apply normalization
-        q_norm = (numpy.log(data + epsilon) - numpy.log(q_min)) / (
-            numpy.log(q_max) - numpy.log(q_min)
+        q_norm = (numpy.log(data + self.eps) - numpy.log(self.q_min)) / (
+            numpy.log(self.q_max) - numpy.log(self.q_min)
         )
 
         return q_norm
@@ -254,14 +373,14 @@ class ERA5Dataset(torch.utils.data.Dataset):
         Returns:
             Specific humidity data in kg/kg
         """
-        q_min = 1e-6
-        q_max = 0.035
-        epsilon = 1e-12
 
         # Invert the normalization
         q = (
-            numpy.exp(data * (numpy.log(q_max) - numpy.log(q_min)) + numpy.log(q_min))
-            - epsilon
+            numpy.exp(
+                data * (numpy.log(self.q_max) - numpy.log(self.q_min))
+                + numpy.log(self.q_min)
+            )
+            - self.eps
         )
         return q
 

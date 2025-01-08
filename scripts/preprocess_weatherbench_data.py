@@ -4,7 +4,11 @@ import dask
 from dask.diagnostics import ProgressBar
 import os
 import time
+import sys
 
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from data.forcings.toa_radiation import toa_radiation
 
 def main():
     """
@@ -28,10 +32,10 @@ def main():
     ds = ds.drop_vars(drop_variables)
 
     # Step 1: Stack data for efficient storage and processing
-    stack_data(ds, output_base_dir)
+    # stack_data(ds, output_base_dir)
 
     # Step 2: Precompute static data (e.g., geographic variables)
-    precompute_static_data(ds, output_base_dir)
+    # precompute_static_data(ds, output_base_dir)
 
     # Step 3: Compute mean and standard deviation for atmospheric and surface variables
     compute_statistics(output_base_dir)
@@ -103,7 +107,9 @@ def stack_data(ds, output_base_dir):
 
         # Add descriptive attributes to the dataset
         ds_year.attrs["description"] = "Stacked dataset per lat/lon grid point"
-        ds_year.attrs["note"] = "Variables have been renamed based on their original names and levels."
+        ds_year.attrs["note"] = (
+            "Variables have been renamed based on their original names and levels."
+        )
 
         # Remove specific unwanted attributes
         attrs_to_remove = ["long_name", "short_name", "units"]
@@ -213,9 +219,26 @@ def compute_statistics(output_base_dir):
     # in early datasets
     mean_ds = ds.mean(dim=["time", "latitude", "longitude"], skipna=True)
     std_ds = ds.std(dim=["time", "latitude", "longitude"], skipna=True)
+    max_ds = ds.max(dim=["time", "latitude", "longitude"], skipna=True)
+    min_ds = ds.min(dim=["time", "latitude", "longitude"], skipna=True)
+
+    # Compute toa_solar radiation
+    toa_rad = toa_radiation(ds.time.values, ds.latitude.values, ds.longitude.values)
+    toa_rad_mean = np.mean(toa_rad)
+    toa_rad_std = np.std(toa_rad)
 
     # Combine the mean and std into a single dataset
-    result_ds = xr.Dataset({"mean": mean_ds["data"], "std": std_ds["data"]})
+    result_ds = xr.Dataset(
+        {
+            "mean": mean_ds["data"],
+            "std": std_ds["data"],
+            "max": max_ds["data"],
+            "min": min_ds["data"],
+        },
+    )
+
+    result_ds.attrs["toa_radiation_mean"] = toa_rad_mean
+    result_ds.attrs["toa_radiation_std"] = toa_rad_std
 
     with dask.config.set(scheduler="threads"):
         result_ds.to_zarr(
