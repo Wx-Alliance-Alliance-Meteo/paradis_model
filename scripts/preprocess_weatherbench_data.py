@@ -1,5 +1,6 @@
-import xarray as xr
-import numpy as np
+import argparse
+import xarray
+import numpy
 import dask
 from dask.diagnostics import ProgressBar
 import os
@@ -15,30 +16,38 @@ def main():
     Main function to process WeatherBench data by stacking data,
     precomputing static data, and computing statistics.
     """
-
-    # Define input and output directories
-    input_base_dir = "/home/cap003/hall6/weatherbench/"
-    output_base_dir = "/home/cap003/hall6/weatherbench_5.625deg/"
+    # Setup command line arguments
+    parser = argparse.ArgumentParser(description="Preprocess WeatherBench data.")
+    parser.add_argument(
+        "-i",
+        "--input_dir",
+        required=True,
+        help="Input directory containing WeatherBench data in Zarr format",
+    )
+    parser.add_argument(
+        "-o", "--output_dir", required=True, help="Output directory for processed data"
+    )
+    args = parser.parse_args()
 
     # Open the dataset from the input Zarr directory
-    ds = xr.open_zarr(input_base_dir)
+    ds = xarray.open_zarr(args.input_dir)
 
     # Ensure the dataset dimensions are ordered as time, latitude, longitude, level
     ds = ds.transpose("time", "latitude", "longitude", "level")
 
     # Remove variables that don't have corresponding directories in the input data
     # These variables are likely placeholders or contain only NaN values
-    drop_variables = set(ds.data_vars) - set(os.listdir(input_base_dir))
+    drop_variables = set(ds.data_vars) - set(os.listdir(args.input_dir))
     ds = ds.drop_vars(drop_variables)
 
     # Step 1: Stack data for efficient storage and processing
-    # stack_data(ds, output_base_dir)
+    stack_data(ds, args.output_dir)
 
     # Step 2: Precompute static data (e.g., geographic variables)
-    # precompute_static_data(ds, output_base_dir)
+    precompute_static_data(ds, args.output_dir)
 
     # Step 3: Compute mean and standard deviation for atmospheric and surface variables
-    compute_statistics(output_base_dir)
+    compute_statistics(args.output_dir)
 
 
 def stack_data(ds, output_base_dir):
@@ -52,8 +61,8 @@ def stack_data(ds, output_base_dir):
     """
 
     # Determine the minimum and maximum years in the dataset
-    min_year = np.min(ds["time.year"].values)
-    max_year = np.max(ds["time.year"].values)
+    min_year = numpy.min(ds["time.year"].values)
+    max_year = numpy.max(ds["time.year"].values)
 
     # Keep only variables with a time dimension (e.g., atmospheric and surface variables)
     ds = ds.drop_vars([var for var in ds.data_vars if "time" not in ds[var].dims])
@@ -129,8 +138,8 @@ def stack_data(ds, output_base_dir):
 
         # Ensure the dataset has a name and wrap it in an xarray.Dataset if it's a DataArray
         ds_year.name = "data"
-        if isinstance(ds_year, xr.DataArray):
-            ds_year = xr.Dataset({"data": ds_year})
+        if isinstance(ds_year, xarray.DataArray):
+            ds_year = xarray.Dataset({"data": ds_year})
 
         # Write the processed dataset to a Zarr file
         output_file_path = os.path.join(output_dir)
@@ -151,19 +160,19 @@ def precompute_static_data(ds, output_base_dir):
 
     static_vars = ds.data_vars
 
-    latitude, longitude = np.meshgrid(ds.latitude, ds.longitude, indexing="ij")
+    latitude, longitude = numpy.meshgrid(ds.latitude, ds.longitude, indexing="ij")
 
     # Convert variables
-    latitude_rad = np.deg2rad(latitude)
-    longitude_rad = np.deg2rad(longitude)
+    latitude_rad = numpy.deg2rad(latitude)
+    longitude_rad = numpy.deg2rad(longitude)
 
     coords = {"latitude": ds.latitude, "longitude": ds.longitude}
     dims = ["latitude", "longitude"]
 
     # Compute cosine/sine of latitude/longitude and store
-    cos_latitude = xr.DataArray(np.cos(latitude_rad), dims=dims, coords=coords)
-    cos_longitude = xr.DataArray(np.cos(longitude_rad), dims=dims, coords=coords)
-    sin_longitude = xr.DataArray(np.sin(longitude_rad), dims=dims, coords=coords)
+    cos_latitude = xarray.DataArray(numpy.cos(latitude_rad), dims=dims, coords=coords)
+    cos_longitude = xarray.DataArray(numpy.cos(longitude_rad), dims=dims, coords=coords)
+    sin_longitude = xarray.DataArray(numpy.sin(longitude_rad), dims=dims, coords=coords)
 
     data_vars = {
         "cos_latitude": cos_latitude,
@@ -173,13 +182,13 @@ def precompute_static_data(ds, output_base_dir):
 
     # Add existing static variables if numeric
     for var in static_vars:
-        has_nans = np.isnan(ds[var].values).any()
+        has_nans = numpy.isnan(ds[var].values).any()
 
         if not has_nans:
-            data_vars[var] = xr.DataArray(ds[var].values, dims=dims, coords=coords)
+            data_vars[var] = xarray.DataArray(ds[var].values, dims=dims, coords=coords)
 
     # Convert to a dataset
-    ds_result = xr.Dataset(data_vars=data_vars, coords=coords)
+    ds_result = xarray.Dataset(data_vars=data_vars, coords=coords)
 
     # Store mean and standard deviation for these variables
     for var in ds_result.data_vars:
@@ -202,8 +211,8 @@ def compute_statistics(output_base_dir):
 
     years = [int(item) for item in os.listdir(output_base_dir) if item.isdigit()]
 
-    min_year = np.min(years)
-    max_year = np.max(years)
+    min_year = numpy.min(years)
+    max_year = numpy.max(years)
 
     # Create list of files to open
     files = [
@@ -212,7 +221,7 @@ def compute_statistics(output_base_dir):
     ]
 
     # Open with a larger chunk as this will accumulate data
-    ds = xr.open_mfdataset(files, chunks={"time": 200}, engine="zarr")
+    ds = xarray.open_mfdataset(files, chunks={"time": 200}, engine="zarr")
 
     # Compute time-mean and time-standard deviation (per-level)
     # This skips nan values, which may appear for certain quantities

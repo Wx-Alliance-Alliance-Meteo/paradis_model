@@ -7,7 +7,7 @@ model:
   compile: true           # Whether to compile the model using torch.compile()
 
 trainer:
-  lr: 0.01               # Learning rate (LR) for the optimizer
+  lr: 5.0e-4             # Learning rate (LR) for the optimizer
   weight_decay: 0.01     # Weight decay coefficient for regularization
   gradient_clip_val: -1  # Gradient clipping value, set to -1 to disable
   max_epochs: 100
@@ -26,8 +26,8 @@ trainer:
   scheduler:
     type: "one_cycle"     # OneCycleLR scheduler
     warmup_pct_start: 0.2 # Percentage of training used for warmup phase
-    lr_div_factor: 10     # Initial learning rate = max_lr/lr_div_factor
-    lr_final_div: 1.0e2   # Final learning rate = max_lr/lr_final_div_factor
+    lr_div_factor: 25     # Initial learning rate = max_lr/lr_div_factor
+    lr_final_div: 1.0e3   # Final learning rate = max_lr/lr_final_div_factor
 
   # 2. ReduceLROnPlateau - Recommended for fine-tuning a pre-trained model
 #  scheduler:

@@ -10,28 +10,25 @@ from trainer import LitParadis
 from data.datamodule import Era5DataModule
 
 
-# forecast.py - Only showing the updated plot_forecast_map function
-
-
 def plot_forecast_map(
     output_data, true_data, datamodule, feature, cfg, level=None, temp_offset=0
 ):
     """Plot comparison maps for model output and ground truth."""
     dataset = datamodule.dataset
 
-    # Determine the feature index based on whether it's an atmospheric or surface variable
+    # Determine the feature index and name
     if level is not None:
-        # For atmospheric variables, first find the base feature index
+        # For atmospheric variables with pressure levels
         base_features = cfg.features.output.atmospheric
         level_index = cfg.features.pressure_levels.index(level)
         num_levels = len(cfg.features.pressure_levels)
-
-        # Calculate feature index: base_feature_index * num_levels + level_index
         base_feature_index = base_features.index(feature)
         feature_index = base_feature_index * num_levels + level_index
+        feature_name = f"{feature}_h{level}"
     else:
-        # For surface variables, use output_name_order
-        feature_index = dataset.output_name_order.index(feature)
+        # For surface variables
+        feature_index = dataset.dyn_output_features.index(feature)
+        feature_name = feature
 
     latitude = dataset.lat
     longitude = dataset.lon
@@ -41,7 +38,7 @@ def plot_forecast_map(
     output_plot = output_data[feature_index]
     true_plot = true_data[feature_index]
 
-    # Apply inverse transformations if needed
+    # Apply inverse transformations
     if feature == "specific_humidity":
         output_plot = dataset._denormalize_humidity(torch.tensor(output_plot)).numpy()
         true_plot = dataset._denormalize_humidity(torch.tensor(true_plot)).numpy()
@@ -50,20 +47,17 @@ def plot_forecast_map(
             torch.tensor(output_plot)
         ).numpy()
         true_plot = dataset._denormalize_precipitation(torch.tensor(true_plot)).numpy()
-    elif feature in dataset.var_stats:
-        # Apply regular z-score denormalization
-        stats = dataset.var_stats[feature]
+    elif feature_name in dataset.var_stats:
+        # Apply z-score denormalization using stored statistics
+        stats = dataset.var_stats[feature_name]
         output_plot = output_plot * stats["std"] + stats["mean"] - temp_offset
         true_plot = true_plot * stats["std"] + stats["mean"] - temp_offset
     else:
-        # Apply any scaling factors if defined
-        scaling = dataset.scaling_factors.get(feature, 1.0)
-        output_plot = output_plot * scaling - temp_offset
-        true_plot = true_plot * scaling - temp_offset
+        raise ValueError("Unkown feature")
 
     # Configure plot settings based on variable type
     if feature == "geopotential":
-        g = 9.80665
+        g = 9.80665  # gravitational acceleration
         output_plot = output_plot / g
         true_plot = true_plot / g
         cmap = "viridis"
@@ -97,7 +91,6 @@ def plot_forecast_map(
             levels = levels[levels >= 0]
         else:
             levels = numpy.linspace(0, 0.1, 10)  # Fallback for no precipitation
-
         clabel = "Precipitation [mm/6h]"
 
     else:

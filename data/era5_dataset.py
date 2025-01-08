@@ -8,7 +8,7 @@ import dask
 import numpy
 from omegaconf import DictConfig
 import torch
-import xarray as xr
+import xarray
 
 from data.forcings import time_forcings, toa_radiation
 
@@ -44,17 +44,27 @@ class ERA5Dataset(torch.utils.data.Dataset):
         ]
 
         # Lazy open this dataset
-        ds = xr.open_mfdataset(
+        ds = xarray.open_mfdataset(
             files, chunks={"time": self.forecast_steps + 1}, engine="zarr"
         )
 
-        # Lazy open statistics
-        ds_stats = xr.open_dataset(os.path.join(self.root_dir, "stats"), engine="zarr")
+        # Add stats to data array
+        ds_stats = xarray.open_dataset(
+            os.path.join(self.root_dir, "stats"), engine="zarr"
+        )
 
         # Store them in main dataset for easier processing
         ds["mean"] = ds_stats["mean"]
         ds["std"] = ds_stats["std"]
         ds["max"] = ds_stats["max"]
+        # Store statistics for each variable (for use in forecast.py)
+        self.var_stats = {}
+        for i, feature in enumerate(ds_stats.features.values):
+            self.var_stats[feature] = {
+                "mean": float(ds_stats["mean"].values[i]),
+                "std": float(ds_stats["std"].values[i]),
+            }
+
         ds["min"] = ds_stats["min"]
         ds.attrs["toa_radiation_std"] = ds_stats.attrs["toa_radiation_std"]
         ds.attrs["toa_radiation_mean"] = ds_stats.attrs["toa_radiation_mean"]
@@ -96,7 +106,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         )
 
         # Constant input variables
-        ds_constants = xr.open_dataset(
+        ds_constants = xarray.open_dataset(
             os.path.join(root_dir, "constants"), engine="zarr"
         )
 
@@ -172,6 +182,10 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
         # Load arrays into CPU memory
         input_data, true_data = dask.compute(input_data, true_data)
+
+        # # Add checks for invalid values
+        if numpy.isnan(input_data.data).any() or numpy.isnan(true_data.data).any():
+            raise ValueError("NaN values detected in input/output data")
 
         # Convert to tensors - data comes in [time, lat, lon, features]
         x = torch.tensor(input_data.data, dtype=self.dtype)
