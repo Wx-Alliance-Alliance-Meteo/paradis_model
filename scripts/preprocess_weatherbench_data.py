@@ -11,6 +11,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from data.forcings.toa_radiation import toa_radiation
 
+
 def main():
     """
     Main function to process WeatherBench data by stacking data,
@@ -233,11 +234,11 @@ def compute_statistics(output_base_dir):
 
     # Compute toa_solar radiation
     toa_rad = toa_radiation(ds.time.values, ds.latitude.values, ds.longitude.values)
-    toa_rad_mean = np.mean(toa_rad)
-    toa_rad_std = np.std(toa_rad)
+    toa_rad_mean = numpy.mean(toa_rad)
+    toa_rad_std = numpy.std(toa_rad)
 
     # Combine the mean and std into a single dataset
-    result_ds = xr.Dataset(
+    result_ds = xarray.Dataset(
         {
             "mean": mean_ds["data"],
             "std": std_ds["data"],
