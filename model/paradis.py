@@ -19,7 +19,7 @@ def CLP(dim_in, dim_out, mesh_size, kernel_size=3, activation=nn.SiLU):
     )
 
 
-class AdvectionOperator(nn.Module):
+class NeuralSemiLagrangian(nn.Module):
     """Implements the advection operator."""
 
     def __init__(self, dynamic_channels: int, static_channels: int, mesh_size: tuple):
@@ -125,8 +125,8 @@ class AdvectionOperator(nn.Module):
         )
 
 
-class DiffusionReactionOperator(nn.Module):
-    """Implements the diffusion-reaction operator."""
+class ForcingsIntegrator(nn.Module):
+    """Implements the time integration of the forcings along the Lagrangian trajectories."""
 
     def __init__(self, dynamic_channels: int, static_channels: int, mesh_size: tuple):
         super().__init__()
@@ -138,7 +138,7 @@ class DiffusionReactionOperator(nn.Module):
     def forward(
         self, dynamic: torch.Tensor, static: torch.Tensor, dt: float
     ) -> torch.Tensor:
-        """Apply diffusion-reaction operator for time step dt."""
+        """Integrate over a time step of size dt."""
 
         # Network processes both feature types but only outputs updattorch.cat([dynamic, static]es for dynamic features
         combined = torch.cat([dynamic, static], dim=1)
@@ -177,8 +177,8 @@ class Paradis(nn.Module):
         self.dt = cfg.model.base_dt / time_scale
 
         # Physics operators
-        self.advection = AdvectionOperator(hidden_dim, self.static_channels, mesh_size)
-        self.diffusion_reaction = DiffusionReactionOperator(
+        self.advection = NeuralSemiLagrangian(hidden_dim, self.static_channels, mesh_size)
+        self.solve_along_trajectories = ForcingsIntegrator(
             hidden_dim, self.static_channels, mesh_size
         )
 
@@ -200,13 +200,12 @@ class Paradis(nn.Module):
         # Project dynamic features
         z = self.dynamic_proj(x_dynamic)
 
-        # Apply physics operators
-        # Strictly speaking, this is Lie splitting, but another way to understand it is to consider
-        # that the advection discovers the characteristic curves where the PDE simplifies into
+        # Apply physics operators, analogous to the method of characteristics.
+        # The advection first discovers the characteristic curves where the PDE simplifies into
         # an ODE. This ODE resembles a diffusion-reaction problem, which can then be solved along
         # the characteristic curves by a neural network.
         z = self.advection(z, x_static, self.dt)
-        z = self.diffusion_reaction(z, x_static, self.dt)
+        z = self.solve_along_trajectories(z, x_static, self.dt)
 
         # Project to output space
         return self.output_proj(z)
