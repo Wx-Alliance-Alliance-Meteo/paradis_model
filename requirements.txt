@@ -7,6 +7,7 @@ tensorboard>=2.18.0
 numpy>=1.24.0
 zarr>=2.18.3
 xarray>=2025.1.0
+dask>=2024.12.1
 
 #Configuration
 hydra_core>=1.3.2
