@@ -1,5 +1,14 @@
 **PARADIS**: **P**hysically-informed **A**dvection, **R**eaction **A**nd **DI**ffusion on the **S**phere
 
+# TODO
+
+1. setup evaluatins | understand the format of the data (more)
+2. optional wandb support that removes lots of the cmd line output
+3. based on eval see what needs work!!!
+3. model edits
+    a. test different module architecutes -> ConvNext, Transformer (if too large Swin)
+    b. output the direct result after vector (need to understand where it would land on sphere)
+
 #### Key Features
 
 - **Physically-informed neural architecture:** Combines convolutional neural networks with operators akin to the advection, diffusion, and reaction (ADR) equation to handle complex physical phenomena.
@@ -33,6 +42,14 @@ and then preprocess it
 ```
 python scripts/preprocess_weatherbench_data.py -i /path/to/ERA5/5.625deg_wb2 -o /path/to/ERA5/5.65deg
 ```
+
+### Evaluations
+
+*Todo*
+
+### Wandb (support)
+
+*Todo*
 
 #### Acknowledgements
 
