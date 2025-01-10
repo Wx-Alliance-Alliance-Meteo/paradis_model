@@ -7,6 +7,7 @@ from torch import nn
 from model.padding import GeoCyclicPadding
 
 
+# TODO | add small latent space with normal distribution KL
 def CLP(dim_in, dim_out, mesh_size, kernel_size=3, activation=nn.SiLU):
     """Convolutional layer processor."""
     return nn.Sequential(
@@ -85,6 +86,10 @@ class NeuralSemiLagrangian(nn.Module):
         velocities = self.velocity_net(combined)
         u = velocities[:, 0]
         v = velocities[:, 1]
+        
+        # TODO | learn a distribution of velocities
+        # via the changing CLP to a have a small latent space with KL divergence loss normal distriubtion
+        # then sample a few times (not entirely sure what to do with the samples)
 
         # Compute departure points in a local rotated coordinate system in which the origin
         # of latitude and longitude is moved to the arrival point
