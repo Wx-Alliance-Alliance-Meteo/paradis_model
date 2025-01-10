@@ -4,10 +4,12 @@
 
 1. setup evaluatins | understand the format of the data (more)
 2. optional wandb support that removes lots of the cmd line output
-3. based on eval see what needs work!!!
-3. model edits
-    a. test different module architecutes -> ConvNext, Transformer (if too large Swin)
-    b. output the direct result after vector (need to understand where it would land on sphere)
+3. figure out what is causing the dataloading bottleneck during training time (profile)
+4. based on eval see what needs work
+5. model edits
+    1. test different module architecutes -> ConvNext, Transformer (if too large Swin)
+    2. output the direct result after vector (need to understand where it would land on sphere)
+        
 
 #### Key Features
 
