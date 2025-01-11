@@ -7,7 +7,6 @@ from torch import nn
 from model.padding import GeoCyclicPadding
 
 
-# TODO | add small latent space with normal distribution KL
 def CLP(dim_in, dim_out, mesh_size, kernel_size=3, activation=nn.SiLU):
     """Convolutional layer processor."""
     return nn.Sequential(
@@ -18,6 +17,57 @@ def CLP(dim_in, dim_out, mesh_size, kernel_size=3, activation=nn.SiLU):
         GeoCyclicPadding(kernel_size // 2),
         nn.Conv2d(dim_in, dim_out, kernel_size=kernel_size),
     )
+
+
+# CLP processor with structured latent
+class VariationalCLP(nn.Module):
+    """Convolutional layer processor with variational latent space."""
+    def __init__(self, dim_in, dim_out, mesh_size, kernel_size=3, 
+                 latent_dim=8, activation=nn.SiLU):
+        super().__init__()
+        
+        self.latent_dim = latent_dim
+        
+        # Encoder that produces pre latent
+        self.encoder = nn.Sequential(
+            GeoCyclicPadding(kernel_size // 2),
+            nn.Conv2d(dim_in, dim_in, kernel_size=kernel_size),
+            nn.LayerNorm([dim_in, mesh_size[0], mesh_size[1]]),
+            activation(),
+            nn.Conv2d(dim_in, 2 * latent_dim, kernel_size=1)  # project down
+        )
+        
+        self.mu = nn.Sequential(
+            nn.Linear(latent_dim, 4 * latent_dim),
+            activation(),
+            nn.Linear(4 * latent_dim, latent_dim)
+        )
+        self.logvar = nn.Sequential(
+            nn.Linear(latent_dim, 4 * latent_dim),
+            activation(),
+            nn.Linear(4 * latent_dim, latent_dim)
+        )
+        
+        # Decoder that takes the concat of the logvar and mu
+        self.decoder = nn.Sequential(
+            nn.Conv2d(latent_dim, dim_in, kernel_size=1), # project up
+            GeoCyclicPadding(kernel_size // 2),
+            nn.Conv2d(dim_in, dim_in, kernel_size=kernel_size),
+            nn.LayerNorm([dim_in, mesh_size[0], mesh_size[1]]),
+            activation(),
+            GeoCyclicPadding(kernel_size // 2),
+            nn.Conv2d(dim_in, dim_out, kernel_size=kernel_size),
+        )
+
+    def reparameterize(self, mean, log_var):
+        """Reparameterization trick to sample from N(mean, var) while remaining differentiable."""
+        std = torch.exp(0.5 * log_var)
+        eps = torch.randn_like(std)
+        return mean + eps * std
+    
+    def forward(self, x):
+        # TODO
+        pass
 
 
 class NeuralSemiLagrangian(nn.Module):
