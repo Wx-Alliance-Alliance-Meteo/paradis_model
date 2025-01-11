@@ -37,6 +37,7 @@ class VariationalCLP(nn.Module):
             nn.Conv2d(dim_in, 2 * latent_dim, kernel_size=1)  # project down
         )
         
+        # latent_dim is placeholder value right now. DONT FORGET TO CHANGE! or not
         self.mu = nn.Sequential(
             nn.Linear(latent_dim, 4 * latent_dim),
             activation(),
