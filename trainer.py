@@ -28,6 +28,8 @@ class LitParadis(L.LightningModule):
         self.cfg = cfg
         self.variational = cfg.model.variational
         self.beta = cfg.model.get("beta")
+        
+        # TODO : add support for KL cyclic annealing
 
         print(
             f"Number of trainable parameters: {sum(p.numel() for p in self.model.parameters() if p.requires_grad):,}"

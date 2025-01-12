@@ -9,6 +9,7 @@
 5. model edits
     1. test different module architecutes -> ConvNext, Transformer (if too large Swin)
     2. output the direct result after vector (need to understand where it would land on sphere)
+    3. add support for cyclic KL annealing
         
 
 #### Key Features
