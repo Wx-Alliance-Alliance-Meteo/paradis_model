@@ -19,45 +19,54 @@ def CLP(dim_in, dim_out, mesh_size, kernel_size=3, activation=nn.SiLU):
     )
 
 
+class CLPBlock(nn.Module):
+    def __init__(self, input_dim, output_dim, mesh_size, kernel_size=3, activation=nn.SiLU):
+        super().__init__()
+        self.layers = nn.Sequential(
+            GeoCyclicPadding(kernel_size // 2),
+            nn.Conv2d(input_dim, output_dim, kernel_size=kernel_size),
+            nn.LayerNorm([output_dim, mesh_size[0], mesh_size[1]]),
+            activation()
+        )
+        
+    def forward(self, x):
+        return self.layers(x)
+
+
 # CLP processor with structured latent
 class VariationalCLP(nn.Module):
     """Convolutional layer processor with variational latent space."""
     def __init__(self, dim_in, dim_out, mesh_size, kernel_size=3, 
-                 latent_dim=8, activation=nn.SiLU):
+                 latent_dim=8, activation=nn.SiLU, expansion_factor=8):
         super().__init__()
         
         self.latent_dim = latent_dim
+        self.expansion_factor = expansion_factor
         
         # Encoder that produces pre latent
         self.encoder = nn.Sequential(
-            GeoCyclicPadding(kernel_size // 2),
-            nn.Conv2d(dim_in, dim_in, kernel_size=kernel_size),
-            nn.LayerNorm([dim_in, mesh_size[0], mesh_size[1]]),
-            activation(),
+            CLPBlock(dim_in, dim_in, mesh_size),
             nn.Conv2d(dim_in, 2 * latent_dim, kernel_size=1)  # project down
         )
         
         # Small projection up and down in latent
         self.mu = nn.Sequential(
-            nn.Conv2d(latent_dim, 4 * latent_dim, kernel_size=1),
-            nn.LayerNorm([4 * latent_dim, mesh_size[0], mesh_size[1]]),
+            nn.Conv2d(latent_dim, self.expansion_factor * latent_dim, kernel_size=1),
+            nn.LayerNorm([self.expansion_factor * latent_dim, mesh_size[0], mesh_size[1]]),
             activation(),
-            nn.Conv2d(4 * latent_dim, latent_dim, kernel_size=1)
+            nn.Conv2d(self.expansion_factor * latent_dim, latent_dim, kernel_size=1)
         )
         self.logvar = nn.Sequential(
-            nn.Conv2d(latent_dim, 4 * latent_dim, kernel_size=1),
-            nn.LayerNorm([4 * latent_dim, mesh_size[0], mesh_size[1]]),
+            nn.Conv2d(latent_dim, self.expansion_factor * latent_dim, kernel_size=1),
+            nn.LayerNorm([self.expansion_factor * latent_dim, mesh_size[0], mesh_size[1]]),
             activation(),
-            nn.Conv2d(4 * latent_dim, latent_dim, kernel_size=1)
+            nn.Conv2d(self.expansion_factor * latent_dim, latent_dim, kernel_size=1)
         )
         
         # Decoder that takes the concat of the logvar and mu
         self.decoder = nn.Sequential(
             nn.Conv2d(latent_dim, dim_in, kernel_size=1), # project up
-            GeoCyclicPadding(kernel_size // 2),
-            nn.Conv2d(dim_in, dim_in, kernel_size=kernel_size),
-            nn.LayerNorm([dim_in, mesh_size[0], mesh_size[1]]),
-            activation(),
+            CLPBlock(dim_in, dim_in, mesh_size),
             GeoCyclicPadding(kernel_size // 2),
             nn.Conv2d(dim_in, dim_out, kernel_size=kernel_size),
         )
@@ -68,27 +77,52 @@ class VariationalCLP(nn.Module):
         eps = torch.randn_like(std)
         return mean + eps * std
     
-    def forward(self, x):
-        # TODO
-        pass
+    def forward(self, x, num_samples=1):
+        batch_size = x.shape[0]
+
+        pre_latent = self.encoder(x)
+
+        # Split into two groups for mu and logvar networks
+        pre_mu, pre_logvar = torch.chunk(pre_latent, 2, dim=1)
+
+        # Get distribution parameters from separate networks
+        mean = self.mu(pre_mu)
+        log_var = self.logvar(pre_logvar)
+
+        # Calculate KL divergence loss against normal
+        kl_loss = -0.5 * torch.sum(1 + log_var - mean.pow(2) - log_var.exp(), dim=1)
+        kl_loss = kl_loss.mean()  # Average over batch
+
+        # Sample from latent and decode to velocity
+        z = self.reparameterize(mean, log_var)
+        output = self.decoder(z)
+
+        return output, kl_loss
 
 
 class NeuralSemiLagrangian(nn.Module):
     """Implements the advection operator."""
 
-    def __init__(self, dynamic_channels: int, static_channels: int, mesh_size: tuple):
+    def __init__(self, dynamic_channels: int, static_channels: int, mesh_size: tuple, variational: bool):
         super().__init__()
 
         # For cubic interpolation
         self.padding = 1
+        
+        # Flag for variational variant to be used in forward
+        self.variational = variational
 
         # Grid spacing in radians
         self.d_lat = torch.pi / (mesh_size[0] - 1)
         self.d_lon = 2 * torch.pi / mesh_size[1]
 
+        # Optional variational CLP processor
         # Neural network that will learn an effective velocity along the trajectory
         # Output 2 channels, for u and v
-        self.velocity_net = CLP(dynamic_channels + static_channels, 2, mesh_size)
+        if not self.variational:
+            self.velocity_net = CLP(dynamic_channels + static_channels, 2, mesh_size)
+        else:
+            self.velocity_net = VariationalCLP(dynamic_channels + static_channels, 2, mesh_size)
 
         # Create coordinate grids
         lat = torch.linspace(-torch.pi / 2, torch.pi / 2, mesh_size[0])
@@ -136,7 +170,11 @@ class NeuralSemiLagrangian(nn.Module):
         combined = torch.cat([dynamic, static], dim=1)
 
         # Get learned velocities
-        velocities = self.velocity_net(combined)
+        if self.variational:
+            velocities, kl_loss = self.velocity_net(combined)
+        else:
+            velocities = self.velocity_net(combined)
+            
         u = velocities[:, 0]
         v = velocities[:, 1]
         
@@ -174,6 +212,15 @@ class NeuralSemiLagrangian(nn.Module):
         dynamic_padded = GeoCyclicPadding(self.padding)(dynamic)
 
         # Interpolate
+        if self.variational:
+            return (torch.nn.functional.grid_sample(
+                dynamic_padded,
+                grid,
+                align_corners=True,
+                mode="bicubic",
+                padding_mode="border",
+            ), kl_loss)
+        
         return torch.nn.functional.grid_sample(
             dynamic_padded,
             grid,
@@ -215,6 +262,9 @@ class Paradis(nn.Module):
         mesh_size = [datamodule.lat_size, datamodule.lon_size]
 
         num_levels = len(cfg.features.pressure_levels)
+        
+        # Flag for variational
+        self.variational = cfg.model.variational
 
         # Get channel sizes
         self.dynamic_channels = len(
@@ -235,7 +285,7 @@ class Paradis(nn.Module):
         self.dt = cfg.model.base_dt / time_scale
 
         # Physics operators
-        self.advection = NeuralSemiLagrangian(hidden_dim, self.static_channels, mesh_size)
+        self.advection = NeuralSemiLagrangian(hidden_dim, self.static_channels, mesh_size, self.variational)
         self.solve_along_trajectories = ForcingsIntegrator(
             hidden_dim, self.static_channels, mesh_size
         )
@@ -262,8 +312,15 @@ class Paradis(nn.Module):
         # The advection first discovers the characteristic curves where the PDE simplifies into
         # an ODE. This ODE resembles a diffusion-reaction problem, which can then be solved along
         # the characteristic curves by a neural network.
-        z = self.advection(z, x_static, self.dt)
+        if self.variational:
+            z, kl_loss = self.advection(z, x_static, self.dt)
+        else:
+            z = self.advection(z, x_static, self.dt)
+            
         z = self.solve_along_trajectories(z, x_static, self.dt)
 
         # Project to output space
+        if self.variational:
+            return (self.output_proj(z), kl_loss)
+        
         return self.output_proj(z)
