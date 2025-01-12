@@ -37,16 +37,18 @@ class VariationalCLP(nn.Module):
             nn.Conv2d(dim_in, 2 * latent_dim, kernel_size=1)  # project down
         )
         
-        # latent_dim is placeholder value right now. DONT FORGET TO CHANGE! or not
+        # Small projection up and down in latent
         self.mu = nn.Sequential(
-            nn.Linear(latent_dim, 4 * latent_dim),
+            nn.Conv2d(latent_dim, 4 * latent_dim, kernel_size=1),
+            nn.LayerNorm([4 * latent_dim, mesh_size[0], mesh_size[1]]),
             activation(),
-            nn.Linear(4 * latent_dim, latent_dim)
+            nn.Conv2d(4 * latent_dim, latent_dim, kernel_size=1)
         )
         self.logvar = nn.Sequential(
-            nn.Linear(latent_dim, 4 * latent_dim),
+            nn.Conv2d(latent_dim, 4 * latent_dim, kernel_size=1),
+            nn.LayerNorm([4 * latent_dim, mesh_size[0], mesh_size[1]]),
             activation(),
-            nn.Linear(4 * latent_dim, latent_dim)
+            nn.Conv2d(4 * latent_dim, latent_dim, kernel_size=1)
         )
         
         # Decoder that takes the concat of the logvar and mu
