@@ -36,15 +36,6 @@ class NeuralSemiLagrangian(nn.Module):
         # Output 2 channels, for u and v
         self.velocity_net = CLP(dynamic_channels + static_channels, 2, mesh_size)
 
-        # Create coordinate grids
-        lat = torch.linspace(-torch.pi / 2, torch.pi / 2, mesh_size[0])
-        lon = torch.linspace(0, 2 * torch.pi, mesh_size[1])
-        lat_grid, lon_grid = torch.meshgrid(lat, lon, indexing="ij")
-
-        # Register buffers for coordinates
-        self.register_buffer("lat_grid", lat_grid.clone())
-        self.register_buffer("lon_grid", lon_grid.clone())
-
     def _transform_to_latlon(
         self,
         lat_prime: torch.Tensor,
@@ -79,6 +70,10 @@ class NeuralSemiLagrangian(nn.Module):
         """Compute advection using rotated coordinate system."""
         batch_size = dynamic.shape[0]
 
+        # Extract lat/lon from static features (last 2 channels)
+        lat_grid = static[:, -2, :, :] 
+        lon_grid = static[:, -1, :, :]
+
         combined = torch.cat([dynamic, static], dim=1)
 
         # Get learned velocities
@@ -93,7 +88,7 @@ class NeuralSemiLagrangian(nn.Module):
 
         # Transform from rotated coordinates back to standard coordinates
         lat_dep, lon_dep = self._transform_to_latlon(
-            lat_prime, lon_prime, self.lat_grid, self.lon_grid
+            lat_prime, lon_prime, lat_grid, lon_grid
         )
 
         # Compute the dimensions of the padded input
