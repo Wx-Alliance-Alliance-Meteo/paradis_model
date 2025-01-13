@@ -1,4 +1,4 @@
-"""Physically-informed neural architecture for the weather forecasting model."""
+"""Physically-inspired neural architecture for the weather forecasting model."""
 
 import typing
 import torch
@@ -20,17 +20,13 @@ def CLP(dim_in, dim_out, mesh_size, kernel_size=3, activation=nn.SiLU):
 
 
 class NeuralSemiLagrangian(nn.Module):
-    """Implements the advection operator."""
+    """Implements the semi-Lagrangian advection."""
 
     def __init__(self, dynamic_channels: int, static_channels: int, mesh_size: tuple):
         super().__init__()
 
         # For cubic interpolation
         self.padding = 1
-
-        # Grid spacing in radians
-        self.d_lat = torch.pi / (mesh_size[0] - 1)
-        self.d_lon = 2 * torch.pi / mesh_size[1]
 
         # Neural network that will learn an effective velocity along the trajectory
         # Output 2 channels, for u and v
@@ -44,17 +40,21 @@ class NeuralSemiLagrangian(nn.Module):
         lon_p: torch.Tensor,
     ) -> tuple:
         """Transform from local rotated coordinates back to standard latlon coordinates."""
+        # Pre-compute trigonometric functions
+        sin_lat_prime = torch.sin(lat_prime)
+        cos_lat_prime = torch.cos(lat_prime)
+        sin_lon_prime = torch.sin(lon_prime)
+        cos_lon_prime = torch.cos(lon_prime)
+        sin_lat_p = torch.sin(lat_p)
+        cos_lat_p = torch.cos(lat_p)
+
         # Compute standard latitude
-        sin_lat = torch.sin(lat_prime) * torch.cos(lat_p) + torch.cos(
-            lat_prime
-        ) * torch.cos(lon_prime) * torch.sin(lat_p)
+        sin_lat = sin_lat_prime * cos_lat_p + cos_lat_prime * cos_lon_prime * sin_lat_p
         lat = torch.arcsin(torch.clamp(sin_lat, -1 + 1e-7, 1 - 1e-7))
 
         # Compute standard longitude
-        num = torch.cos(lat_prime) * torch.sin(lon_prime)
-        den = torch.cos(lat_prime) * torch.cos(lon_prime) * torch.cos(
-            lat_p
-        ) - torch.sin(lat_prime) * torch.sin(lat_p)
+        num = cos_lat_prime * sin_lon_prime
+        den = cos_lat_prime * cos_lon_prime * cos_lat_p - sin_lat_prime * sin_lat_p
 
         lon = lon_p + torch.atan2(num, den)
 
@@ -71,7 +71,7 @@ class NeuralSemiLagrangian(nn.Module):
         batch_size = dynamic.shape[0]
 
         # Extract lat/lon from static features (last 2 channels)
-        lat_grid = static[:, -2, :, :] 
+        lat_grid = static[:, -2, :, :]
         lon_grid = static[:, -1, :, :]
 
         combined = torch.cat([dynamic, static], dim=1)
@@ -172,7 +172,9 @@ class Paradis(nn.Module):
         self.dt = cfg.model.base_dt / time_scale
 
         # Physics operators
-        self.advection = NeuralSemiLagrangian(hidden_dim, self.static_channels, mesh_size)
+        self.advection = NeuralSemiLagrangian(
+            hidden_dim, self.static_channels, mesh_size
+        )
         self.solve_along_trajectories = ForcingsIntegrator(
             hidden_dim, self.static_channels, mesh_size
         )
