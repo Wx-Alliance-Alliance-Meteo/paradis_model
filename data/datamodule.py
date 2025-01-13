@@ -25,7 +25,7 @@ class Era5DataModule(L.LightningDataModule):
 
         self.has_setup_been_called = {"fit": False, "test": False}
 
-    def setup(self, stage=None):
+    def setup(self, stage=None, seed: int = 42):
         if stage == "fit" and not self.has_setup_been_called["fit"]:
             logging.info(f"Loading dataset from {self.root_dir}")
             logging.info(f"Date range: {self.start_date} to {self.end_date}")
@@ -53,7 +53,7 @@ class Era5DataModule(L.LightningDataModule):
             # Split into training and validation sets
             logging.info("Splitting dataset into train and validation sets")
             self.train_dataset, self.val_dataset = split_dataset(
-                era5_dataset, train_ratio=self.train_ratio
+                era5_dataset, train_ratio=self.train_ratio, seed=seed
             )
 
             self.has_setup_been_called["fit"] = True

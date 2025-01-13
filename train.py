@@ -1,5 +1,6 @@
 """Training script for the model."""
 
+import random
 import logging
 import hydra
 import torch
@@ -17,11 +18,20 @@ from data.datamodule import Era5DataModule
 def main(cfg: DictConfig):
     """Train the model on ERA5 dataset."""
 
+    # Set random seeds for reproducibility
+    seed = 42  # This model will answer the ultimate question about life, the universe, and everything
+
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
     # Instantiate data module
     datamodule = Era5DataModule(cfg)
 
     # Early setup call for datamodule attribute access
-    datamodule.setup(stage="fit")
+    datamodule.setup(stage="fit", seed=seed)
 
     # Initialize model
     litmodel = LitParadis(datamodule, cfg)
