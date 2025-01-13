@@ -111,24 +111,28 @@ class ERA5Dataset(torch.utils.data.Dataset):
             os.path.join(root_dir, "constants"), engine="zarr"
         )
 
-        # Normalize all static variables if desired
-        for var in features_cfg.input.constants:
-            ds_constants[var] = (
-                ds_constants[var] - ds_constants[var].attrs["mean"]
-            ) / ds_constants[var].attrs["std"]
+        # Convert lat/lon to radians
+        lat_rad = torch.from_numpy(numpy.deg2rad(self.lat)).to(self.dtype)
+        lon_rad = torch.from_numpy(numpy.deg2rad(self.lon)).to(self.dtype)
+        lat_rad_grid, lon_rad_grid = torch.meshgrid(lat_rad, lon_rad, indexing="ij")
 
-        # Constant data will live in CPU memory
-        stacked_data = torch.stack(
-            [
-                torch.from_numpy(ds_constants[var].data)
-                for var in features_cfg.input.constants
-            ],
-            dim=0,
-        ).to(self.dtype)
+        # Get surface geopotential and normalize it
+        normalized_geopotential = (
+            torch.from_numpy(ds_constants["geopotential_at_surface"].data)
+            - ds_constants["geopotential_at_surface"].attrs["mean"]
+        ) / ds_constants["geopotential_at_surface"].attrs["std"]
 
-        # Make sure constant data has the right shape for multiple forecast steps
+        # Get land-sea mask (no normalization needed)
+        land_sea_mask = torch.from_numpy(ds_constants["land_sea_mask"].data).to(
+            self.dtype
+        )
+
+        # Stack all constant features together
         self.constant_data = (
-            stacked_data.permute(1, 2, 0)
+            torch.stack(
+                [normalized_geopotential, land_sea_mask, lat_rad_grid, lon_rad_grid]
+            )
+            .permute(1, 2, 0)
             .reshape(self.lat_size, self.lon_size, -1)
             .unsqueeze(0)
             .expand(self.forecast_steps, -1, -1, -1)
@@ -380,9 +384,10 @@ class ERA5Dataset(torch.utils.data.Dataset):
             Normalized specific humidity data
         """
         # Apply normalization
-        q_norm = (numpy.log(numpy.clip(data, 0, self.q_max) + self.eps) - numpy.log(self.q_min)) / (
-            numpy.log(self.q_max) - numpy.log(self.q_min)
-        )
+        q_norm = (
+            numpy.log(numpy.clip(data, 0, self.q_max) + self.eps)
+            - numpy.log(self.q_min)
+        ) / (numpy.log(self.q_max) - numpy.log(self.q_min))
 
         return q_norm
 
@@ -428,7 +433,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         return numpy.clip(numpy.exp(data) - 1e-6, a_min=0, a_max=None)
 
 
-def split_dataset(dataset, train_ratio=0.8):
+def split_dataset(dataset, train_ratio=0.8, seed: int = 42):
     """Split dataset into training and validation sets.
 
     Args:
@@ -438,7 +443,9 @@ def split_dataset(dataset, train_ratio=0.8):
     Returns:
         tuple: (train_dataset, val_dataset)
     """
+    generator = torch.Generator().manual_seed(seed)
     split_idx = int(len(dataset) * train_ratio)
-    train_dataset = torch.utils.data.Subset(dataset, range(0, split_idx))
-    val_dataset = torch.utils.data.Subset(dataset, range(split_idx, len(dataset)))
+    indices = torch.randperm(len(dataset), generator=generator)
+    train_dataset = torch.utils.data.Subset(dataset, indices[:split_idx])
+    val_dataset = torch.utils.data.Subset(dataset, indices[split_idx:])
     return train_dataset, val_dataset

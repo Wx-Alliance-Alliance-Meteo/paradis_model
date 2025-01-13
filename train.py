@@ -1,5 +1,6 @@
 """Training script for the model."""
 
+import random
 import logging
 import hydra
 import torch
@@ -17,11 +18,15 @@ from data.datamodule import Era5DataModule
 def main(cfg: DictConfig):
     """Train the model on ERA5 dataset."""
 
+    # Set random seeds for reproducibility
+    seed = 42  # This model will answer the ultimate question about life, the universe, and everything
+    L.seed_everything(seed, workers=True)
+
     # Instantiate data module
     datamodule = Era5DataModule(cfg)
 
     # Early setup call for datamodule attribute access
-    datamodule.setup(stage="fit")
+    datamodule.setup(stage="fit", seed=seed)
 
     # Initialize model
     litmodel = LitParadis(datamodule, cfg)
@@ -44,14 +49,23 @@ def main(cfg: DictConfig):
             )
         )
 
-    # Keep the last k checkpoints
+    # Keep the last 10 checkpoints and the top "best" checkpoint
     callbacks.append(
         ModelCheckpoint(
-            monitor="val_loss",
             filename="{epoch}",  # Filename format for the checkpoints
+            monitor="train_loss",
             save_top_k=10,  # Keep the last 10 checkpoints
             save_last=True,  # Always save the most recent checkpoint
             every_n_epochs=1,  # Save at the end of every epoch
+        )
+    )
+
+    callbacks.append(
+        ModelCheckpoint(
+            filename="best",
+            monitor="val_loss",
+            mode="min",
+            save_top_k=1,  # Keep only the best checkpoint
         )
     )
 

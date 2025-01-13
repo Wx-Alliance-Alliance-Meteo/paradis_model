@@ -93,7 +93,7 @@ class LitParadis(L.LightningModule):
         if cfg.model.compile:
             self.model = torch.compile(
                 self.model,
-                mode="reduce-overhead",
+                mode="default",
                 fullgraph=True,
                 dynamic=False,
                 backend="inductor",

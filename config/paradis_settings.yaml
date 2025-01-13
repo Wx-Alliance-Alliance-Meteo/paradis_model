@@ -8,7 +8,7 @@ model:
 
 trainer:
   lr: 5.0e-4             # Learning rate (LR) for the optimizer
-  weight_decay: 0.01     # Weight decay coefficient for regularization
+  weight_decay: 1.e-5    # Weight decay coefficient for regularization
   gradient_clip_val: -1  # Gradient clipping value, set to -1 to disable
   max_epochs: 100
   num_devices: 1
@@ -77,15 +77,17 @@ features:
       - 2m_temperature
       - mean_sea_level_pressure
       - total_precipitation_6hr
-    constants:
-      - geopotential_at_surface
-      - land_sea_mask
     forcings:
       - toa_incident_solar_radiation
       - sin_time_of_day
       - cos_time_of_day
       - sin_year_progress
       - cos_year_progress
+    constants:
+      - geopotential_at_surface
+      - land_sea_mask
+      - latitude
+      - longitude
 
   output:
     atmospheric: ${features.base.atmospheric} # Same as input and base
