@@ -26,7 +26,7 @@ def main(cfg: DictConfig):
     datamodule = Era5DataModule(cfg)
 
     # Early setup call for datamodule attribute access
-    datamodule.setup(stage="fit", seed=seed)
+    datamodule.setup(stage="fit")
 
     # Initialize model
     litmodel = LitParadis(datamodule, cfg)
