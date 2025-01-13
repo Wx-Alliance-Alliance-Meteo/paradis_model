@@ -1,10 +1,8 @@
 """Forecast script for the model."""
 
 import logging
-import re
 
 import hydra
-import lightning as L
 import matplotlib.pyplot as plt
 import numpy
 from omegaconf import DictConfig
