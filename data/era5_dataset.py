@@ -79,6 +79,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.lon_size = len(self.lon)
 
         # The number of time instances in the dataset represents its length
+        self.time = ds.time.values
         self.length = ds.time.size
 
         # Store the size of the grid (lat * lon)
@@ -132,6 +133,9 @@ class ERA5Dataset(torch.utils.data.Dataset):
             .unsqueeze(0)
             .expand(self.forecast_steps, -1, -1, -1)
         )
+
+        # Store these for access in forecaster
+        self.ds_constants = ds_constants
 
         # Order them so that common features are placed first
         self.dyn_input_features = common_features + list(
@@ -359,6 +363,9 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
     def _normalize_standard(self, input_data, mean, std):
         return (input_data - mean) / std
+
+    def _denormalize_standard(self, norm_data, mean, std):
+        return norm_data * std + mean
 
     def _normalize_humidity(self, data: numpy.ndarray) -> numpy.ndarray:
         """Normalize specific humidity using physically-motivated logarithmic transform.

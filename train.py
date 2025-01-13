@@ -40,6 +40,7 @@ def main(cfg: DictConfig):
                 monitor="val_loss",
                 mode="min",
                 patience=cfg.trainer.early_stopping.patience,
+                check_finite=True, # Make sure validation has not gone to nan
             )
         )
 
@@ -71,12 +72,12 @@ def main(cfg: DictConfig):
         max_epochs=cfg.trainer.max_epochs,
         gradient_clip_val=cfg.trainer.gradient_clip_val,
         gradient_clip_algorithm="norm",
-        log_every_n_steps=1,
+        log_every_n_steps=20,
         callbacks=callbacks,
         precision=precision,
         enable_progress_bar=not cfg.trainer.print_losses,
-        enable_model_summary=not cfg.trainer.print_losses,
-        logger=not cfg.trainer.print_losses,
+        enable_model_summary=True,
+        logger=True,
     )
 
     # Train model

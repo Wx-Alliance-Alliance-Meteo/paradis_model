@@ -1,11 +1,16 @@
 """Forecast script for the model."""
 
 import logging
+import re
+
 import hydra
-import torch
+import lightning as L
 import matplotlib.pyplot as plt
 import numpy
 from omegaconf import DictConfig
+import torch
+import xarray
+
 from trainer import LitParadis
 from data.datamodule import Era5DataModule
 
@@ -34,26 +39,9 @@ def plot_forecast_map(
     longitude = dataset.lon
     longitude, latitude = numpy.meshgrid(longitude, latitude)
 
-    # Get the raw data
+    # Get the forecast data
     output_plot = output_data[feature_index]
     true_plot = true_data[feature_index]
-
-    # Apply inverse transformations
-    if feature == "specific_humidity":
-        output_plot = dataset._denormalize_humidity(torch.tensor(output_plot)).numpy()
-        true_plot = dataset._denormalize_humidity(torch.tensor(true_plot)).numpy()
-    elif feature == "total_precipitation_6hr":
-        output_plot = dataset._denormalize_precipitation(
-            torch.tensor(output_plot)
-        ).numpy()
-        true_plot = dataset._denormalize_precipitation(torch.tensor(true_plot)).numpy()
-    elif feature_name in dataset.var_stats:
-        # Apply z-score denormalization using stored statistics
-        stats = dataset.var_stats[feature_name]
-        output_plot = output_plot * stats["std"] + stats["mean"] - temp_offset
-        true_plot = true_plot * stats["std"] + stats["mean"] - temp_offset
-    else:
-        raise ValueError("Unkown feature")
 
     # Configure plot settings based on variable type
     if feature == "geopotential":
@@ -147,10 +135,92 @@ def plot_forecast_map(
     plt.close(plt.gcf())
 
 
+def denormalize_ground_truth(ground_truth, dataset):
+    """Denormalize the ground truth data."""
+    ground_truth[:, :, dataset.norm_precip_in] = dataset._denormalize_precipitation(
+        ground_truth[:, :, dataset.norm_precip_in]
+    )
+    ground_truth[:, :, dataset.norm_humidity_in] = dataset._denormalize_humidity(
+        ground_truth[:, :, dataset.norm_humidity_in]
+    )
+    ground_truth[:, :, dataset.norm_zscore_in] = dataset._denormalize_standard(
+        torch.tensor(ground_truth[:, :, dataset.norm_zscore_in]),
+        dataset.input_mean.view(-1, 1, 1),
+        dataset.input_std.view(-1, 1, 1),
+    )
+
+
+def denormalize_forecast(output_forecast, dataset):
+    """Denormalize the forecast data."""
+    output_forecast[:, :, dataset.norm_precip_out] = dataset._denormalize_precipitation(
+        output_forecast[:, :, dataset.norm_precip_out]
+    )
+    output_forecast[:, :, dataset.norm_humidity_out] = dataset._denormalize_humidity(
+        output_forecast[:, :, dataset.norm_humidity_out]
+    )
+    output_forecast[:, :, dataset.norm_zscore_out] = dataset._denormalize_standard(
+        torch.tensor(output_forecast[:, :, dataset.norm_zscore_out]),
+        dataset.output_mean.view(-1, 1, 1),
+        dataset.output_std.view(-1, 1, 1),
+    )
+
+
+def save_results_to_zarr(
+    data,
+    atmospheric_vars,
+    surface_vars,
+    constant_vars,
+    datamodule,
+    pressure_levels,
+    filename,
+):
+    """Save results to a Zarr file."""
+    data_vars = {}
+    dataset = datamodule.dataset
+    num_levels = len(pressure_levels)
+
+    # Prepare atmospheric variables
+    atm_dims = ["time", "prediction_timedelta", "level", "latitude", "longitude"]
+    for i, feature in enumerate(atmospheric_vars):
+        data_vars[feature] = (
+            atm_dims,
+            data[:, :, i * num_levels : (i + 1) * num_levels],
+        )
+
+    # Prepare surface variables
+    sur_dims = ["time", "prediction_timedelta", "latitude", "longitude"]
+    for i, feature in enumerate(surface_vars):
+        data_vars[feature] = (
+            sur_dims,
+            data[:, :, len(atmospheric_vars) * num_levels + i],
+        )
+
+    # Prepare constant variables
+    con_dims = ["latitude", "longitude"]
+    for i, feature in enumerate(constant_vars):
+        data_vars[feature] = (con_dims, dataset.ds_constants[feature].data)
+
+    # Define coordinates
+    coords = {
+        "latitude": dataset.lat,
+        "longitude": dataset.lon,
+        "time": dataset.time[: data.shape[0]],
+        "level": pressure_levels,
+        "prediction_timedelta": (numpy.arange(data.shape[1]) + 1)
+        * numpy.timedelta64(6 * 3600 * 10**9, "ns"),
+    }
+
+    # Save to Zarr
+    xarray.Dataset(data_vars=data_vars, coords=coords).to_zarr(
+        filename, consolidated=True, mode="w"
+    )
+
+
 @hydra.main(version_base=None, config_path="config/", config_name="paradis_settings")
 def main(cfg: DictConfig):
     """Generate forecasts using a trained model."""
-    # Set device based on configuration
+
+    # Set device
     device = torch.device(
         "cuda"
         if torch.cuda.is_available() and cfg.trainer.accelerator == "gpu"
@@ -159,9 +229,23 @@ def main(cfg: DictConfig):
 
     # Initialize data module
     datamodule = Era5DataModule(cfg)
-    datamodule.setup(stage="fit")
+    datamodule.setup(stage="test")
+    dataset = datamodule.dataset
 
-    # Initialize and load model
+    # Extract features and dimensions
+    atmospheric_vars = cfg.features.output.atmospheric
+    surface_vars = cfg.features.output.surface
+    constant_vars = cfg.features.input.constants
+    pressure_levels = cfg.features.pressure_levels
+
+    num_levels = len(pressure_levels)
+    num_atm_features = len(atmospheric_vars) * num_levels
+    num_sur_features = len(surface_vars)
+    num_features = num_atm_features + num_sur_features
+    num_time_instances = len(dataset)
+    num_forecast_steps = cfg.model.forecast_steps
+
+    # Load model
     litmodel = LitParadis(datamodule, cfg)
     if cfg.model.checkpoint_path:
         checkpoint = torch.load(cfg.model.checkpoint_path, weights_only=True)
@@ -171,25 +255,82 @@ def main(cfg: DictConfig):
             "checkpoint_path must be specified in the config for forecasting"
         )
 
-    litmodel = litmodel.to(device)
+    litmodel.to(device).eval()
 
-    # Get a sample from the dataset
-    input_data, true_data = datamodule.train_dataset[0]
-    input_data = input_data.unsqueeze(0).to(device)
+    # Initialize forecast and ground truth arrays
+    output_forecast = numpy.empty(
+        (
+            num_time_instances,
+            num_forecast_steps,
+            num_features,
+            dataset.lat_size,
+            dataset.lon_size,
+        )
+    )
+    ground_truth = numpy.empty_like(output_forecast)
 
     # Run forecast
+    logging.info("Generating forecast...")
     with torch.no_grad():
-        input_data_step = input_data[:, 0]
-        for step in range(cfg.model.forecast_steps):
-            output_data = litmodel(input_data_step, torch.tensor(step, device=device))
-            if step + 1 < cfg.model.forecast_steps:
-                input_data_step = litmodel._autoregression_input_from_output(
-                    input_data[:, step + 1], output_data
+        start_ind = 0
+        for input_data, true_data in datamodule.test_dataloader():
+            batch_size = input_data.shape[0]
+            input_data_step = input_data[:, 0].to(device)
+
+            for step in range(num_forecast_steps):
+                output_data = litmodel(
+                    input_data_step, torch.tensor(step, device=device)
+                )
+                output_forecast[start_ind : start_ind + batch_size, step] = (
+                    output_data.cpu().numpy()
+                )
+                ground_truth[start_ind : start_ind + batch_size, step] = (
+                    true_data[:, step].cpu().numpy()
                 )
 
-    # Move data to CPU for plotting
-    output_data = output_data.squeeze(0).cpu().numpy()
-    true_data = true_data[cfg.model.forecast_steps - 1].cpu().numpy()
+                if step + 1 < num_forecast_steps:
+                    input_data_step = litmodel._autoregression_input_from_output(
+                        input_data[:, step + 1], output_data
+                    ).to(device)
+
+            start_ind += batch_size
+
+    logging.info("Preparing data for Weatherbench...")
+
+    # Denormalize data
+    denormalize_ground_truth(ground_truth, dataset)
+    denormalize_forecast(output_forecast, dataset)
+
+    # Save results
+    save_results_to_zarr(
+        output_forecast,
+        atmospheric_vars,
+        surface_vars,
+        constant_vars,
+        datamodule,
+        pressure_levels,
+        "forecast_result.zarr",
+    )
+
+    # Save ground truth
+    save_results_to_zarr(
+        ground_truth,
+        atmospheric_vars,
+        surface_vars,
+        constant_vars,
+        datamodule,
+        pressure_levels,
+        "forecast_observation.zarr",
+    )
+
+    logging.info("Saved forecast files successfuly")
+
+    # Also plot results
+    time_ind = 0  # First time instance
+    forecast_ind = -1  # Last in config file
+
+    output_data = output_forecast[time_ind, forecast_ind]
+    true_data = ground_truth[time_ind, forecast_ind]
 
     # Generate plots for different variables
     logging.info("Generating forecast plots...")
