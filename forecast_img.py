@@ -11,10 +11,13 @@ from data.datamodule import Era5DataModule
 
 
 def plot_forecast_map(
-    output_data, true_data, datamodule, feature, cfg, level=None, temp_offset=0
+    output_data, true_data, datamodule, feature, cfg, level=None, temp_offset=0, distribution=None
 ):
     """Plot comparison maps for model output and ground truth."""
     dataset = datamodule.dataset
+    
+    # TODO: if using distribution plot the number of samples of plots together
+    # each sample in the distribution is a full stae
 
     # Determine the feature index and name
     if level is not None:
@@ -37,21 +40,35 @@ def plot_forecast_map(
     # Get the raw data
     output_plot = output_data[feature_index]
     true_plot = true_data[feature_index]
+    
+    if distribution is not None:
+        dist_plots = distribution[:, feature_index]
 
     # Apply inverse transformations
     if feature == "specific_humidity":
         output_plot = dataset._denormalize_humidity(torch.tensor(output_plot)).numpy()
         true_plot = dataset._denormalize_humidity(torch.tensor(true_plot)).numpy()
+        
+        if distribution is not None:
+            dist_plots = dataset._denormalize_humidity(torch.tensor(dist_plots)).numpy()
+        
     elif feature == "total_precipitation_6hr":
         output_plot = dataset._denormalize_precipitation(
             torch.tensor(output_plot)
         ).numpy()
         true_plot = dataset._denormalize_precipitation(torch.tensor(true_plot)).numpy()
+        
+        if distribution is not None:
+            dist_plots = dataset._denormalize_precipitation(torch.tensor(dist_plots)).numpy()
+        
     elif feature_name in dataset.var_stats:
         # Apply z-score denormalization using stored statistics
         stats = dataset.var_stats[feature_name]
         output_plot = output_plot * stats["std"] + stats["mean"] - temp_offset
         true_plot = true_plot * stats["std"] + stats["mean"] - temp_offset
+        
+        if distribution is not None:
+            dist_plots = dist_plots * stats["std"] + stats["mean"] - temp_offset
     else:
         raise ValueError("Unkown feature")
 
@@ -60,6 +77,10 @@ def plot_forecast_map(
         g = 9.80665  # gravitational acceleration
         output_plot = output_plot / g
         true_plot = true_plot / g
+        
+        if distribution is not None:
+            dist_plots = dist_plots / g
+        
         cmap = "viridis"
         vmax = numpy.max([numpy.max(output_plot), numpy.max(true_plot)])
         vmin = numpy.min([numpy.min(output_plot), numpy.min(true_plot)])
@@ -101,23 +122,23 @@ def plot_forecast_map(
         clabel = feature.replace("_", " ").title()
 
     # Create figure and axes
-    fig, ax = plt.subplots(ncols=2, figsize=(12, 5))
+    fig, ax = plt.subplots(nrows=8, ncols=3, figsize=(1*12, 1*12))
 
     # Plot contours
-    for i, data in enumerate([output_plot, true_plot]):
+    for i, data in enumerate([output_plot, true_plot] + list(dist_plots[:(8*3)-2])):
         if feature == "total_precipitation_6hr":
-            contours = ax[i].contourf(
+            contours = ax[i//3][i%3].contourf(
                 longitude, latitude, data, levels=levels, cmap=cmap, extend="max"
             )
         else:
-            contours = ax[i].contourf(
+            contours = ax[i//3][i%3].contourf(
                 longitude, latitude, data, levels=levels, cmap=cmap
             )
 
         if feature == "geopotential":
             # Add contour lines for geopotential
             contour_levels = levels[::5]  # Take every 5th level
-            ax[i].contour(
+            ax[i//3][i%3].contour(
                 longitude,
                 latitude,
                 data,
@@ -125,12 +146,14 @@ def plot_forecast_map(
                 colors="k",
                 linewidths=0.5,
             )
+            
+        ax[i//3][i%3].set_xticks([])
+        ax[i//3][i%3].set_yticks([])
 
     # Set titles
     title = f"{feature} at {level} hPa" if level else feature.replace("_", " ").title()
     plt.suptitle(title)
-    ax[0].set_title("PARADIS")
-    ax[1].set_title("ERA5")
+    ax[0][1].set_title("ERA5(Ground)")
 
     # Adjust layout and add colorbar
     plt.tight_layout()
@@ -176,16 +199,29 @@ def main(cfg: DictConfig):
     # Get a sample from the dataset
     input_data, true_data = datamodule.train_dataset[0]
     input_data = input_data.unsqueeze(0).to(device)
+    
+    sampling_steps = 100
+    dist_values = torch.zeros(cfg.model.forecast_steps, sampling_steps, 83, 32, 64)
+    in_values = torch.zeros(cfg.model.forecast_steps-1, sampling_steps, 90, 32, 64).to(device)
 
     # Run forecast
     with torch.no_grad():
         input_data_step = input_data[:, 0]
         for step in range(cfg.model.forecast_steps):
-            output_data = litmodel(input_data_step, torch.tensor(step, device=device))
-            if step + 1 < cfg.model.forecast_steps:
-                input_data_step = litmodel._autoregression_input_from_output(
-                    input_data[:, step + 1], output_data
+            print(step > 0)
+
+            for samp in range(sampling_steps):
+                output_data, _ = litmodel(
+                    in_values[step-1, samp-1].unsqueeze(0) if step > 0 else input_data_step, 
+                    torch.tensor(step, device=device)
                 )
+                dist_values[step, samp-1] = output_data
+            
+                if step + 1 < cfg.model.forecast_steps:
+                    input_data_step = litmodel._autoregression_input_from_output(
+                        input_data[:, step + 1], dist_values[step, samp-1].unsqueeze(0)
+                    )      
+                    in_values[step, samp-1] = input_data_step
 
     # Move data to CPU for plotting
     output_data = output_data.squeeze(0).cpu().numpy()
@@ -196,17 +232,17 @@ def main(cfg: DictConfig):
 
     # Plot geopotential at 500 hPa
     plot_forecast_map(
-        output_data, true_data, datamodule, "geopotential", cfg, level=500
+        output_data, true_data, datamodule, "geopotential", cfg, level=500, distribution=dist_values[-1]
     )
 
     # Plot 2m temperature with Celsius conversion
     plot_forecast_map(
-        output_data, true_data, datamodule, "2m_temperature", cfg, temp_offset=273.15
+        output_data, true_data, datamodule, "2m_temperature", cfg, temp_offset=273.15, distribution=dist_values[-1]
     )
 
     # Plot precipitation
     plot_forecast_map(
-        output_data, true_data, datamodule, "total_precipitation_6hr", cfg
+        output_data, true_data, datamodule, "total_precipitation_6hr", cfg, distribution=dist_values[-1]
     )
 
     logging.info("Forecast plots generated successfully")

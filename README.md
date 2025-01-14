@@ -10,6 +10,7 @@
     1. test different module architecutes -> ConvNext, Transformer (if too large Swin)
     2. output the direct result after vector (need to understand where it would land on sphere)
     3. add support for cyclic KL annealing
+    4. Sample multiple times (100+) and then apply contour-map to rough infer the distribution of landing vectors on the state space.
         
 
 #### Key Features
