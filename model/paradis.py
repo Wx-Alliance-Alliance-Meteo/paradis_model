@@ -1,4 +1,4 @@
-"""Physically-inspired neural architecture for the weather forecasting model."""
+"""Physically inspired neural architecture for the weather forecasting model."""
 
 import typing
 import torch
@@ -10,11 +10,11 @@ from model.padding import GeoCyclicPadding
 def CLP(dim_in, dim_out, mesh_size, kernel_size=3, activation=nn.SiLU):
     """Convolutional layer processor."""
     return nn.Sequential(
-        GeoCyclicPadding(kernel_size // 2),
+        GeoCyclicPadding(kernel_size // 2, dim_in),
         nn.Conv2d(dim_in, dim_in, kernel_size=kernel_size),
         nn.LayerNorm([dim_in, mesh_size[0], mesh_size[1]]),
         activation(),
-        GeoCyclicPadding(kernel_size // 2),
+        GeoCyclicPadding(kernel_size // 2, dim_in),
         nn.Conv2d(dim_in, dim_out, kernel_size=kernel_size),
     )
 
@@ -22,15 +22,16 @@ def CLP(dim_in, dim_out, mesh_size, kernel_size=3, activation=nn.SiLU):
 class NeuralSemiLagrangian(nn.Module):
     """Implements the semi-Lagrangian advection."""
 
-    def __init__(self, dynamic_channels: int, static_channels: int, mesh_size: tuple):
+    def __init__(self, hidden_dim: int, mesh_size: tuple):
         super().__init__()
 
         # For cubic interpolation
         self.padding = 1
+        self.padding_interp = GeoCyclicPadding(self.padding, hidden_dim)
 
         # Neural network that will learn an effective velocity along the trajectory
         # Output 2 channels, for u and v
-        self.velocity_net = CLP(dynamic_channels + static_channels, 2, mesh_size)
+        self.velocity_net = CLP(hidden_dim, 2, mesh_size)
 
     def _transform_to_latlon(
         self,
@@ -65,19 +66,17 @@ class NeuralSemiLagrangian(nn.Module):
         return lat, lon
 
     def forward(
-        self, dynamic: torch.Tensor, static: torch.Tensor, dt: float
+        self, hidden_features: torch.Tensor, static: torch.Tensor, dt: float
     ) -> torch.Tensor:
         """Compute advection using rotated coordinate system."""
-        batch_size = dynamic.shape[0]
+        batch_size = hidden_features.shape[0]
 
         # Extract lat/lon from static features (last 2 channels)
         lat_grid = static[:, -2, :, :]
         lon_grid = static[:, -1, :, :]
 
-        combined = torch.cat([dynamic, static], dim=1)
-
         # Get learned velocities
-        velocities = self.velocity_net(combined)
+        velocities = self.velocity_net(hidden_features)
         u = velocities[:, 0]
         v = velocities[:, 1]
 
@@ -92,14 +91,16 @@ class NeuralSemiLagrangian(nn.Module):
         )
 
         # Compute the dimensions of the padded input
-        padded_width = dynamic.size(-1) + 2 * self.padding
-        padded_height = dynamic.size(-2) + 2 * self.padding
+        padded_width = hidden_features.size(-1) + 2 * self.padding
+        padded_height = hidden_features.size(-2) + 2 * self.padding
 
         # Convert to normalized grid coordinates [-1, 1] adjusted for padding
         grid_x = ((lon_dep / (2 * torch.pi)) * 2 - 1) * (
-            dynamic.size(-1) / padded_width
+            hidden_features.size(-1) / padded_width
         )
-        grid_y = ((lat_dep / torch.pi) * 2 - 1) * (dynamic.size(-2) / padded_height)
+        grid_y = ((lat_dep / torch.pi) * 2 - 1) * (
+            hidden_features.size(-2) / padded_height
+        )
 
         # Create interpolation grid
         grid = torch.stack(
@@ -108,7 +109,7 @@ class NeuralSemiLagrangian(nn.Module):
         )
 
         # Apply padding
-        dynamic_padded = GeoCyclicPadding(self.padding)(dynamic)
+        dynamic_padded = self.padding_interp(hidden_features)
 
         # Interpolate
         return torch.nn.functional.grid_sample(
@@ -123,21 +124,15 @@ class NeuralSemiLagrangian(nn.Module):
 class ForcingsIntegrator(nn.Module):
     """Implements the time integration of the forcings along the Lagrangian trajectories."""
 
-    def __init__(self, dynamic_channels: int, static_channels: int, mesh_size: tuple):
+    def __init__(self, hidden_dim: int, mesh_size: tuple):
         super().__init__()
 
-        self.diffusion_reaction_net = CLP(
-            dynamic_channels + static_channels, dynamic_channels, mesh_size
-        )
+        self.diffusion_reaction_net = CLP(hidden_dim, hidden_dim, mesh_size)
 
-    def forward(
-        self, dynamic: torch.Tensor, static: torch.Tensor, dt: float
-    ) -> torch.Tensor:
+    def forward(self, hidden_features: torch.Tensor, dt: float) -> torch.Tensor:
         """Integrate over a time step of size dt."""
 
-        # Network processes both feature types but only outputs updattorch.cat([dynamic, static]es for dynamic features
-        combined = torch.cat([dynamic, static], dim=1)
-        return dynamic + dt * self.diffusion_reaction_net(combined)
+        return hidden_features + dt * self.diffusion_reaction_net(hidden_features)
 
 
 class Paradis(nn.Module):
@@ -162,22 +157,22 @@ class Paradis(nn.Module):
             cfg.features.input.get("forcings", [])
         )
 
-        hidden_dim = cfg.model.hidden_multiplier * self.dynamic_channels
+        hidden_dim = (
+            cfg.model.hidden_multiplier * self.dynamic_channels
+        ) + self.static_channels
 
-        # Input projection for dynamic features
-        self.dynamic_proj = CLP(self.dynamic_channels, hidden_dim, mesh_size)
+        # Input projection for combined dynamic and static features
+        self.input_proj = CLP(
+            self.dynamic_channels + self.static_channels, hidden_dim, mesh_size
+        )
 
         # Rescale the time step to a fraction of a synoptic time scale (~1/Ω)
         time_scale = 7.29212e5
         self.dt = cfg.model.base_dt / time_scale
 
         # Physics operators
-        self.advection = NeuralSemiLagrangian(
-            hidden_dim, self.static_channels, mesh_size
-        )
-        self.solve_along_trajectories = ForcingsIntegrator(
-            hidden_dim, self.static_channels, mesh_size
-        )
+        self.advection = NeuralSemiLagrangian(hidden_dim, mesh_size)
+        self.solve_along_trajectories = ForcingsIntegrator(hidden_dim, mesh_size)
 
         # Output projection
         self.output_proj = CLP(hidden_dim, output_dim, mesh_size)
@@ -194,15 +189,12 @@ class Paradis(nn.Module):
         x_dynamic = x[:, : self.dynamic_channels]
         x_static = x[:, self.dynamic_channels :]
 
-        # Project dynamic features
-        z = self.dynamic_proj(x_dynamic)
+        # Project combined features to latent space
+        z = self.input_proj(torch.cat([x_dynamic, x_static], dim=1))
 
-        # Apply physics operators, analogous to the method of characteristics.
-        # The advection first discovers the characteristic curves where the PDE simplifies into
-        # an ODE. This ODE resembles a diffusion-reaction problem, which can then be solved along
-        # the characteristic curves by a neural network.
+        # Apply the neural semi-Lagrangian operators
         z = self.advection(z, x_static, self.dt)
-        z = self.solve_along_trajectories(z, x_static, self.dt)
+        z = self.solve_along_trajectories(z, self.dt)
 
         # Project to output space
         return self.output_proj(z)
