@@ -137,8 +137,31 @@ class ForcingsIntegrator(nn.Module):
 
         # Network processes both feature types but only outputs updattorch.cat([dynamic, static]es for dynamic features
         combined = torch.cat([dynamic, static], dim=1)
-        return dynamic + dt * self.diffusion_reaction_net(combined)
+        
+        # Use Forward Euler
+        #fe = dynamic + dt * self.diffusion_reaction_net(combined)
+        
+        # Use 2nd explicit midpoint RK 
+        #k1 = dynamic + dt/2*self.diffusion_reaction_net(combined)
+        #combinedk1 = torch.cat([k1,static],dim=1)
+        #expmid = dynamic + dt * self.diffusion_reaction_net(combinedk1)
+        
+        # Heun 
+        k1 = dynamic+dt*self.diffusion_reaction_net(combined)
+        combinedk1 = torch.cat([k1,static],dim=1)
+        heun = dynamic + dt/2*(self.diffusion_reaction_net(combined) + self.diffusion_reaction_net(combinedk1))
 
+        #RK4a
+        #k1y = dynamic + dt/2* self.diffusion_reaction_net(combined)
+        #combinedk1 = torch.cat([k1y,static],dim=1)
+        #k2y = dynamic + dt/2*self.diffusion_reaction_net(combinedk1)
+        #combinedk2 = torch.cat([k2y,static],dim=1)
+        #k3y = dynamic + dt* self.diffusion_reaction_net(combinedk2)
+        #combinedk3 = torch.cat([k3y,static],dim =1)
+        #rk4 = dynamic + dt/6*( self.diffusion_reaction_net(combined) + 2* self.diffusion_reaction_net(combinedk1) + 2* self.diffusion_reaction_net(combinedk2)+ self.diffusion_reaction_net(combinedk3))
+
+
+        return heun
 
 class Paradis(nn.Module):
     """Weather forecasting model main class."""

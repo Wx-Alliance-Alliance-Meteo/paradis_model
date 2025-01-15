@@ -30,7 +30,8 @@ def main(cfg: DictConfig):
 
     # Initialize model
     litmodel = LitParadis(datamodule, cfg)
-
+    
+    
     if cfg.model.checkpoint_path:
         # Load the model weights if a checkpoint path is provided
         checkpoint = torch.load(cfg.model.checkpoint_path, weights_only=True)
@@ -48,7 +49,7 @@ def main(cfg: DictConfig):
                 check_finite=True, # Make sure validation has not gone to nan
             )
         )
-
+    '''
     # Keep the last 10 checkpoints and the top "best" checkpoint
     callbacks.append(
         ModelCheckpoint(
@@ -68,6 +69,7 @@ def main(cfg: DictConfig):
             save_top_k=1,  # Keep only the best checkpoint
         )
     )
+    '''
 
     # Choose double (32-true) or mixed (16-mixed) precision via AMP
     if cfg.trainer.use_amp:
