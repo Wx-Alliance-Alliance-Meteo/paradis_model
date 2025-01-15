@@ -1,4 +1,4 @@
-**PARADIS**: **P**hysically-inspired **A**dvection, **R**eaction **A**nd **DI**ffusion on the **S**phere
+**PARADIS**: **P**hysically inspired **A**dvection, **R**eaction **A**nd **DI**ffusion on the **S**phere
 
 #### Key Features
 

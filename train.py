@@ -46,7 +46,7 @@ def main(cfg: DictConfig):
                 monitor="val_loss",
                 mode="min",
                 patience=cfg.trainer.early_stopping.patience,
-                check_finite=True, # Make sure validation has not gone to nan
+                check_finite=True,  # Make sure validation has not gone to nan
             )
         )
     '''
