@@ -23,16 +23,26 @@ where `[override_args]` can override the inputs in the config file.
 
 
 #### Dataset
+
+##### Option 1
 Download the original dataset from WeatherBench 2:
 
+Set the `OUTPUT_DIR` path in `scripts/download_dataset.sh` and download using
 ```
-gsutil -m cp -r   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/.zattrs"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/.zgroup"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/.zmetadata"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/10m_u_component_of_wind"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/10m_v_component_of_wind"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/10m_wind_speed"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/2m_temperature"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/geopotential"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/geopotential_at_surface"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/land_sea_mask"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/latitude"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/level"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/longitude"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/mean_sea_level_pressure"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/specific_humidity"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/temperature"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/time"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/toa_incident_solar_radiation"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/total_precipitation_6hr"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/u_component_of_wind"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/v_component_of_wind"   "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr/vertical_velocity"  /path/to/ERA5/5.625deg_wb2
+cd scripts
+bash download_dataset.sh
 ```
 and then preprocess it
 
 ```
 python scripts/preprocess_weatherbench_data.py -i /path/to/ERA5/5.625deg_wb2 -o /path/to/ERA5/5.65deg
 ```
+
+#### Option 2
+Download the preprocessed dataset, available at
+
+https://hpfx.collab.science.gc.ca/~cap003/era5_5.625deg_13level.tar.gz
+
 
 #### Acknowledgements
 
