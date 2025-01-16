@@ -2,6 +2,8 @@ checkpoints/
 outputs/
 logs/
 ERA5/
+ME/
+testing.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

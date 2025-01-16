@@ -5,7 +5,7 @@ model:
   loss_alpha: 0.5         # Balance the contribution MAE and RMSE. loss = α * MAE + (1-α) * RMSE
   checkpoint_path: null   # Path to model checkpoint for loading pre-trained weights
   compile: true           # Whether to compile the model using torch.compile()
-  variational: True      # Flag for variational variant
+  variational: False      # Flag for variational variant
   beta: 0.01              # Beta from beta-vae
 
 trainer:
