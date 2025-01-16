@@ -446,7 +446,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
             Precipitation data in original scale
         """
         shift = 10
-        return numpy.clip(numpy.exp(data) - 1e-6, a_min=0, a_max=None)
+        return numpy.clip(numpy.exp(data - shift) - 1e-6, a_min=0, a_max=None)
 
 
 def split_dataset(dataset, train_ratio=0.8, seed: int = 42):
