@@ -17,22 +17,22 @@ class GeoCyclicPadding(torch.nn.Module):
         super().__init__()
         self.pad_width = pad_width
 
-        self.register_parameter(
-            "sign_mask_north", torch.nn.Parameter(torch.ones(1, channels, 1, 1))
-        )
-        self.register_parameter(
-            "sign_mask_south", torch.nn.Parameter(torch.ones(1, channels, 1, 1))
-        )
+        # Initialize masks randomly to ±1
+        north_mask = 2 * torch.bernoulli(0.5 * torch.ones(1, channels, 1, 1)) - 1
+        south_mask = 2 * torch.bernoulli(0.5 * torch.ones(1, channels, 1, 1)) - 1
 
-    def _constrain_mask(self):
-        """Force mask to be either -1 or 1."""
-        with torch.no_grad():
-            for mask in [self.sign_mask_north, self.sign_mask_south]:
-                mask.data.copy_(torch.sign(mask))
+        self.register_parameter("sign_mask_north", torch.nn.Parameter(north_mask))
+        self.register_parameter("sign_mask_south", torch.nn.Parameter(south_mask))
+
+        # Sharpness parameter for soft sign approximation
+        self.sharpness = torch.nn.Parameter(torch.tensor(1.0))
+
+    def soft_sign(self, x):
+        """Differentiable approximation of sign function using tanh."""
+        return torch.tanh(x / torch.clamp(self.sharpness, min=0.1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply cyclic padding to the input tensor."""
-
         # Validate input dimensions
         assert (
             len(x.shape) == 4
@@ -45,7 +45,9 @@ class GeoCyclicPadding(torch.nn.Module):
             self.sign_mask_north.data = self.sign_mask_north.data.to(x.device)
             self.sign_mask_south.data = self.sign_mask_south.data.to(x.device)
 
-        self._constrain_mask()
+        # Compute the mask using the soft constrain
+        north_mask = self.soft_sign(self.sign_mask_north)
+        south_mask = self.soft_sign(self.sign_mask_south)
 
         # Longitude periodic padding
         x_padded = torch.cat(
@@ -53,8 +55,8 @@ class GeoCyclicPadding(torch.nn.Module):
         )
 
         # Extract and transform boundary regions
-        top_rows = x_padded[:, :, : self.pad_width, :] * self.sign_mask_north
-        bottom_rows = x_padded[:, :, -self.pad_width :, :] * self.sign_mask_south
+        top_rows = x_padded[:, :, : self.pad_width, :] * north_mask
+        bottom_rows = x_padded[:, :, -self.pad_width :, :] * south_mask
 
         # For latitude padding, we need to rotate by 180° and account for longitude padding
         middle_index = width // 2 + self.pad_width
