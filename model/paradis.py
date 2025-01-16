@@ -7,6 +7,7 @@ from torch import nn
 from model.padding import GeoCyclicPadding
 
 
+# Deterministic CLP
 def CLP(dim_in, dim_out, mesh_size, kernel_size=3, activation=nn.SiLU):
     """Convolutional layer processor."""
     return nn.Sequential(
@@ -19,6 +20,7 @@ def CLP(dim_in, dim_out, mesh_size, kernel_size=3, activation=nn.SiLU):
     )
 
 
+# Reusable CLP block
 class CLPBlock(nn.Module):
     def __init__(self, input_dim, output_dim, mesh_size, kernel_size=3, activation=nn.SiLU):
         super().__init__()
@@ -116,10 +118,10 @@ class NeuralSemiLagrangian(nn.Module):
         self.d_lat = torch.pi / (mesh_size[0] - 1)
         self.d_lon = 2 * torch.pi / mesh_size[1]
 
-        # Optional variational CLP processor
         # Neural network that will learn an effective velocity along the trajectory
         # Output 2 channels, for u and v
         if not self.variational:
+            # Variational CLP processor
             self.velocity_net = CLP(dynamic_channels + static_channels, 2, mesh_size)
         else:
             self.velocity_net = VariationalCLP(dynamic_channels + static_channels, 2, mesh_size)
@@ -171,6 +173,7 @@ class NeuralSemiLagrangian(nn.Module):
 
         # Get learned velocities
         if self.variational:
+            # Returns back the KL loss as well
             velocities, kl_loss = self.velocity_net(combined)
         else:
             velocities = self.velocity_net(combined)
@@ -213,6 +216,7 @@ class NeuralSemiLagrangian(nn.Module):
 
         # Interpolate
         if self.variational:
+            # Propogates up the KL
             return (torch.nn.functional.grid_sample(
                 dynamic_padded,
                 grid,
@@ -313,6 +317,7 @@ class Paradis(nn.Module):
         # an ODE. This ODE resembles a diffusion-reaction problem, which can then be solved along
         # the characteristic curves by a neural network.
         if self.variational:
+            # Propogates up the KL
             z, kl_loss = self.advection(z, x_static, self.dt)
         else:
             z = self.advection(z, x_static, self.dt)
@@ -321,6 +326,7 @@ class Paradis(nn.Module):
 
         # Project to output space
         if self.variational:
+            # Propogates up the KL
             return (self.output_proj(z), kl_loss)
         
         return self.output_proj(z)

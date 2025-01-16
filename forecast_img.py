@@ -13,11 +13,8 @@ from data.datamodule import Era5DataModule
 def plot_forecast_map(
     output_data, true_data, datamodule, feature, cfg, level=None, temp_offset=0, distribution=None
 ):
-    """Plot comparison maps for model output and ground truth."""
+    """Plot comparison maps for either the deterministic or variational models."""
     dataset = datamodule.dataset
-    
-    # TODO: if using distribution plot the number of samples of plots together
-    # each sample in the distribution is a full stae
 
     # Determine the feature index and name
     if level is not None:
@@ -121,7 +118,24 @@ def plot_forecast_map(
         levels = numpy.linspace(vmin, vmax, 100)
         clabel = feature.replace("_", " ").title()
 
-    # Create figure and axes
+    # Seperatate plotting mechanisms
+    if distribution is not None:
+        plot_ensemble(
+            output_plot, true_plot, dist_plots, longitude, latitude, 
+            levels, cmap, feature, level, clabel
+        )
+    else:
+        plot_deterministic(
+            output_plot, true_plot, longitude, latitude,
+            levels, cmap, feature, level, clabel
+        )
+
+
+def plot_ensemble(
+    output_plot, true_plot, dist_plots, longitude, latitude, 
+    levels, cmap, feature, level, clabel
+):
+    """Plot ensemble forcast. Assumes output from a variational model."""
     fig, ax = plt.subplots(nrows=8, ncols=3, figsize=(1*12, 1*12))
 
     # Plot contours
@@ -146,10 +160,10 @@ def plot_forecast_map(
                 colors="k",
                 linewidths=0.5,
             )
-            
+
         ax[i//3][i%3].set_xticks([])
         ax[i//3][i%3].set_yticks([])
-
+        
     # Set titles
     title = f"{feature} at {level} hPa" if level else feature.replace("_", " ").title()
     plt.suptitle(title)
@@ -170,6 +184,106 @@ def plot_forecast_map(
     plt.close(plt.gcf())
 
 
+def plot_deterministic(
+    output_plot, true_plot, longitude, latitude,
+    levels, cmap, feature, level, clabel
+):
+    """Plot comparison maps for model output and ground truth."""
+    # Create figure and axes
+    fig, ax = plt.subplots(ncols=2, figsize=(12, 5))
+
+    # Plot contours
+    for i, data in enumerate([output_plot, true_plot]):
+        if feature == "total_precipitation_6hr":
+            contours = ax[i].contourf(
+                longitude, latitude, data, levels=levels, cmap=cmap, extend="max"
+            )
+        else:
+            contours = ax[i].contourf(
+                longitude, latitude, data, levels=levels, cmap=cmap
+            )
+
+        if feature == "geopotential":
+            # Add contour lines for geopotential
+            contour_levels = levels[::5]  # Take every 5th level
+            ax[i].contour(
+                longitude,
+                latitude,
+                data,
+                levels=contour_levels,
+                colors="k",
+                linewidths=0.5,
+            )
+
+    # Set titles
+    title = f"{feature} at {level} hPa" if level else feature.replace("_", " ").title()
+    plt.suptitle(title)
+    ax[0].set_title("PARADIS")
+    ax[1].set_title("ERA5")
+
+    # Adjust layout and add colorbar
+    plt.tight_layout()
+    fig.subplots_adjust(right=0.9)
+    cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
+    cbar = fig.colorbar(contours, cax=cbar_ax)
+    cbar.ax.set_ylabel(clabel, rotation=90)
+
+    # Save figure
+    filename = (
+        f"{feature}_{level}hPa_prediction.png" if level else f"{feature}_prediction.png"
+    )
+    plt.savefig(filename, bbox_inches="tight", dpi=300)
+    plt.close(plt.gcf())
+    
+    
+def run_ensemble(input_data, cfg, device, litmodel):
+    """Generate data for ensemble model."""
+    
+    sampling_steps = 100
+    dist_values = torch.zeros(cfg.model.forecast_steps, sampling_steps, 83, 32, 64)
+    in_values = torch.zeros(cfg.model.forecast_steps-1, sampling_steps, 90, 32, 64).to(device)
+    
+    # Run forecast
+    with torch.no_grad():
+        input_data_step = input_data[:, 0]
+        for step in range(cfg.model.forecast_steps):
+
+            for samp in range(sampling_steps):
+                output_data, _ = litmodel(
+                    in_values[step-1, samp-1].unsqueeze(0) if step > 0 else input_data_step, 
+                    torch.tensor(step, device=device)
+                )
+                dist_values[step, samp-1] = output_data
+            
+                if step + 1 < cfg.model.forecast_steps:
+                    input_data_step = litmodel._autoregression_input_from_output(
+                        input_data[:, step + 1], dist_values[step, samp-1].unsqueeze(0)
+                    )      
+                    in_values[step, samp-1] = input_data_step
+                    
+    return dist_values.cpu().numpy(), output_data
+
+
+def run_deterministic(input_data, cfg, device, litmodel):
+    """Generate data for deterministic model."""
+    
+    with torch.no_grad():
+        input_data_step = input_data[:, 0]
+        for step in range(cfg.model.forecast_steps):
+
+            output_data = litmodel(
+                input_data_step, 
+                torch.tensor(step, device=device)
+            )
+
+            if step + 1 < cfg.model.forecast_steps:
+                input_data_step = litmodel._autoregression_input_from_output(
+                    input_data[:, step + 1], output_data
+                )      
+                
+        return output_data
+    
+    
 @hydra.main(version_base=None, config_path="config/", config_name="paradis_settings")
 def main(cfg: DictConfig):
     """Generate forecasts using a trained model."""
@@ -183,6 +297,7 @@ def main(cfg: DictConfig):
     # Initialize data module
     datamodule = Era5DataModule(cfg)
     datamodule.setup(stage="fit")
+    print(cfg.model.variational == True)
 
     # Initialize and load model
     litmodel = LitParadis(datamodule, cfg)
@@ -200,49 +315,34 @@ def main(cfg: DictConfig):
     input_data, true_data = datamodule.train_dataset[0]
     input_data = input_data.unsqueeze(0).to(device)
     
-    sampling_steps = 100
-    dist_values = torch.zeros(cfg.model.forecast_steps, sampling_steps, 83, 32, 64)
-    in_values = torch.zeros(cfg.model.forecast_steps-1, sampling_steps, 90, 32, 64).to(device)
-
-    # Run forecast
-    with torch.no_grad():
-        input_data_step = input_data[:, 0]
-        for step in range(cfg.model.forecast_steps):
-            print(step > 0)
-
-            for samp in range(sampling_steps):
-                output_data, _ = litmodel(
-                    in_values[step-1, samp-1].unsqueeze(0) if step > 0 else input_data_step, 
-                    torch.tensor(step, device=device)
-                )
-                dist_values[step, samp-1] = output_data
-            
-                if step + 1 < cfg.model.forecast_steps:
-                    input_data_step = litmodel._autoregression_input_from_output(
-                        input_data[:, step + 1], dist_values[step, samp-1].unsqueeze(0)
-                    )      
-                    in_values[step, samp-1] = input_data_step
+    if cfg.model.variational:
+        dist_values, output_data = run_ensemble(input_data, cfg, device, litmodel)
+    else:
+        output_data = run_deterministic(input_data, cfg, device, litmodel)
 
     # Move data to CPU for plotting
     output_data = output_data.squeeze(0).cpu().numpy()
-    true_data = true_data[cfg.model.forecast_steps - 1].cpu().numpy()
+    true_data = true_data[-1].cpu().numpy()
 
     # Generate plots for different variables
     logging.info("Generating forecast plots...")
 
     # Plot geopotential at 500 hPa
     plot_forecast_map(
-        output_data, true_data, datamodule, "geopotential", cfg, level=500, distribution=dist_values[-1]
+        output_data, true_data, datamodule, "geopotential", cfg, 
+        level=500, distribution=(dist_values[-1] if cfg.model.variational else None)
     )
 
     # Plot 2m temperature with Celsius conversion
     plot_forecast_map(
-        output_data, true_data, datamodule, "2m_temperature", cfg, temp_offset=273.15, distribution=dist_values[-1]
+        output_data, true_data, datamodule, "2m_temperature", cfg, 
+        temp_offset=273.15, distribution=(dist_values[-1] if cfg.model.variational else None)
     )
 
     # Plot precipitation
     plot_forecast_map(
-        output_data, true_data, datamodule, "total_precipitation_6hr", cfg, distribution=dist_values[-1]
+        output_data, true_data, datamodule, "total_precipitation_6hr", 
+        cfg, distribution=(dist_values[-1] if cfg.model.variational else None)
     )
 
     logging.info("Forecast plots generated successfully")

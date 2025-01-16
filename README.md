@@ -1,18 +1,5 @@
 **PARADIS**: **P**hysically-inspired **A**dvection, **R**eaction **A**nd **DI**ffusion on the **S**phere
-
-# TODO
-
-1. setup evaluatins | understand the format of the data (more)
-2. optional wandb support that removes lots of the cmd line output
-3. figure out what is causing the dataloading bottleneck during training time (profile)
-4. based on eval see what needs work
-5. model edits
-    1. test different module architecutes -> ConvNext, Transformer (if too large Swin)
-    2. output the direct result after vector (need to understand where it would land on sphere)
-    3. add support for cyclic KL annealing
-    4. Sample multiple times (100+) and then apply contour-map to rough infer the distribution of landing vectors on the state space.
         
-
 #### Key Features
 
 - **Physically-informed neural architecture:** Combines convolutional neural networks with operators akin to the advection, diffusion, and reaction (ADR) equation to handle complex physical phenomena.
