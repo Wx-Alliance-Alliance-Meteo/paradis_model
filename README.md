@@ -1,10 +1,5 @@
-<<<<<<< HEAD
-**PARADIS**: **P**hysically-inspired **A**dvection, **R**eaction **A**nd **DI**ffusion on the **S**phere
-        
-=======
 **PARADIS**: **P**hysically inspired **A**dvection, **R**eaction **A**nd **DI**ffusion on the **S**phere
 
->>>>>>> main
 #### Key Features
 
 - **Physically-informed neural architecture:** Combines convolutional neural networks with operators akin to the advection, diffusion, and reaction (ADR) equation to handle complex physical phenomena.
