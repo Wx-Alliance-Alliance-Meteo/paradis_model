@@ -226,7 +226,6 @@ class NeuralSemiLagrangian(nn.Module):
         )
 
 
-# VARIATIONAL HERE?
 class ForcingsIntegrator(nn.Module):
     """Implements the time integration of the forcings along the Lagrangian trajectories."""
 
