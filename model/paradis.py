@@ -25,7 +25,7 @@ class CLPBlock(nn.Module):
     def __init__(self, input_dim, output_dim, mesh_size, kernel_size=3, activation=nn.SiLU):
         super().__init__()
         self.layers = nn.Sequential(
-            GeoCyclicPadding(kernel_size // 2),
+            GeoCyclicPadding(kernel_size // 2, input_dim),
             nn.Conv2d(input_dim, output_dim, kernel_size=kernel_size),
             nn.LayerNorm([output_dim, mesh_size[0], mesh_size[1]]),
             activation()
@@ -69,7 +69,7 @@ class VariationalCLP(nn.Module):
         self.decoder = nn.Sequential(
             nn.Conv2d(latent_dim, dim_in, kernel_size=1), # project up
             CLPBlock(dim_in, dim_in, mesh_size),
-            GeoCyclicPadding(kernel_size // 2),
+            GeoCyclicPadding(kernel_size // 2, dim_in),
             nn.Conv2d(dim_in, dim_out, kernel_size=kernel_size),
         )
 
@@ -119,9 +119,9 @@ class NeuralSemiLagrangian(nn.Module):
         # Output 2 channels, for u and v
         if not self.variational:
             # Variational CLP processor
-            self.velocity_net = CLP(dynamic_channels + static_channels, 2, mesh_size)
+            self.velocity_net = CLP(hidden_dim, 2, mesh_size)
         else:
-            self.velocity_net = VariationalCLP(dynamic_channels + static_channels, 2, mesh_size)
+            self.velocity_net = VariationalCLP(hidden_dim, 2, mesh_size)
 
     def _transform_to_latlon(
         self,
@@ -168,9 +168,9 @@ class NeuralSemiLagrangian(nn.Module):
         # Get learned velocities
         if self.variational:
             # Returns back the KL loss as well
-            velocities, kl_loss = self.velocity_net(combined)
+            velocities, kl_loss = self.velocity_net(hidden_features)
         else:
-            velocities = self.velocity_net(combined)
+            velocities = self.velocity_net(hidden_features)
             
         u = velocities[:, 0]
         v = velocities[:, 1]

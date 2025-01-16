@@ -1,6 +1,6 @@
 model:
   hidden_multiplier: 4    # Automatically scale the hidden dimension with the number of input channels (hidden_dim = hidden_multiplier * nb_dynamic_channels)
-  forecast_steps: 8       # Number of autoregressive steps for forecasting
+  forecast_steps: 1       # Number of autoregressive steps for forecasting
   base_dt: 21600          # 6 hours * 3600 seconds
   loss_alpha: 0.5         # Balance the contribution MAE and RMSE. loss = α * MAE + (1-α) * RMSE
   checkpoint_path: null   # Path to model checkpoint for loading pre-trained weights
@@ -39,8 +39,8 @@ trainer:
   #   min_lr: 1e-6           # Lower bound on the learning rate
 
 dataset:
-  dataset_dir: ERA5/5.65deg
-  start_date: 1960-01-01  # Start date for the dataset (YYYY-MM-DD)
+  dataset_dir: ERA5/5.65deg_2
+  start_date: 2000-01-01  # Start date for the dataset (YYYY-MM-DD)
   end_date: 2020-12-31    # End date for the dataset (YYYY-MM-DD)
   train_ratio: 0.8        # Ratio of data used for training (rest for validation)
   batch_size: 64          # Number of samples per batch
