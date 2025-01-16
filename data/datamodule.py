@@ -26,7 +26,8 @@ class Era5DataModule(L.LightningDataModule):
         self.has_setup_been_called = {"fit": False, "test": False}
 
     def setup(self, stage=None):
-        if stage == "fit" and not self.has_setup_been_called["fit"]:
+
+        if not self.has_setup_been_called[stage]:
             logging.info(f"Loading dataset from {self.root_dir}")
             logging.info(f"Date range: {self.start_date} to {self.end_date}")
 
@@ -50,14 +51,15 @@ class Era5DataModule(L.LightningDataModule):
             self.lat_size = era5_dataset.lat_size
             self.lon_size = era5_dataset.lon_size
 
-            # Split into training and validation sets
-            logging.info("Splitting dataset into train and validation sets")
-            self.train_dataset, self.val_dataset = split_dataset(
-                era5_dataset, train_ratio=self.train_ratio
-            )
+            if stage == "fit":
+                # Split into training and validation sets when training will be performed
+                logging.info("Splitting dataset into train and validation sets")
+                self.train_dataset, self.val_dataset = split_dataset(
+                    era5_dataset, train_ratio=self.train_ratio
+                )
 
-            self.has_setup_been_called["fit"] = True
-            logging.info("Dataset setup completed successfully")
+            self.has_setup_been_called[stage] = True
+            logging.info(f"Dataset setup completed successfully for stage {stage}")
 
     def train_dataloader(self):
         """Return the training dataloader."""
@@ -79,4 +81,15 @@ class Era5DataModule(L.LightningDataModule):
             shuffle=False,
             pin_memory=True,
             drop_last=self.drop_last,
+        )
+
+    def test_dataloader(self):
+        """Return the test dataloader (includes all data)."""
+        return DataLoader(
+            self.dataset,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            shuffle=False,
+            pin_memory=True,
+            drop_last=False,
         )

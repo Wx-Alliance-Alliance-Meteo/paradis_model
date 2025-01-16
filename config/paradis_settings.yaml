@@ -9,34 +9,34 @@ model:
   beta: 0.01              # Beta from beta-vae
 
 trainer:
-  lr: 5.0e-4             # Learning rate (LR) for the optimizer
-  weight_decay: 0.01     # Weight decay coefficient for regularization
-  gradient_clip_val: -1  # Gradient clipping value, set to -1 to disable
+  lr: 5.0e-4                 # Learning rate (LR) for the optimizer
+  weight_decay: 1.e-5        # Weight decay coefficient for regularization
+  gradient_clip_val: -1      # Gradient clipping value, set to -1 to disable
   max_epochs: 100
   num_devices: 1
   accelerator: gpu
-  use_amp: true          # Use Automatic Mixed Precision
+  use_amp: true              # Use Automatic Mixed Precision
   print_losses: false
   early_stopping:
-    enabled: true        # Whether to use early stopping
-    patience: 8          # Number of epochs with no improvement after which training will stop
+    enabled: true            # Whether to use early stopping
+    patience: 8              # Number of epochs with no improvement after which training will stop
 
   # Scheduler configuration - Choose ONE of the following scheduler types by
   # commenting/uncommenting the appropriate section:
 
   # 1. OneCycleLR - Recommended for initial training
   scheduler:
-    type: "one_cycle"     # OneCycleLR scheduler
-    warmup_pct_start: 0.2 # Percentage of training used for warmup phase
-    lr_div_factor: 25     # Initial learning rate = max_lr/lr_div_factor
-    lr_final_div: 1.0e3   # Final learning rate = max_lr/lr_final_div_factor
+    type: "one_cycle"        # OneCycleLR scheduler
+    warmup_pct_start: 0.1    # Percentage of training used for warmup phase
+    lr_div_factor: 25        # Initial learning rate = max_lr/lr_div_factor
+    lr_final_div: 1.0e3      # Final learning rate = max_lr/lr_final_div_factor
 
   # 2. ReduceLROnPlateau - Recommended for fine-tuning a pre-trained model
-#  scheduler:
-#    type: "reduce_lr"      # ReduceLROnPlateau scheduler
-#    factor: 0.5            # Factor by which to reduce learning rate
-#    patience: 5            # Number of epochs with no improvement after which LR will be reduced
-#    min_lr: 1e-6           # Lower bound on the learning rate
+  # scheduler:
+  #   type: "reduce_lr"      # ReduceLROnPlateau scheduler
+  #   factor: 0.5            # Factor by which to reduce learning rate
+  #   patience: 5            # Number of epochs with no improvement after which LR will be reduced
+  #   min_lr: 1e-6           # Lower bound on the learning rate
 
 dataset:
   dataset_dir: ERA5/5.65deg
@@ -70,33 +70,35 @@ features:
       - specific_humidity
       - temperature
       - vertical_velocity
-
-  input:
-    atmospheric: ${features.base.atmospheric} # Same as output and base
     surface:
       - 10m_u_component_of_wind
       - 10m_v_component_of_wind
       - 2m_temperature
       - mean_sea_level_pressure
+      - surface_pressure
+      - total_column_water
       - total_precipitation_6hr
-    constants:
-      - geopotential_at_surface
-      - land_sea_mask
+
+  input:
+    atmospheric: ${features.base.atmospheric}
+    surface: ${features.base.surface}
     forcings:
       - toa_incident_solar_radiation
       - sin_time_of_day
       - cos_time_of_day
       - sin_year_progress
       - cos_year_progress
+    constants:
+      - geopotential_at_surface
+      - land_sea_mask
+      - slope_of_sub_gridscale_orography
+      - standard_deviation_of_orography
+      - latitude
+      - longitude
 
   output:
-    atmospheric: ${features.base.atmospheric} # Same as input and base
-    surface:
-      - 10m_u_component_of_wind
-      - 10m_v_component_of_wind
-      - 2m_temperature
-      - mean_sea_level_pressure
-      - total_precipitation_6hr
+    atmospheric: ${features.base.atmospheric}
+    surface: ${features.base.surface}
 
 variable_loss_weights:
   atmospheric:
@@ -107,8 +109,10 @@ variable_loss_weights:
     specific_humidity: 1.0
     temperature: 1.0
   surface:
-    mean_sea_level_pressure: 0.1
     10m_u_component_of_wind: 0.1
-    2m_temperature:          0.1
-    total_precipitation_6hr: 0.1
     10m_v_component_of_wind: 0.1
+    2m_temperature: 0.1
+    mean_sea_level_pressure: 0.1
+    surface_pressure: 0.1
+    total_column_water: 0.1
+    total_precipitation_6hr: 0.1
