@@ -43,7 +43,6 @@ Download the preprocessed dataset, available at
 
 https://hpfx.collab.science.gc.ca/~cap003/era5_5.625deg_13level.tar.gz
 
->>>>>>> main
 
 #### Acknowledgements
 
