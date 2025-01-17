@@ -4,6 +4,7 @@ logs/
 ERA5/
 ME/
 testing.py
+.gitignore
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
