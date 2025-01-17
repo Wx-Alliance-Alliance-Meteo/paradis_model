@@ -21,6 +21,7 @@ variable_mappings:
     new_name: MG
   mean_sea_level_pressure:
     new_name: PN
+    conversion: "data_slice / 100"      
   specific_humidity:
     new_name: HU
   temperature:
@@ -37,3 +38,7 @@ variable_mappings:
     conversion: "data_slice * 1.94384"    #m/s to knots    
   vertical_velocity:
     new_name: WW
+  surface_pressure:
+    new_name: P0
+    conversion: "data_slice / 100" 
+
