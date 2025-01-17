@@ -62,9 +62,6 @@ class WeightedHybridLoss(torch.nn.Module):
         self.output_name_order = output_name_order
         self.alpha = alpha
 
-        # Calculate combined latitude weights
-        self.lat_weights = self._compute_latitude_weights(grid_lat)
-
         # Create combined feature weights
         self.feature_weights = self._create_feature_weights()
 
@@ -84,66 +81,6 @@ class WeightedHybridLoss(torch.nn.Module):
         if not torch.allclose(diff, diff[0]):
             raise ValueError(f"Grid {grid} is not uniformly spaced")
         return diff[0].item()
-
-    def _compute_latitude_weights(self, grid_lat: torch.Tensor) -> torch.Tensor:
-        """Compute latitude weights based on grid cell areas.
-
-        For a latitude grid, this handles two cases:
-        1. Grids without poles: Points represent slices between lat±Δλ/2
-           Weight proportional to cos(lat)
-        2. Grids with poles: Points at poles represent half-slices
-           For non-pole points: weight ∝ cos(λ)⋅sin(Δλ/2)
-           For pole points: weight ∝ sin(Δλ/4)²
-
-        Args:
-            grid_lat: Latitude coordinates in degrees
-
-        Returns:
-            Normalized weights with unit mean
-
-        Raises:
-            ValueError: If grid is not uniformly spaced or has invalid endpoints
-        """
-        # Validate uniform spacing
-        delta_lat = torch.abs(torch.tensor(self._check_uniform_spacing(grid_lat)))
-
-        # Check if grid includes poles
-        has_poles = torch.any(torch.isclose(torch.abs(grid_lat), torch.tensor(90.0)))
-
-        if has_poles:
-            # Validate grid endpoints
-            if not (
-                torch.isclose(grid_lat.max(), torch.tensor(90.0))
-                and torch.isclose(grid_lat.min(), torch.tensor(-90.0))
-            ):
-                raise ValueError("Grid with poles must span [-90°, 90°]")
-
-            # Basic weights for non-pole points
-            weights = torch.cos(torch.deg2rad(grid_lat)) * torch.sin(
-                torch.deg2rad(delta_lat / 2)
-            )
-
-            # Special handling for pole points
-            pole_indices = torch.where(
-                torch.isclose(torch.abs(grid_lat), torch.tensor(90.0))
-            )[0]
-            pole_weight = torch.sin(torch.deg2rad(delta_lat / 4)) ** 2
-            weights[pole_indices] = pole_weight
-
-        else:
-            # Validate grid endpoints
-            if not (
-                torch.isclose(
-                    torch.abs(grid_lat.max()),
-                    (90.0 - delta_lat / 2) * torch.ones_like(grid_lat.max()),
-                )
-            ):
-                raise ValueError("Grid without poles must end at ±(90° - Δλ/2)")
-
-            # Simple cosine weights for grids without poles
-            weights = torch.cos(torch.deg2rad(grid_lat))
-
-        return weights / weights.mean()
 
     def _create_feature_weights(self) -> torch.Tensor:
         """Create weights for all features."""
@@ -192,7 +129,6 @@ class WeightedHybridLoss(torch.nn.Module):
             Combined weighted loss value
         """
         # Prepare weights with correct shapes for broadcasting
-        lat_weights = self.lat_weights.view(1, 1, -1, 1).to(pred.device)
         feature_weights = self.feature_weights.view(1, -1, 1, 1).to(pred.device)
 
         # Compute errors
@@ -201,8 +137,8 @@ class WeightedHybridLoss(torch.nn.Module):
         squared_error = error**2
 
         # Apply weights to both MAE and MSE components
-        weighted_abs_error = abs_error * lat_weights * feature_weights
-        weighted_squared_error = squared_error * lat_weights * feature_weights
+        weighted_abs_error = abs_error * feature_weights
+        weighted_squared_error = squared_error * feature_weights
 
         # Compute final hybrid loss
         mae_component = weighted_abs_error.mean()
