@@ -1,6 +1,6 @@
 BASE_PATH="gs://weatherbench2/datasets/era5/1959-2023_01_10-6h-64x32_equiangular_conservative.zarr"
 
-OUTPUT_PATH="ERA5/5.625deg_wb3"
+OUTPUT_PATH="/path/to/directory/"
 
 gsutil -m cp -r \
     "${BASE_PATH}/.zattrs" \
