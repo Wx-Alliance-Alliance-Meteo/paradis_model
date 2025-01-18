@@ -5,6 +5,7 @@ ERA5/
 ME/
 testing.py
 .gitignore
+forecast_legacy.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

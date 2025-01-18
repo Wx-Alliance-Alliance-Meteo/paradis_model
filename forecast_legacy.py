@@ -1,11 +1,14 @@
 """Forecast script for the model."""
 
 import logging
+
 import hydra
-import torch
 import matplotlib.pyplot as plt
 import numpy
 from omegaconf import DictConfig
+import torch
+import xarray
+
 from trainer import LitParadis
 from data.datamodule import Era5DataModule
 
@@ -41,43 +44,11 @@ def plot_forecast_map(
     if distribution is not None:
         dist_plots = distribution[:, feature_index]
 
-    # Apply inverse transformations
-    if feature == "specific_humidity":
-        output_plot = dataset._denormalize_humidity(torch.tensor(output_plot)).numpy()
-        true_plot = dataset._denormalize_humidity(torch.tensor(true_plot)).numpy()
-        
-        if distribution is not None:
-            dist_plots = dataset._denormalize_humidity(torch.tensor(dist_plots)).numpy()
-        
-    elif feature == "total_precipitation_6hr":
-        output_plot = dataset._denormalize_precipitation(
-            torch.tensor(output_plot)
-        ).numpy()
-        true_plot = dataset._denormalize_precipitation(torch.tensor(true_plot)).numpy()
-        
-        if distribution is not None:
-            dist_plots = dataset._denormalize_precipitation(torch.tensor(dist_plots)).numpy()
-        
-    elif feature_name in dataset.var_stats:
-        # Apply z-score denormalization using stored statistics
-        stats = dataset.var_stats[feature_name]
-        output_plot = output_plot * stats["std"] + stats["mean"] - temp_offset
-        true_plot = true_plot * stats["std"] + stats["mean"] - temp_offset
-        
-        if distribution is not None:
-            dist_plots = dist_plots * stats["std"] + stats["mean"] - temp_offset
-    else:
-        raise ValueError("Unkown feature")
-
-    # Configure plot settings based on variable type
+        # Configure plot settings based on variable type
     if feature == "geopotential":
         g = 9.80665  # gravitational acceleration
         output_plot = output_plot / g
         true_plot = true_plot / g
-        
-        if distribution is not None:
-            dist_plots = dist_plots / g
-        
         cmap = "viridis"
         vmax = numpy.max([numpy.max(output_plot), numpy.max(true_plot)])
         vmin = numpy.min([numpy.min(output_plot), numpy.min(true_plot)])
@@ -236,6 +207,88 @@ def plot_deterministic(
     plt.close(plt.gcf())
     
     
+def denormalize_ground_truth(ground_truth, dataset):
+    """Denormalize the ground truth data."""
+    ground_truth[:, :, dataset.norm_precip_in] = dataset._denormalize_precipitation(
+        ground_truth[:, :, dataset.norm_precip_in]
+    )
+    ground_truth[:, :, dataset.norm_humidity_in] = dataset._denormalize_humidity(
+        ground_truth[:, :, dataset.norm_humidity_in]
+    )
+    ground_truth[:, :, dataset.norm_zscore_in] = dataset._denormalize_standard(
+        torch.tensor(ground_truth[:, :, dataset.norm_zscore_in]),
+        dataset.input_mean.view(-1, 1, 1),
+        dataset.input_std.view(-1, 1, 1),
+    )
+
+
+def denormalize_forecast(output_forecast, dataset):
+    """Denormalize the forecast data."""
+    output_forecast[:, :, dataset.norm_precip_out] = dataset._denormalize_precipitation(
+        output_forecast[:, :, dataset.norm_precip_out]
+    )
+    output_forecast[:, :, dataset.norm_humidity_out] = dataset._denormalize_humidity(
+        output_forecast[:, :, dataset.norm_humidity_out]
+    )
+    output_forecast[:, :, dataset.norm_zscore_out] = dataset._denormalize_standard(
+        torch.tensor(output_forecast[:, :, dataset.norm_zscore_out]),
+        dataset.output_mean.view(-1, 1, 1),
+        dataset.output_std.view(-1, 1, 1),
+    )
+    
+def save_results_to_zarr(
+    data,
+    atmospheric_vars,
+    surface_vars,
+    constant_vars,
+    datamodule,
+    pressure_levels,
+    filename,
+):
+    """Save results to a Zarr file."""
+    data_vars = {}
+    dataset = datamodule.dataset
+    num_levels = len(pressure_levels)
+
+    # Prepare atmospheric variables
+    atm_dims = ["time", "prediction_timedelta", "level", "latitude", "longitude"]
+    for i, feature in enumerate(atmospheric_vars):
+        data_vars[feature] = (
+            atm_dims,
+            data[:, :, i * num_levels : (i + 1) * num_levels],
+        )
+
+    # Prepare surface variables
+    sur_dims = ["time", "prediction_timedelta", "latitude", "longitude"]
+    for i, feature in enumerate(surface_vars):
+        data_vars[feature] = (
+            sur_dims,
+            data[:, :, len(atmospheric_vars) * num_levels + i],
+        )
+
+    # Prepare constant variables
+    con_dims = ["latitude", "longitude"]
+    for i, feature in enumerate(constant_vars):
+        if feature in con_dims:
+            continue
+        data_vars[feature] = (con_dims, dataset.ds_constants[feature].data)
+
+    # Define coordinates
+    coords = {
+        "latitude": dataset.lat,
+        "longitude": dataset.lon,
+        "time": dataset.time[: data.shape[0]],
+        "level": pressure_levels,
+        "prediction_timedelta": (numpy.arange(data.shape[1]) + 1)
+        * numpy.timedelta64(6 * 3600 * 10**9, "ns"),
+    }
+
+    # Save to Zarr
+    xarray.Dataset(data_vars=data_vars, coords=coords).to_zarr(
+        filename, consolidated=True, mode="w"
+    )
+
+    
 def run_ensemble(input_data, cfg, device, litmodel):
     """Generate data for ensemble model."""
     
@@ -296,10 +349,17 @@ def main(cfg: DictConfig):
 
     # Initialize data module
     datamodule = Era5DataModule(cfg)
-    datamodule.setup(stage="fit")
-    print(cfg.model.variational == True)
+    datamodule.setup(stage="test")
+    dataset = datamodule.dataset
+    
+    num_levels = len(pressure_levels)
+    num_atm_features = len(atmospheric_vars) * num_levels
+    num_sur_features = len(surface_vars)
+    num_features = num_atm_features + num_sur_features
+    num_time_instances = len(dataset)
+    num_forecast_steps = cfg.model.forecast_steps
 
-    # Initialize and load model
+    # Load model
     litmodel = LitParadis(datamodule, cfg)
     if cfg.model.checkpoint_path:
         checkpoint = torch.load(cfg.model.checkpoint_path, weights_only=True)
