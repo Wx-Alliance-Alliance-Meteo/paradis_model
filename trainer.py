@@ -26,6 +26,8 @@ class LitParadis(L.LightningModule):
         # Instantiate the model
         self.model = Paradis(datamodule, cfg)
         self.cfg = cfg
+        self.variational = cfg.model.variational
+        self.beta = cfg.model.get("beta")
 
         print(f"Number of trainable parameters: {sum(p.numel() for p in self.model.parameters() if p.requires_grad):,}")
 
@@ -155,7 +157,10 @@ class LitParadis(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         """Training step."""
-        loss = self._common_step(batch, batch_idx)
+        if self.variational:
+            loss, kl_loss = self._common_step(batch, batch_idx)
+        else:
+            loss = self._common_step(batch, batch_idx)
 
         # Log metrics
         self.log(
@@ -167,6 +172,15 @@ class LitParadis(L.LightningModule):
             sync_dist=True,
         )
         self.log("lr", self.optimizers().param_groups[0]["lr"], prog_bar=True)
+        if self.variational:
+            self.log(
+                "kl_loss",
+                kl_loss,
+                on_step=True,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
 
         # Clip gradients manually if gradient_clip_val is set
         if self.cfg.trainer.gradient_clip_val > 0:
@@ -180,10 +194,26 @@ class LitParadis(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         """Validation step."""
-        loss = self._common_step(batch, batch_idx)
+
+        if self.variational:
+            # Propogates up the KL
+            loss, kl_loss = self._common_step(batch, batch_idx)
+        else:
+            loss = self._common_step(batch, batch_idx)
+
         self.log(
             "val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True
         )
+        if self.variational:
+            # View the KL as well
+            self.log(
+                "kl_loss",
+                kl_loss,
+                on_step=True,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
         return loss
 
     def _common_step(self, batch, batch_idx):
@@ -195,10 +225,23 @@ class LitParadis(L.LightningModule):
 
         for step in range(self.forecast_steps):
             # Forward pass
-            output_data = self(input_data_step, torch.tensor(step, device=self.device))
+            if self.variational:
+                # Propogates up the KL
+                output_data, kl_loss = self(
+                    input_data_step, torch.tensor(step, device=self.device)
+                )
+            else:
+                output_data = self(
+                    input_data_step, torch.tensor(step, device=self.device)
+                )
+
+            loss = self.loss_fn(output_data, true_data[:, step])
+
+            if self.variational:
+                # beta-VAE
+                loss += self.beta * kl_loss
 
             # Compute loss (data is already transformed by dataset)
-            loss = self.loss_fn(output_data, true_data[:, step])
             batch_loss += loss
 
             # Prepare next step input
@@ -206,6 +249,10 @@ class LitParadis(L.LightningModule):
                 input_data_step = self._autoregression_input_from_output(
                     input_data[:, step + 1], output_data
                 )
+
+        if self.variational:
+            # Propogates up the KL
+            return batch_loss / self.forecast_steps, kl_loss
 
         return batch_loss / self.forecast_steps
 

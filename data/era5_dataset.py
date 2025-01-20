@@ -116,11 +116,27 @@ class ERA5Dataset(torch.utils.data.Dataset):
         lon_rad = torch.from_numpy(numpy.deg2rad(self.lon)).to(self.dtype)
         lat_rad_grid, lon_rad_grid = torch.meshgrid(lat_rad, lon_rad, indexing="ij")
 
-        # Get surface geopotential and normalize it
-        normalized_geopotential = (
-            torch.from_numpy(ds_constants["geopotential_at_surface"].data)
-            - ds_constants["geopotential_at_surface"].attrs["mean"]
-        ) / ds_constants["geopotential_at_surface"].attrs["std"]
+        # Use zscore to normalize the following variables
+        normalize_const_vars = {
+            "geopotential_at_surface",
+            "slope_of_sub_gridscale_orography",
+            "standard_deviation_of_orography",
+        }
+
+        normalized_constants = []
+        for var in features_cfg.input.constants:
+            # Skip latitude and longitude, as they are always added in radians
+            if var == "latitude" or var == "longitude":
+                continue
+
+            # Normalize constants and keep in memory
+            if var in normalize_const_vars:
+                array = (
+                    torch.from_numpy(ds_constants[var].data)
+                    - ds_constants[var].attrs["mean"]
+                ) / ds_constants[var].attrs["std"]
+
+                normalized_constants.append(array)
 
         # Get land-sea mask (no normalization needed)
         land_sea_mask = torch.from_numpy(ds_constants["land_sea_mask"].data).to(
@@ -130,7 +146,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         # Stack all constant features together
         self.constant_data = (
             torch.stack(
-                [normalized_geopotential, land_sea_mask, lat_rad_grid, lon_rad_grid]
+                [*normalized_constants, land_sea_mask, lat_rad_grid, lon_rad_grid]
             )
             .permute(1, 2, 0)
             .reshape(self.lat_size, self.lon_size, -1)
@@ -430,7 +446,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
             Precipitation data in original scale
         """
         shift = 10
-        return numpy.clip(numpy.exp(data) - 1e-6, a_min=0, a_max=None)
+        return numpy.clip(numpy.exp(data - shift) - 1e-6, a_min=0, a_max=None)
 
 
 def split_dataset(dataset, train_ratio=0.8, seed: int = 42):
