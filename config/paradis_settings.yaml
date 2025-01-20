@@ -4,17 +4,17 @@ model:
   base_dt: 21600          # 6 hours * 3600 seconds
   loss_alpha: 0.5         # Balance the contribution MAE and RMSE. loss = α * MAE + (1-α) * RMSE
   checkpoint_path: null   # Path to model checkpoint for loading pre-trained weights
-  compile: true           # Whether to compile the model using torch.compile()
+  compile: False          # Whether to compile the model using torch.compile()
 
 trainer:
   lr: 5.0e-4             # Learning rate (LR) for the optimizer
   weight_decay: 1.e-5    # Weight decay coefficient for regularization
   gradient_clip_val: -1  # Gradient clipping value, set to -1 to disable
-  max_epochs: 100
+  max_epochs: 200
   num_devices: 1
   accelerator: gpu
   use_amp: true          # Use Automatic Mixed Precision
-  print_losses: false
+  print_losses: true
   early_stopping:
     enabled: true        # Whether to use early stopping
     patience: 8          # Number of epochs with no improvement after which training will stop
@@ -37,9 +37,9 @@ trainer:
 #    min_lr: 1e-6           # Lower bound on the learning rate
 
 dataset:
-  dataset_dir: /path/to/dataset/
-  start_date: 1959-01-01  # Start date for the dataset (YYYY-MM-DD)
-  end_date: 2022-12-31    # End date for the dataset (YYYY-MM-DD)
+  dataset_dir: /home/cap003/hall6/weatherbench_paradis/era5_5.625deg_13level/
+  start_date: 2000-01-01  # Start date for the dataset (YYYY-MM-DD)
+  end_date: 2000-12-31    # End date for the dataset (YYYY-MM-DD)
   train_ratio: 0.8        # Ratio of data used for training (rest for validation)
   batch_size: 64          # Number of samples per batch
   num_workers: 4          # Number of workers for dataloader

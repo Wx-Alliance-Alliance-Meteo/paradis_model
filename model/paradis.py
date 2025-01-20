@@ -136,17 +136,19 @@ class ForcingsIntegrator(nn.Module):
         fe = hidden_features + dt * self.diffusion_reaction_net(hidden_features)
 
         # Heun 
-        k1 = hidden_features + dt * self.diffusion_reaction_net(hidden_features)
-        heun = hidden_features + dt/2*(self.diffusion_reaction_net(hidden_features) + self.diffusion_reaction_net(k1))
+        #k1 = self.diffusion_reaction_net(hidden_features)
+        #k2 = hidden_features + dt * k1
+        #heun = hidden_features + dt/2*(k1 + self.diffusion_reaction_net(k2))
 
         # RK4
-        #k1y = dynamic + dt/2* self.diffusion_reaction_net(combined)
-        #combinedk1 = torch.cat([k1y,static],dim=1)
-        #k2y = dynamic + dt/2*self.diffusion_reaction_net(combinedk1)
-        #combinedk2 = torch.cat([k2y,static],dim=1)
-        #k3y = dynamic + dt* self.diffusion_reaction_net(combinedk2)
-        #combinedk3 = torch.cat([k3y,static],dim =1)
-        #rk4 = dynamic + dt/6*( self.diffusion_reaction_net(combined) + 2* self.diffusion_reaction_net(combinedk1) + 2* self.diffusion_reaction_net(combinedk2)+ self.diffusion_reaction_net(combinedk3))
+        #k1 = self.diffusion_reaction_net(hidden_features)
+        #k1y = hidden_features + dt/2 * k1
+        #k2 = self.diffusion_reaction_net(k1y)
+        #k2y =  hidden_features + dt/2 * k2 
+        #k3 = self.diffusion_reaction_net(k2y)
+        #k3y =  hidden_features + dt * k3
+        #k4 = self.diffusion_reaction_net(k3y)
+        #rk4 = hidden_features + dt/6 *(k1 + 2*k2 + 2*k3 + k4) 
 
         return fe
 

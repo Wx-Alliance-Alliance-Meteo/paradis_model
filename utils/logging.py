@@ -237,7 +237,7 @@ class TrainingLogger:
 
 def create_experiment_logger(
     experiment_name: str,
-    base_dir: str = "logs",
+    base_dir: str = "/space/hall5/sitestore/eccc/mrd/rpnatm/siw001/paradis/logs", #str = "logs",
     use_tensorboard: bool = True,
 ) -> tuple[TrainingLogger, MetricsLogger]:
     """Create loggers for a new experiment.

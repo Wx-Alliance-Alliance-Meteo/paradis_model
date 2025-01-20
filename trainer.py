@@ -27,9 +27,7 @@ class LitParadis(L.LightningModule):
         self.model = Paradis(datamodule, cfg)
         self.cfg = cfg
 
-        print(
-            f"Number of trainable parameters: {sum(p.numel() for p in self.model.parameters() if p.requires_grad):,}"
-        )
+        print(f"Number of trainable parameters: {sum(p.numel() for p in self.model.parameters() if p.requires_grad):,}")
 
         # Access output_name_order from configuration
         self.output_name_order = datamodule.output_name_order
@@ -223,10 +221,10 @@ class LitParadis(L.LightningModule):
 
             if train_loss is not None and val_loss is not None:
                 print(
-                    f"Epoch {self.current_epoch:4d} | "
-                    f"Train Loss: {train_loss.item():.6f} | "
-                    f"Val Loss: {val_loss.item():.6f} | "
-                    f"LR: {current_lr:.2e} | "
+                    f"Epoch {self.current_epoch:4d} | ",
+                    f"Train Loss: {train_loss.item():.6f} | ",
+                    f"Val Loss: {val_loss.item():.6f} | ",
+                    f"LR: {current_lr:.2e} | ",
                     f"Elapsed time: {elapsed_time:.4f}s"
                 )
 
