@@ -12,6 +12,74 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from data.forcings.toa_radiation import toa_radiation
 
 
+def compute_cartesian_wind(ds):
+    """
+    Compute 3D Cartesian wind components from spherical components.
+
+    Args:
+        ds (xarray.Dataset): Dataset containing wind components and coordinates
+
+    Returns:
+        tuple: Dataset with added Cartesian wind components
+    """
+    # Constants
+    g = 9.80616  # gravitational acceleration m/s^2
+    R = 287.05  # Gas constant for dry air J/(kg·K)
+
+    # Add the 3D Cartesian wind components directly to the dataset
+    ds = ds.assign(
+        wind_x=-ds.u_component_of_wind * numpy.sin(numpy.deg2rad(ds.longitude))
+        - ds.v_component_of_wind
+        * numpy.sin(numpy.deg2rad(ds.latitude))
+        * numpy.cos(numpy.deg2rad(ds.longitude))
+        - ds.vertical_velocity
+        * R
+        * ds.temperature
+        / (ds.level * 100 * g)
+        * numpy.cos(numpy.deg2rad(ds.latitude))
+        * numpy.cos(numpy.deg2rad(ds.longitude)),
+        wind_y=ds.u_component_of_wind * numpy.cos(numpy.deg2rad(ds.longitude))
+        - ds.v_component_of_wind
+        * numpy.sin(numpy.deg2rad(ds.latitude))
+        * numpy.sin(numpy.deg2rad(ds.longitude))
+        - ds.vertical_velocity
+        * R
+        * ds.temperature
+        / (ds.level * 100 * g)
+        * numpy.cos(numpy.deg2rad(ds.latitude))
+        * numpy.sin(numpy.deg2rad(ds.longitude)),
+        wind_z=ds.v_component_of_wind * numpy.cos(numpy.deg2rad(ds.latitude))
+        - ds.vertical_velocity
+        * R
+        * ds.temperature
+        / (ds.level * 100 * g)
+        * numpy.sin(numpy.deg2rad(ds.latitude)),
+        # Surface wind components (no vertical velocity)
+        wind_x_10m=-ds["10m_u_component_of_wind"]
+        * numpy.sin(numpy.deg2rad(ds.longitude))
+        - ds["10m_v_component_of_wind"]
+        * numpy.sin(numpy.deg2rad(ds.latitude))
+        * numpy.cos(numpy.deg2rad(ds.longitude)),
+        wind_y_10m=ds["10m_u_component_of_wind"]
+        * numpy.cos(numpy.deg2rad(ds.longitude))
+        - ds["10m_v_component_of_wind"]
+        * numpy.sin(numpy.deg2rad(ds.latitude))
+        * numpy.sin(numpy.deg2rad(ds.longitude)),
+    )
+
+    # Set attributes for the 3D wind components
+    for var in ["wind_x", "wind_y", "wind_z"]:
+        ds[var].attrs["long_name"] = f'{var.split("_")[1]}_component_of_wind'
+        ds[var].attrs["units"] = "m s-1"
+
+    # Set attributes for the surface wind components
+    for var in ["wind_x_10m", "wind_y_10m"]:
+        ds[var].attrs["long_name"] = f'{var.split("_")[1]}_component_of_10m_wind'
+        ds[var].attrs["units"] = "m s-1"
+
+    return ds
+
+
 def main():
     """
     Main function to process WeatherBench data by stacking data,
@@ -30,7 +98,10 @@ def main():
     )
 
     parser.add_argument(
-        "--remove-poles", action="store_true", default=False, help="Remove latitudes 90 and -90"
+        "--remove-poles",
+        action="store_true",
+        default=False,
+        help="Remove latitudes 90 and -90",
     )
     args = parser.parse_args()
 
@@ -65,6 +136,9 @@ def main():
         "total_column_water",
         "standard_deviation_of_orography",
         "slope_of_sub_gridscale_orography",
+        "wind_x",
+        "wind_y",
+        "wind_z",
     ]
 
     # Determine variables to drop
@@ -75,7 +149,7 @@ def main():
 
     # Uncomment the following line if latitudes 90 and -90 need to be removed
     if args.remove_poles:
-        ds = ds.isel(latitude=slice(1, ds.latitude.size-1))
+        ds = ds.isel(latitude=slice(1, ds.latitude.size - 1))
 
     # Step 1: Stack data for efficient storage and processing
     stack_data(ds, args.output_dir)
@@ -96,6 +170,8 @@ def stack_data(ds, output_base_dir):
         ds (xarray.Dataset): The input dataset to process.
         output_base_dir (str): Directory to store the processed yearly data.
     """
+    # Add Cartesian wind components to the dataset
+    ds = compute_cartesian_wind(ds)
 
     # Determine the minimum and maximum years in the dataset
     min_year = 2000
