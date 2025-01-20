@@ -27,12 +27,11 @@ where `[override_args]` can override the inputs in the config file.
 ##### Option 1
 Download the original dataset from WeatherBench 2:
 
-Set the `OUTPUT_DIR` path in `scripts/download_dataset.sh` and download using
 ```
 cd scripts
-bash download_dataset.sh
+bash download_dataset.sh OUTPUT_DIR
 ```
-and then preprocess it
+where OUTPUT_DIR is the destination directory and then preprocess it
 
 ```
 python scripts/preprocess_weatherbench_data.py -i /path/to/ERA5/5.625deg_wb2 -o /path/to/ERA5/5.65deg

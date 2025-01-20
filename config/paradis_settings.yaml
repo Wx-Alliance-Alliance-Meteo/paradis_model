@@ -27,9 +27,9 @@ trainer:
   # 1. OneCycleLR - Recommended for initial training
   scheduler:
     type: "one_cycle"         # OneCycleLR scheduler
-    warmup_pct_start: 0.1     # Percentage of training used for warmup phase
+    warmup_pct_start: 0.      # Percentage of training used for warmup phase
     lr_div_factor: 25         # Initial learning rate = max_lr/lr_div_factor
-    lr_final_div: 1.0e3       # Final learning rate = max_lr/lr_final_div_factor
+    lr_final_div: 1.0e2       # Final learning rate = max_lr/lr_final_div_factor
 
   # 2. ReduceLROnPlateau - Recommended for fine-tuning a pre-trained model
   # scheduler:
@@ -44,7 +44,7 @@ dataset:
   end_date: 2019-12-31        # End date for the dataset (YYYY-MM-DD)
   train_ratio: 0.8            # Ratio of data used for training (rest for validation)
   batch_size: 64              # Number of samples per batch
-  num_workers: 4              # Number of workers for dataloader
+  num_workers: 16              # Number of workers for dataloader
 
 features:
   pressure_levels: # Added to atmospheric variable names
@@ -65,14 +65,14 @@ features:
   base:
     atmospheric:
       - geopotential
-      - u_component_of_wind
-      - v_component_of_wind
+      - wind_x
+      - wind_y
+      - wind_z
       - specific_humidity
       - temperature
-      - vertical_velocity
     surface:
-      - 10m_u_component_of_wind
-      - 10m_v_component_of_wind
+      - wind_x_10m
+      - wind_y_10m
       - 2m_temperature
       - mean_sea_level_pressure
       - surface_pressure
@@ -102,15 +102,15 @@ features:
 
 variable_loss_weights:
   atmospheric:
-    u_component_of_wind: 1.0
+    wind_x: 1.0
+    wind_y: 1.0
+    wind_z: 1.0
     geopotential: 1.0
-    v_component_of_wind: 1.0
-    vertical_velocity: 1.0
     specific_humidity: 1.0
     temperature: 1.0
   surface:
-    10m_u_component_of_wind: 0.1
-    10m_v_component_of_wind: 0.1
+    wind_x_10m: 0.1
+    wind_y_10m: 0.1
     2m_temperature: 0.1
     mean_sea_level_pressure: 0.1
     surface_pressure: 0.1

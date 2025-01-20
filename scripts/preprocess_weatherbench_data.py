@@ -139,6 +139,8 @@ def main():
         "wind_x",
         "wind_y",
         "wind_z",
+        "wind_x_10m",
+        "wind_y_10m",
     ]
 
     # Determine variables to drop
@@ -174,7 +176,7 @@ def stack_data(ds, output_base_dir):
     ds = compute_cartesian_wind(ds)
 
     # Determine the minimum and maximum years in the dataset
-    min_year = 2000
+    min_year = 2010
     max_year = numpy.max(ds["time.year"].values)
 
     # Keep only variables with a time dimension (e.g., atmospheric and surface variables)
@@ -324,7 +326,7 @@ def compute_statistics(output_base_dir):
 
     years = [int(item) for item in os.listdir(output_base_dir) if item.isdigit()]
 
-    min_year = 2000
+    min_year = 2010
     max_year = numpy.max(years)
 
     # Create list of files to open
