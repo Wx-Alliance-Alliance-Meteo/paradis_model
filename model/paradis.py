@@ -22,15 +22,17 @@ def CLP(dim_in, dim_out, mesh_size, kernel_size=3, activation=nn.SiLU):
 
 # Reusable CLP block
 class CLPBlock(nn.Module):
-    def __init__(self, input_dim, output_dim, mesh_size, kernel_size=3, activation=nn.SiLU):
+    def __init__(
+        self, input_dim, output_dim, mesh_size, kernel_size=3, activation=nn.SiLU
+    ):
         super().__init__()
         self.layers = nn.Sequential(
             GeoCyclicPadding(kernel_size // 2, input_dim),
             nn.Conv2d(input_dim, output_dim, kernel_size=kernel_size),
             nn.LayerNorm([output_dim, mesh_size[0], mesh_size[1]]),
-            activation()
+            activation(),
         )
-        
+
     def forward(self, x):
         return self.layers(x)
 
@@ -38,36 +40,49 @@ class CLPBlock(nn.Module):
 # CLP processor with structured latent
 class VariationalCLP(nn.Module):
     """Convolutional layer processor with variational latent space."""
-    def __init__(self, dim_in, dim_out, mesh_size, kernel_size=3, 
-                 latent_dim=8, activation=nn.SiLU, expansion_factor=8):
+
+    def __init__(
+        self,
+        dim_in,
+        dim_out,
+        mesh_size,
+        kernel_size=3,
+        latent_dim=8,
+        activation=nn.SiLU,
+        expansion_factor=8,
+    ):
         super().__init__()
-        
+
         self.latent_dim = latent_dim
         self.expansion_factor = expansion_factor
-        
+
         # Encoder that produces pre latent
         self.encoder = nn.Sequential(
             CLPBlock(dim_in, dim_in, mesh_size),
-            nn.Conv2d(dim_in, 2 * latent_dim, kernel_size=1)  # project down
+            nn.Conv2d(dim_in, 2 * latent_dim, kernel_size=1),  # project down
         )
-        
+
         # Small projection up and down in latent
         self.mu = nn.Sequential(
             nn.Conv2d(latent_dim, self.expansion_factor * latent_dim, kernel_size=1),
-            nn.LayerNorm([self.expansion_factor * latent_dim, mesh_size[0], mesh_size[1]]),
+            nn.LayerNorm(
+                [self.expansion_factor * latent_dim, mesh_size[0], mesh_size[1]]
+            ),
             activation(),
-            nn.Conv2d(self.expansion_factor * latent_dim, latent_dim, kernel_size=1)
+            nn.Conv2d(self.expansion_factor * latent_dim, latent_dim, kernel_size=1),
         )
         self.logvar = nn.Sequential(
             nn.Conv2d(latent_dim, self.expansion_factor * latent_dim, kernel_size=1),
-            nn.LayerNorm([self.expansion_factor * latent_dim, mesh_size[0], mesh_size[1]]),
+            nn.LayerNorm(
+                [self.expansion_factor * latent_dim, mesh_size[0], mesh_size[1]]
+            ),
             activation(),
-            nn.Conv2d(self.expansion_factor * latent_dim, latent_dim, kernel_size=1)
+            nn.Conv2d(self.expansion_factor * latent_dim, latent_dim, kernel_size=1),
         )
-        
+
         # Decoder that takes the concat of the logvar and mu
         self.decoder = nn.Sequential(
-            nn.Conv2d(latent_dim, dim_in, kernel_size=1), # project up
+            nn.Conv2d(latent_dim, dim_in, kernel_size=1),  # project up
             CLPBlock(dim_in, dim_in, mesh_size),
             GeoCyclicPadding(kernel_size // 2, dim_in),
             nn.Conv2d(dim_in, dim_out, kernel_size=kernel_size),
@@ -78,7 +93,7 @@ class VariationalCLP(nn.Module):
         std = torch.exp(0.5 * log_var)
         eps = torch.randn_like(std)
         return mean + eps * std
-    
+
     def forward(self, x, num_samples=1):
         batch_size = x.shape[0]
 
@@ -111,7 +126,7 @@ class NeuralSemiLagrangian(nn.Module):
         # For cubic interpolation
         self.padding = 1
         self.padding_interp = GeoCyclicPadding(self.padding, hidden_dim)
-        
+
         # Flag for variational variant to be used in forward
         self.variational = variational
 
@@ -171,7 +186,7 @@ class NeuralSemiLagrangian(nn.Module):
             velocities, kl_loss = self.velocity_net(hidden_features)
         else:
             velocities = self.velocity_net(hidden_features)
-            
+
         u = velocities[:, 0]
         v = velocities[:, 1]
 
@@ -209,14 +224,17 @@ class NeuralSemiLagrangian(nn.Module):
         # Interpolate
         if self.variational:
             # Propogates up the KL
-            return (torch.nn.functional.grid_sample(
-                dynamic_padded,
-                grid,
-                align_corners=True,
-                mode="bicubic",
-                padding_mode="border",
-            ), kl_loss)
-        
+            return (
+                torch.nn.functional.grid_sample(
+                    dynamic_padded,
+                    grid,
+                    align_corners=True,
+                    mode="bicubic",
+                    padding_mode="border",
+                ),
+                kl_loss,
+            )
+
         return torch.nn.functional.grid_sample(
             dynamic_padded,
             grid,
@@ -252,7 +270,7 @@ class Paradis(nn.Module):
         mesh_size = [datamodule.lat_size, datamodule.lon_size]
 
         num_levels = len(cfg.features.pressure_levels)
-        
+
         # Flag for variational
         self.variational = cfg.model.variational
 
@@ -306,12 +324,12 @@ class Paradis(nn.Module):
             z, kl_loss = self.advection(z, x_static, self.dt)
         else:
             z = self.advection(z, x_static, self.dt)
-            
+
         z = self.solve_along_trajectories(z, self.dt)
 
         # Project to output space
         if self.variational:
             # Propogates up the KL
             return (self.output_proj(z), kl_loss)
-        
+
         return self.output_proj(z)

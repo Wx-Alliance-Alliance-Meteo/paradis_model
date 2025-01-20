@@ -1,50 +1,50 @@
 model:
-  hidden_multiplier: 4    # Automatically scale the hidden dimension with the number of input channels (hidden_dim = hidden_multiplier * nb_dynamic_channels)
-  forecast_steps: 1       # Number of autoregressive steps for forecasting
-  base_dt: 21600          # 6 hours * 3600 seconds
-  loss_alpha: 0.5         # Balance the contribution MAE and RMSE. loss = α * MAE + (1-α) * RMSE
-  checkpoint_path: null   # Path to model checkpoint for loading pre-trained weights
-  compile: true           # Whether to compile the model using torch.compile()
-  variational: False      # Flag for variational variant
-  beta: 0.01              # Beta from beta-vae
+  hidden_multiplier: 4        # Automatically scale the hidden dimension with the number of input channels (hidden_dim = hidden_multiplier * nb_dynamic_channels)
+  forecast_steps: 1           # Number of autoregressive steps for forecasting
+  base_dt: 21600              # 6 hours * 3600 seconds
+  loss_alpha: 0.5             # Balance the contribution MAE and RMSE. loss = α * MAE + (1-α) * RMSE
+  checkpoint_path: null       # Path to model checkpoint for loading pre-trained weights
+  compile: true               # Whether to compile the model using torch.compile()
+  variational: False          # Flag for variational variant
+  beta: 0.01                  # Beta from beta-vae
 
 trainer:
-  lr: 5.0e-4                 # Learning rate (LR) for the optimizer
-  weight_decay: 1.e-5        # Weight decay coefficient for regularization
-  gradient_clip_val: -1      # Gradient clipping value, set to -1 to disable
+  lr: 5.0e-4                  # Learning rate (LR) for the optimizer
+  weight_decay: 1.e-5         # Weight decay coefficient for regularization
+  gradient_clip_val: -1       # Gradient clipping value, set to -1 to disable
   max_epochs: 100
   num_devices: 1
   accelerator: gpu
-  use_amp: true              # Use Automatic Mixed Precision
+  use_amp: true               # Use Automatic Mixed Precision
   print_losses: false
   early_stopping:
-    enabled: true            # Whether to use early stopping
-    patience: 8              # Number of epochs with no improvement after which training will stop
+    enabled: true             # Whether to use early stopping
+    patience: 8               # Number of epochs with no improvement after which training will stop
 
   # Scheduler configuration - Choose ONE of the following scheduler types by
   # commenting/uncommenting the appropriate section:
 
   # 1. OneCycleLR - Recommended for initial training
   scheduler:
-    type: "one_cycle"        # OneCycleLR scheduler
-    warmup_pct_start: 0.1    # Percentage of training used for warmup phase
-    lr_div_factor: 25        # Initial learning rate = max_lr/lr_div_factor
-    lr_final_div: 1.0e3      # Final learning rate = max_lr/lr_final_div_factor
+    type: "one_cycle"         # OneCycleLR scheduler
+    warmup_pct_start: 0.1     # Percentage of training used for warmup phase
+    lr_div_factor: 25         # Initial learning rate = max_lr/lr_div_factor
+    lr_final_div: 1.0e3       # Final learning rate = max_lr/lr_final_div_factor
 
   # 2. ReduceLROnPlateau - Recommended for fine-tuning a pre-trained model
   # scheduler:
-  #   type: "reduce_lr"      # ReduceLROnPlateau scheduler
-  #   factor: 0.5            # Factor by which to reduce learning rate
-  #   patience: 5            # Number of epochs with no improvement after which LR will be reduced
-  #   min_lr: 1e-6           # Lower bound on the learning rate
+  #   type: "reduce_lr"       # ReduceLROnPlateau scheduler
+  #   factor: 0.5             # Factor by which to reduce learning rate
+  #   patience: 5             # Number of epochs with no improvement after which LR will be reduced
+  #   min_lr: 1e-6            # Lower bound on the learning rate
 
 dataset:
   dataset_dir: /path/to/dataset/
-  start_date: 2000-01-01  # Start date for the dataset (YYYY-MM-DD)
-  end_date: 2019-12-31    # End date for the dataset (YYYY-MM-DD)
-  train_ratio: 0.8        # Ratio of data used for training (rest for validation)
-  batch_size: 64          # Number of samples per batch
-  num_workers: 4          # Number of workers for dataloader
+  start_date: 2000-01-01      # Start date for the dataset (YYYY-MM-DD)
+  end_date: 2019-12-31        # End date for the dataset (YYYY-MM-DD)
+  train_ratio: 0.8            # Ratio of data used for training (rest for validation)
+  batch_size: 64              # Number of samples per batch
+  num_workers: 4              # Number of workers for dataloader
 
 features:
   pressure_levels: # Added to atmospheric variable names

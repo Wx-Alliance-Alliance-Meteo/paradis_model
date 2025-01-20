@@ -98,7 +98,7 @@ class LitParadis(L.LightningModule):
                 mode="default",
                 fullgraph=True,
                 dynamic=False,
-                backend="inductor"
+                backend="inductor",
             )
 
         self.epoch_start_time = None
@@ -196,20 +196,25 @@ class LitParadis(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         """Validation step."""
-        
+
         if self.variational:
             # Propogates up the KL
             loss, kl_loss = self._common_step(batch, batch_idx)
         else:
             loss = self._common_step(batch, batch_idx)
-            
+
         self.log(
             "val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True
         )
         if self.variational:
             # View the KL as well
             self.log(
-                "kl_loss", kl_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True
+                "kl_loss",
+                kl_loss,
+                on_step=True,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
             )
         return loss
 
@@ -224,12 +229,16 @@ class LitParadis(L.LightningModule):
             # Forward pass
             if self.variational:
                 # Propogates up the KL
-                output_data, kl_loss = self(input_data_step, torch.tensor(step, device=self.device))
+                output_data, kl_loss = self(
+                    input_data_step, torch.tensor(step, device=self.device)
+                )
             else:
-                output_data = self(input_data_step, torch.tensor(step, device=self.device))
-                
+                output_data = self(
+                    input_data_step, torch.tensor(step, device=self.device)
+                )
+
             loss = self.loss_fn(output_data, true_data[:, step])
-            
+
             if self.variational:
                 # beta-VAE
                 loss += self.beta * kl_loss
@@ -246,8 +255,8 @@ class LitParadis(L.LightningModule):
         if self.variational:
             # Propogates up the KL
             return batch_loss / self.forecast_steps, kl_loss
-        
-        return batch_loss / self.forecast_steps 
+
+        return batch_loss / self.forecast_steps
 
     def on_train_epoch_end(self):
         """Log epoch time and metrics if printing losses."""
