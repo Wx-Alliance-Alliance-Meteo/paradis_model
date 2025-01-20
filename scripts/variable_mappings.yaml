@@ -21,7 +21,7 @@ variable_mappings:
     new_name: MG
   mean_sea_level_pressure:
     new_name: PN
-    conversion: "data_slice / 100"      
+    conversion: "data_slice / 100"
   specific_humidity:
     new_name: HU
   temperature:
@@ -41,4 +41,5 @@ variable_mappings:
   surface_pressure:
     new_name: P0
     conversion: "data_slice / 100" 
-
+  total_column_water:
+    new_name: CQ1  
