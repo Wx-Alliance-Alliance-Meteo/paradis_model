@@ -43,7 +43,6 @@ Download the preprocessed dataset, available at
 
 https://hpfx.collab.science.gc.ca/~cap003/era5_5.625deg_13level.tar.gz
 
-
 #### Acknowledgements
 
 This project draws significant inspiration from the paper ["Advection Augmented Convolutional Neural Networks"](https://arxiv.org/abs/2406.19253) by Niloufar Zakariaei, Siddharth Rout, Eldad Haber and Moshe Eliasof.
