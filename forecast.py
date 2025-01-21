@@ -2,6 +2,7 @@
 
 from datetime import datetime
 import logging
+import re
 
 import hydra
 import matplotlib.pyplot as plt
@@ -14,6 +15,116 @@ from trainer import LitParadis
 from data.datamodule import Era5DataModule
 
 
+def compute_spherical_wind(
+    latitude,
+    longitude,
+    pressure_levels,
+    temperature,
+    wind_x,
+    wind_y,
+    wind_z,
+    wind_x_10m,
+    wind_y_10m,
+):
+    """
+    Compute spherical wind components (u, v, w) from 3D Cartesian wind components.
+    """
+
+    # Constants
+    g = 9.80616  # Gravitational acceleration m/s^2
+    R = 287.05  # Gas constant for dry air J/(kg·K)
+
+    # Extract necessary data
+    lon_rad = numpy.deg2rad(longitude)
+    lat_rad = numpy.deg2rad(latitude)
+
+    # Compute spherical components
+    u = -wind_x * numpy.sin(lon_rad) + wind_y * numpy.cos(lon_rad)
+
+    v = (
+        -wind_x * numpy.sin(lat_rad) * numpy.cos(lon_rad)
+        - wind_y * numpy.sin(lat_rad) * numpy.sin(lon_rad)
+        + wind_z * numpy.cos(lat_rad)
+    )
+
+    w = (
+        -wind_x * numpy.cos(lat_rad) * numpy.cos(lon_rad)
+        - wind_y * numpy.cos(lat_rad) * numpy.sin(lon_rad)
+        - wind_z * numpy.sin(lat_rad)
+    ) * (pressure_levels[:, None, None] * 100 * g / (R * temperature))
+
+    # At 10m, w is considered 0
+    u_10m = -wind_x_10m * numpy.sin(lon_rad) + wind_y_10m * numpy.cos(lon_rad)
+
+    v_10m = -wind_x_10m * numpy.sin(lat_rad) * numpy.cos(
+        lon_rad
+    ) - wind_y_10m * numpy.sin(lat_rad) * numpy.sin(lon_rad)
+
+    return u, v, w, u_10m, v_10m
+
+
+def get_var_indices(variable_name, variable_list):
+    indices = []
+    for i, var in enumerate(variable_list):
+        var_name = re.sub(r"_h\d+$", "", var)  # Remove height suffix (e.g., "_h10")
+        if variable_name == var_name:
+            indices.append(i)
+    return numpy.array(indices)
+
+
+def replace_variable_name(variable_old, variable_new, variable_list):
+    for i, var in enumerate(variable_list):
+        var_name = re.sub(r"_h\d+$", "", var)  # Remove height suffix (e.g., "_h10")
+        if variable_old == var_name:
+            new_var_name = re.sub(variable_old, variable_new, var)
+            variable_list[i] = new_var_name
+    return variable_list
+
+
+def convert_cartesian_to_spherical_winds(datamodule, cfg, array, features):
+
+    # Convert wind velocities to spherical coordinates
+    longitude, latitude = numpy.meshgrid(datamodule.dataset.lon, datamodule.dataset.lat)
+    pressure_levels = numpy.array([float(val) for val in cfg.features.pressure_levels])
+
+    # Extract the variables from the results
+    temperature = array[:, :, get_var_indices("temperature", features)]
+
+    # Get the indices for the variables to transform
+    u_ind = get_var_indices("wind_x", features)
+    v_ind = get_var_indices("wind_y", features)
+    w_ind = get_var_indices("wind_z", features)
+    u10m_ind = get_var_indices("wind_x_10m", features)
+    v10m_ind = get_var_indices("wind_y_10m", features)
+
+    wind_x = array[:, :, u_ind]
+    wind_y = array[:, :, v_ind]
+    wind_z = array[:, :, w_ind]
+    wind_x_10m = array[:, :, u10m_ind]
+    wind_y_10m = array[:, :, v10m_ind]
+
+    # PARADIS output includes wind speeds in cartesian coordinates.
+    # Here, we transform back to spherical
+    u, v, w, u_10m, v_10m = compute_spherical_wind(
+        latitude,
+        longitude,
+        pressure_levels,
+        temperature,
+        wind_x,
+        wind_y,
+        wind_z,
+        wind_x_10m,
+        wind_y_10m,
+    )
+
+    # Replace variables in dataset
+    array[:, :, u_ind] = u
+    array[:, :, v_ind] = v
+    array[:, :, w_ind] = w
+    array[:, :, u10m_ind] = u_10m
+    array[:, :, v10m_ind] = v_10m
+
+
 def plot_forecast_map(
     date_in,
     date_out,
@@ -24,6 +135,7 @@ def plot_forecast_map(
     cfg,
     level=None,
     temp_offset=0,
+    ind=None,
 ):
     """Plot comparison maps for model output and ground truth."""
     dataset = datamodule.dataset
@@ -136,8 +248,14 @@ def plot_forecast_map(
 
     # Save figure
     filename = (
-        f"{feature}_{level}hPa_prediction.png" if level else f"{feature}_prediction.png"
+        f"results/{feature}_{level}hPa_prediction"
+        if level
+        else f"results/{feature}_prediction"
     )
+    if ind is not None:
+        filename += "_" + str(ind)
+    filename += ".png"
+
     plt.savefig(filename, bbox_inches="tight", dpi=300)
     plt.close(plt.gcf())
 
@@ -257,6 +375,7 @@ def main(cfg: DictConfig):
     num_features = num_atm_features + num_sur_features
     num_time_instances = len(dataset)
     num_forecast_steps = cfg.model.forecast_steps
+    output_features = list(dataset.dyn_output_features)
 
     # Load model
     litmodel = LitParadis(datamodule, cfg)
@@ -310,14 +429,36 @@ def main(cfg: DictConfig):
 
             start_ind += batch_size
 
-    logging.info("Undoing normalizations...")
-
     # Denormalize data
+    logging.info("Undoing normalizations...")
     denormalize_ground_truth(ground_truth, dataset)
     denormalize_forecast(output_forecast, dataset)
 
-    # # Save results
+    # Post-process cartesian winds
+    convert_cartesian_to_spherical_winds(
+        datamodule, cfg, output_forecast, output_features
+    )
+    convert_cartesian_to_spherical_winds(datamodule, cfg, ground_truth, output_features)
 
+    # Rename output variables in dataset
+    atmospheric_vars = replace_variable_name(
+        "wind_x", "u_component_of_wind", atmospheric_vars
+    )
+    atmospheric_vars = replace_variable_name(
+        "wind_y", "v_component_of_wind", atmospheric_vars
+    )
+    atmospheric_vars = replace_variable_name(
+        "wind_z", "vertical_velocity", atmospheric_vars
+    )
+
+    surface_vars = replace_variable_name(
+        "wind_x_10m", "10m_u_component_of_wind", surface_vars
+    )
+    surface_vars = replace_variable_name(
+        "wind_y_19m", "10m_v_component_of_wind", surface_vars
+    )
+
+    # Save results
     if save_results_to_file:
         save_results_to_zarr(
             output_forecast,
@@ -347,7 +488,7 @@ def main(cfg: DictConfig):
     forecast_ind = num_forecast_steps - 1  # Last in config file
 
     time_in = dataset.ds_input.time.values[time_ind]
-    time_out = dataset.ds_input.time.values[time_ind + num_forecast_steps]
+    time_out = dataset.ds_input.time.values[time_ind + forecast_ind]
 
     dt_in = time_in.astype("datetime64[s]").astype(datetime)
     dt_out = time_out.astype("datetime64[s]").astype(datetime)
