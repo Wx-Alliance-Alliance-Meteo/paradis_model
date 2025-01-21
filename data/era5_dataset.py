@@ -197,6 +197,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         return self.length - self.forecast_steps
 
     def __getitem__(self, ind: int):
+
         # Extract values from the requested indices
         input_data = self.ds_input.isel(time=slice(ind, ind + self.forecast_steps))
 
@@ -310,9 +311,11 @@ class ERA5Dataset(torch.utils.data.Dataset):
         # Prepare variables required in custom normalization
 
         # Maximum and minimum specific humidity in dataset
-        self.q_max = torch.max(self.input_max[self.norm_humidity_in]).item()
-        self.q_min = torch.min(self.input_min[self.norm_humidity_in]).item()
-        self.q_min = max([self.q_min, self.eps])
+        self.q_max = torch.max(self.input_max[self.norm_humidity_in]).detach()
+        self.q_min = torch.min(self.input_min[self.norm_humidity_in]).detach()
+
+        if self.q_min < self.eps:
+            self.q_min = torch.tensor(self.eps).detach()
 
         # Extract the toa_radiation mean and std
         self.toa_rad_std = ds_input.attrs["toa_radiation_std"]
@@ -387,7 +390,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
     def _denormalize_standard(self, norm_data, mean, std):
         return norm_data * std + mean
 
-    def _normalize_humidity(self, data: numpy.ndarray) -> numpy.ndarray:
+    def _normalize_humidity(self, data: torch.tensor) -> torch.tensor:
         """Normalize specific humidity using physically-motivated logarithmic transform.
 
         This normalization accounts for the exponential variation of specific humidity
@@ -401,13 +404,13 @@ class ERA5Dataset(torch.utils.data.Dataset):
         """
         # Apply normalization
         q_norm = (
-            numpy.log(numpy.clip(data, 0, self.q_max) + self.eps)
-            - numpy.log(self.q_min)
-        ) / (numpy.log(self.q_max) - numpy.log(self.q_min))
+            torch.log(torch.clip(data, 0, self.q_max) + self.eps)
+            - torch.log(self.q_min)
+        ) / (torch.log(self.q_max) - torch.log(self.q_min))
 
         return q_norm
 
-    def _denormalize_humidity(self, data: numpy.ndarray) -> numpy.ndarray:
+    def _denormalize_humidity(self, data: torch.tensor) -> torch.tensor:
         """Denormalize specific humidity data from normalized space back to kg/kg.
 
         Args:
@@ -418,15 +421,15 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
         # Invert the normalization
         q = (
-            numpy.exp(
-                data * (numpy.log(self.q_max) - numpy.log(self.q_min))
-                + numpy.log(self.q_min)
+            torch.exp(
+                data * (torch.log(self.q_max) - torch.log(self.q_min))
+                + torch.log(self.q_min)
             )
             - self.eps
         )
-        return numpy.clip(q, 0, self.q_max)
+        return torch.clip(q, 0, self.q_max)
 
-    def _normalize_precipitation(self, data: numpy.ndarray) -> numpy.ndarray:
+    def _normalize_precipitation(self, data: torch.tensor) -> torch.tensor:
         """Normalize precipitation using logarithmic transform.
 
         Args:
@@ -435,9 +438,9 @@ class ERA5Dataset(torch.utils.data.Dataset):
             Normalized precipitation data
         """
         shift = 10
-        return numpy.log(data + 1e-6) + shift
+        return torch.log(data + 1e-6) + shift
 
-    def _denormalize_precipitation(self, data: numpy.ndarray) -> numpy.ndarray:
+    def _denormalize_precipitation(self, data: torch.tensor) -> torch.tensor:
         """Denormalize precipitation data.
 
         Args:
@@ -446,7 +449,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
             Precipitation data in original scale
         """
         shift = 10
-        return numpy.clip(numpy.exp(data - shift) - 1e-6, a_min=0, a_max=None)
+        return torch.clip(torch.exp(data - shift) - 1e-6, min=0, max=None)
 
 
 def split_dataset(dataset, train_ratio=0.8, seed: int = 42):
