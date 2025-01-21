@@ -1,5 +1,6 @@
 """Forecast script for the model."""
 
+from datetime import datetime
 import logging
 
 import hydra
@@ -14,7 +15,15 @@ from data.datamodule import Era5DataModule
 
 
 def plot_forecast_map(
-    output_data, true_data, datamodule, feature, cfg, level=None, temp_offset=0
+    date_in,
+    date_out,
+    output_data,
+    true_data,
+    datamodule,
+    feature,
+    cfg,
+    level=None,
+    temp_offset=0,
 ):
     """Plot comparison maps for model output and ground truth."""
     dataset = datamodule.dataset
@@ -114,9 +123,9 @@ def plot_forecast_map(
 
     # Set titles
     title = f"{feature} at {level} hPa" if level else feature.replace("_", " ").title()
-    plt.suptitle(title)
-    ax[0].set_title("PARADIS")
-    ax[1].set_title("ERA5")
+    plt.suptitle(f"{title}\nForecast date: {date_out}\nInput date: {date_in}")
+    ax[0].set_title(f"PARADIS")
+    ax[1].set_title(f"ERA5")
 
     # Adjust layout and add colorbar
     plt.tight_layout()
@@ -136,31 +145,32 @@ def plot_forecast_map(
 def denormalize_ground_truth(ground_truth, dataset):
     """Denormalize the ground truth data."""
     ground_truth[:, :, dataset.norm_precip_in] = dataset._denormalize_precipitation(
-        ground_truth[:, :, dataset.norm_precip_in]
-    )
+        torch.from_numpy(ground_truth[:, :, dataset.norm_precip_in])
+    ).numpy()
+
     ground_truth[:, :, dataset.norm_humidity_in] = dataset._denormalize_humidity(
-        ground_truth[:, :, dataset.norm_humidity_in]
-    )
+        torch.from_numpy(ground_truth[:, :, dataset.norm_humidity_in])
+    ).numpy()
     ground_truth[:, :, dataset.norm_zscore_in] = dataset._denormalize_standard(
-        torch.tensor(ground_truth[:, :, dataset.norm_zscore_in]),
+        torch.from_numpy(ground_truth[:, :, dataset.norm_zscore_in]),
         dataset.input_mean.view(-1, 1, 1),
         dataset.input_std.view(-1, 1, 1),
-    )
+    ).numpy()
 
 
 def denormalize_forecast(output_forecast, dataset):
     """Denormalize the forecast data."""
     output_forecast[:, :, dataset.norm_precip_out] = dataset._denormalize_precipitation(
-        output_forecast[:, :, dataset.norm_precip_out]
-    )
+        torch.from_numpy(output_forecast[:, :, dataset.norm_precip_out])
+    ).numpy()
     output_forecast[:, :, dataset.norm_humidity_out] = dataset._denormalize_humidity(
-        output_forecast[:, :, dataset.norm_humidity_out]
-    )
+        torch.from_numpy(output_forecast[:, :, dataset.norm_humidity_out])
+    ).numpy()
     output_forecast[:, :, dataset.norm_zscore_out] = dataset._denormalize_standard(
-        torch.tensor(output_forecast[:, :, dataset.norm_zscore_out]),
+        torch.from_numpy(output_forecast[:, :, dataset.norm_zscore_out]),
         dataset.output_mean.view(-1, 1, 1),
         dataset.output_std.view(-1, 1, 1),
-    )
+    ).numpy()
 
 
 def save_results_to_zarr(
@@ -216,7 +226,7 @@ def save_results_to_zarr(
     )
 
 
-@hydra.main(version_base=None, config_path="config/", config_name="paradis_settings")
+@hydra.main(version_base=None, config_path="config/", config_name="forecast_settings")
 def main(cfg: DictConfig):
     """Generate forecasts using a trained model."""
 
@@ -226,6 +236,9 @@ def main(cfg: DictConfig):
         if torch.cuda.is_available() and cfg.trainer.accelerator == "gpu"
         else "cpu"
     )
+
+    # Decide whether to save results to file
+    save_results_to_file = False
 
     # Initialize data module
     datamodule = Era5DataModule(cfg)
@@ -281,6 +294,13 @@ def main(cfg: DictConfig):
                 output_data = litmodel(
                     input_data_step, torch.tensor(step, device=device)
                 )
+
+                if step + 1 < num_forecast_steps:
+                    input_data_step = litmodel._autoregression_input_from_output(
+                        input_data[:, step + 1], output_data
+                    ).to(device)
+
+                # Copy model output into global array results
                 output_forecast[start_ind : start_ind + batch_size, step] = (
                     output_data.cpu().numpy()
                 )
@@ -288,46 +308,51 @@ def main(cfg: DictConfig):
                     true_data[:, step].cpu().numpy()
                 )
 
-                if step + 1 < num_forecast_steps:
-                    input_data_step = litmodel._autoregression_input_from_output(
-                        input_data[:, step + 1], output_data
-                    ).to(device)
-
             start_ind += batch_size
 
-    logging.info("Preparing data for Weatherbench...")
+    logging.info("Undoing normalizations...")
 
     # Denormalize data
     denormalize_ground_truth(ground_truth, dataset)
     denormalize_forecast(output_forecast, dataset)
 
-    # Save results
-    save_results_to_zarr(
-        output_forecast,
-        atmospheric_vars,
-        surface_vars,
-        constant_vars,
-        datamodule,
-        pressure_levels,
-        "forecast_result.zarr",
-    )
+    # # Save results
 
-    # Save ground truth
-    save_results_to_zarr(
-        ground_truth,
-        atmospheric_vars,
-        surface_vars,
-        constant_vars,
-        datamodule,
-        pressure_levels,
-        "forecast_observation.zarr",
-    )
+    if save_results_to_file:
+        save_results_to_zarr(
+            output_forecast,
+            atmospheric_vars,
+            surface_vars,
+            constant_vars,
+            datamodule,
+            pressure_levels,
+            "forecast_result.zarr",
+        )
 
-    logging.info("Saved forecast files successfuly")
+        # Save ground truth
+        save_results_to_zarr(
+            ground_truth,
+            atmospheric_vars,
+            surface_vars,
+            constant_vars,
+            datamodule,
+            pressure_levels,
+            "forecast_observation.zarr",
+        )
+
+        logging.info("Saved forecast files successfuly")
 
     # Also plot results
     time_ind = 0  # First time instance
-    forecast_ind = -1  # Last in config file
+    forecast_ind = num_forecast_steps - 1  # Last in config file
+
+    time_in = dataset.ds_input.time.values[time_ind]
+    time_out = dataset.ds_input.time.values[time_ind + num_forecast_steps]
+
+    dt_in = time_in.astype("datetime64[s]").astype(datetime)
+    dt_out = time_out.astype("datetime64[s]").astype(datetime)
+    date_in = dt_in.strftime("%Y-%m-%d %H:%M")
+    date_out = dt_out.strftime("%Y-%m-%d %H:%M")
 
     output_data = output_forecast[time_ind, forecast_ind]
     true_data = ground_truth[time_ind, forecast_ind]
@@ -337,17 +362,37 @@ def main(cfg: DictConfig):
 
     # Plot geopotential at 500 hPa
     plot_forecast_map(
-        output_data, true_data, datamodule, "geopotential", cfg, level=500
+        date_in,
+        date_out,
+        output_data,
+        true_data,
+        datamodule,
+        "geopotential",
+        cfg,
+        level=500,
     )
 
     # Plot 2m temperature with Celsius conversion
     plot_forecast_map(
-        output_data, true_data, datamodule, "2m_temperature", cfg, temp_offset=273.15
+        date_in,
+        date_out,
+        output_data,
+        true_data,
+        datamodule,
+        "2m_temperature",
+        cfg,
+        temp_offset=273.15,
     )
 
     # Plot precipitation
     plot_forecast_map(
-        output_data, true_data, datamodule, "total_precipitation_6hr", cfg
+        date_in,
+        date_out,
+        output_data,
+        true_data,
+        datamodule,
+        "total_precipitation_6hr",
+        cfg,
     )
 
     logging.info("Forecast plots generated successfully")
