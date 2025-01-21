@@ -24,7 +24,6 @@ where `[override_args]` can override the inputs in the config file.
 
 #### Dataset
 
-##### Option 1
 Download the original dataset from WeatherBench 2:
 
 ```
@@ -36,11 +35,6 @@ where OUTPUT_DIR is the destination directory and then preprocess it
 ```
 python scripts/preprocess_weatherbench_data.py -i /path/to/ERA5/5.625deg_wb2 -o /path/to/ERA5/5.65deg
 ```
-
-#### Option 2
-Download the preprocessed dataset, available at
-
-https://hpfx.collab.science.gc.ca/~cap003/era5_5.625deg_13level.tar.gz
 
 #### Acknowledgements
 
