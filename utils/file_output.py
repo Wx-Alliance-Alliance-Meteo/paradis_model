@@ -50,7 +50,6 @@ def save_results_to_zarr(
         * numpy.timedelta64(6 * 3600 * 10**9, "ns"),
     }
 
-    print("ind--->", ind, filename)
     # Save to Zarr
     if ind == 0:
         xarray.Dataset(data_vars=data_vars, coords=coords).to_zarr(
