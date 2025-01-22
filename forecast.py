@@ -2,346 +2,21 @@
 
 from datetime import datetime
 import logging
-import re
 
 import hydra
-import matplotlib.pyplot as plt
-import numpy
 from omegaconf import DictConfig
 import torch
-import xarray
+from tqdm import tqdm
 
 from trainer import LitParadis
 from data.datamodule import Era5DataModule
-
-
-def compute_spherical_wind(
-    latitude,
-    longitude,
-    pressure_levels,
-    temperature,
-    wind_x,
-    wind_y,
-    wind_z,
-    wind_x_10m,
-    wind_y_10m,
-):
-    """
-    Compute spherical wind components (u, v, w) from 3D Cartesian wind components.
-    """
-
-    # Constants
-    g = 9.80616  # Gravitational acceleration m/s^2
-    R = 287.05  # Gas constant for dry air J/(kg·K)
-
-    # Extract necessary data
-    lon_rad = numpy.deg2rad(longitude)
-    lat_rad = numpy.deg2rad(latitude)
-
-    # Compute spherical components
-    u = -wind_x * numpy.sin(lon_rad) + wind_y * numpy.cos(lon_rad)
-
-    v = (
-        -wind_x * numpy.sin(lat_rad) * numpy.cos(lon_rad)
-        - wind_y * numpy.sin(lat_rad) * numpy.sin(lon_rad)
-        + wind_z * numpy.cos(lat_rad)
-    )
-
-    w = (
-        -wind_x * numpy.cos(lat_rad) * numpy.cos(lon_rad)
-        - wind_y * numpy.cos(lat_rad) * numpy.sin(lon_rad)
-        - wind_z * numpy.sin(lat_rad)
-    ) * (pressure_levels[:, None, None] * 100 * g / (R * temperature))
-
-    # At 10m, w is considered 0
-    u_10m = -wind_x_10m * numpy.sin(lon_rad) + wind_y_10m * numpy.cos(lon_rad)
-
-    v_10m = -wind_x_10m * numpy.sin(lat_rad) * numpy.cos(
-        lon_rad
-    ) - wind_y_10m * numpy.sin(lat_rad) * numpy.sin(lon_rad)
-
-    return u, v, w, u_10m, v_10m
-
-
-def get_var_indices(variable_name, variable_list):
-    indices = []
-    for i, var in enumerate(variable_list):
-        var_name = re.sub(r"_h\d+$", "", var)  # Remove height suffix (e.g., "_h10")
-        if variable_name == var_name:
-            indices.append(i)
-    return numpy.array(indices)
-
-
-def replace_variable_name(variable_old, variable_new, variable_list):
-    for i, var in enumerate(variable_list):
-        var_name = re.sub(r"_h\d+$", "", var)  # Remove height suffix (e.g., "_h10")
-        if variable_old == var_name:
-            new_var_name = re.sub(variable_old, variable_new, var)
-            variable_list[i] = new_var_name
-    return variable_list
-
-
-def convert_cartesian_to_spherical_winds(datamodule, cfg, array, features):
-
-    # Convert wind velocities to spherical coordinates
-    longitude, latitude = numpy.meshgrid(datamodule.dataset.lon, datamodule.dataset.lat)
-    pressure_levels = numpy.array([float(val) for val in cfg.features.pressure_levels])
-
-    # Extract the variables from the results
-    temperature = array[:, :, get_var_indices("temperature", features)]
-
-    # Get the indices for the variables to transform
-    u_ind = get_var_indices("wind_x", features)
-    v_ind = get_var_indices("wind_y", features)
-    w_ind = get_var_indices("wind_z", features)
-    u10m_ind = get_var_indices("wind_x_10m", features)
-    v10m_ind = get_var_indices("wind_y_10m", features)
-
-    wind_x = array[:, :, u_ind]
-    wind_y = array[:, :, v_ind]
-    wind_z = array[:, :, w_ind]
-    wind_x_10m = array[:, :, u10m_ind]
-    wind_y_10m = array[:, :, v10m_ind]
-
-    # PARADIS output includes wind speeds in cartesian coordinates.
-    # Here, we transform back to spherical
-    u, v, w, u_10m, v_10m = compute_spherical_wind(
-        latitude,
-        longitude,
-        pressure_levels,
-        temperature,
-        wind_x,
-        wind_y,
-        wind_z,
-        wind_x_10m,
-        wind_y_10m,
-    )
-
-    # Replace variables in dataset
-    array[:, :, u_ind] = u
-    array[:, :, v_ind] = v
-    array[:, :, w_ind] = w
-    array[:, :, u10m_ind] = u_10m
-    array[:, :, v10m_ind] = v_10m
-
-
-def plot_forecast_map(
-    date_in,
-    date_out,
-    output_data,
-    true_data,
-    datamodule,
-    feature,
-    cfg,
-    level=None,
-    temp_offset=0,
-    ind=None,
-):
-    """Plot comparison maps for model output and ground truth."""
-    dataset = datamodule.dataset
-
-    # Determine the feature index and name
-    if level is not None:
-        # For atmospheric variables with pressure levels
-        base_features = cfg.features.output.atmospheric
-        level_index = cfg.features.pressure_levels.index(level)
-        num_levels = len(cfg.features.pressure_levels)
-        base_feature_index = base_features.index(feature)
-        feature_index = base_feature_index * num_levels + level_index
-        feature_name = f"{feature}_h{level}"
-    else:
-        # For surface variables
-        feature_index = dataset.dyn_output_features.index(feature)
-        feature_name = feature
-
-    latitude = dataset.lat
-    longitude = dataset.lon
-    longitude, latitude = numpy.meshgrid(longitude, latitude)
-
-    # Get the forecast data
-    output_plot = output_data[feature_index]
-    true_plot = true_data[feature_index]
-
-    # Configure plot settings based on variable type
-    if feature == "geopotential":
-        g = 9.80665  # gravitational acceleration
-        output_plot = output_plot / g
-        true_plot = true_plot / g
-        cmap = "viridis"
-        vmax = numpy.max([numpy.max(output_plot), numpy.max(true_plot)])
-        vmin = numpy.min([numpy.min(output_plot), numpy.min(true_plot)])
-        levels = numpy.linspace(vmin, vmax, 50)
-        clabel = "Geopotential Height [m]"
-
-    elif feature == "2m_temperature":
-        cmap = "RdYlBu_r"
-        vmax = numpy.max([numpy.max(output_plot), numpy.max(true_plot)])
-        vmin = numpy.min([numpy.min(output_plot), numpy.min(true_plot)])
-        levels = numpy.linspace(vmin, vmax, 100)
-        clabel = "Temperature [°C]"
-
-    elif feature == "total_precipitation_6hr":
-        cmap = "Blues"
-        max_precip = max(numpy.max(output_plot), numpy.max(true_plot))
-
-        # Create exponentially spaced levels for precipitation
-        # This ensures levels are strictly increasing and capture the range of values
-        if max_precip > 0:
-            # Use exponential spacing to focus on smaller values
-            levels = (
-                numpy.exp(
-                    numpy.linspace(numpy.log(0.1), numpy.log(max_precip + 0.1), 50)
-                )
-                - 0.1
-            )
-            # Remove any negative values that might occur due to floating point arithmetic
-            levels = levels[levels >= 0]
-        else:
-            levels = numpy.linspace(0, 0.1, 10)  # Fallback for no precipitation
-        clabel = "Precipitation [mm/6h]"
-
-    else:
-        cmap = "RdYlBu_r"
-        vmax = numpy.max([numpy.max(output_plot), numpy.max(true_plot)])
-        vmin = numpy.min([numpy.min(output_plot), numpy.min(true_plot)])
-        levels = numpy.linspace(vmin, vmax, 100)
-        clabel = feature.replace("_", " ").title()
-
-    # Create figure and axes
-    fig, ax = plt.subplots(ncols=2, figsize=(12, 5))
-
-    # Plot contours
-    for i, data in enumerate([output_plot, true_plot]):
-        if feature == "total_precipitation_6hr":
-            contours = ax[i].contourf(
-                longitude, latitude, data, levels=levels, cmap=cmap, extend="max"
-            )
-        else:
-            contours = ax[i].contourf(
-                longitude, latitude, data, levels=levels, cmap=cmap
-            )
-
-        if feature == "geopotential":
-            # Add contour lines for geopotential
-            contour_levels = levels[::5]  # Take every 5th level
-            ax[i].contour(
-                longitude,
-                latitude,
-                data,
-                levels=contour_levels,
-                colors="k",
-                linewidths=0.5,
-            )
-
-    # Set titles
-    title = f"{feature} at {level} hPa" if level else feature.replace("_", " ").title()
-    plt.suptitle(f"{title}\nForecast date: {date_out}\nInput date: {date_in}")
-    ax[0].set_title(f"PARADIS")
-    ax[1].set_title(f"ERA5")
-
-    # Adjust layout and add colorbar
-    plt.tight_layout()
-    fig.subplots_adjust(right=0.9)
-    cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
-    cbar = fig.colorbar(contours, cax=cbar_ax)
-    cbar.ax.set_ylabel(clabel, rotation=90)
-
-    # Save figure
-    filename = (
-        f"results/{feature}_{level}hPa_prediction"
-        if level
-        else f"results/{feature}_prediction"
-    )
-    if ind is not None:
-        filename += "_" + str(ind)
-    filename += ".png"
-
-    plt.savefig(filename, bbox_inches="tight", dpi=300)
-    plt.close(plt.gcf())
-
-
-def denormalize_ground_truth(ground_truth, dataset):
-    """Denormalize the ground truth data."""
-    ground_truth[:, :, dataset.norm_precip_in] = dataset._denormalize_precipitation(
-        torch.from_numpy(ground_truth[:, :, dataset.norm_precip_in])
-    ).numpy()
-
-    ground_truth[:, :, dataset.norm_humidity_in] = dataset._denormalize_humidity(
-        torch.from_numpy(ground_truth[:, :, dataset.norm_humidity_in])
-    ).numpy()
-    ground_truth[:, :, dataset.norm_zscore_in] = dataset._denormalize_standard(
-        torch.from_numpy(ground_truth[:, :, dataset.norm_zscore_in]),
-        dataset.input_mean.view(-1, 1, 1),
-        dataset.input_std.view(-1, 1, 1),
-    ).numpy()
-
-
-def denormalize_forecast(output_forecast, dataset):
-    """Denormalize the forecast data."""
-    output_forecast[:, :, dataset.norm_precip_out] = dataset._denormalize_precipitation(
-        torch.from_numpy(output_forecast[:, :, dataset.norm_precip_out])
-    ).numpy()
-    output_forecast[:, :, dataset.norm_humidity_out] = dataset._denormalize_humidity(
-        torch.from_numpy(output_forecast[:, :, dataset.norm_humidity_out])
-    ).numpy()
-    output_forecast[:, :, dataset.norm_zscore_out] = dataset._denormalize_standard(
-        torch.from_numpy(output_forecast[:, :, dataset.norm_zscore_out]),
-        dataset.output_mean.view(-1, 1, 1),
-        dataset.output_std.view(-1, 1, 1),
-    ).numpy()
-
-
-def save_results_to_zarr(
-    data,
-    atmospheric_vars,
-    surface_vars,
-    constant_vars,
-    datamodule,
-    pressure_levels,
-    filename,
-):
-    """Save results to a Zarr file."""
-    data_vars = {}
-    dataset = datamodule.dataset
-    num_levels = len(pressure_levels)
-
-    # Prepare atmospheric variables
-    atm_dims = ["time", "prediction_timedelta", "level", "latitude", "longitude"]
-    for i, feature in enumerate(atmospheric_vars):
-        data_vars[feature] = (
-            atm_dims,
-            data[:, :, i * num_levels : (i + 1) * num_levels],
-        )
-
-    # Prepare surface variables
-    sur_dims = ["time", "prediction_timedelta", "latitude", "longitude"]
-    for i, feature in enumerate(surface_vars):
-        data_vars[feature] = (
-            sur_dims,
-            data[:, :, len(atmospheric_vars) * num_levels + i],
-        )
-
-    # Prepare constant variables
-    con_dims = ["latitude", "longitude"]
-    for i, feature in enumerate(constant_vars):
-        if feature in con_dims:
-            continue
-        data_vars[feature] = (con_dims, dataset.ds_constants[feature].data)
-
-    # Define coordinates
-    coords = {
-        "latitude": dataset.lat,
-        "longitude": dataset.lon,
-        "time": dataset.time[: data.shape[0]],
-        "level": pressure_levels,
-        "prediction_timedelta": (numpy.arange(data.shape[1]) + 1)
-        * numpy.timedelta64(6 * 3600 * 10**9, "ns"),
-    }
-
-    # Save to Zarr
-    xarray.Dataset(data_vars=data_vars, coords=coords).to_zarr(
-        filename, consolidated=True, mode="w"
-    )
+from utils.file_output import save_results_to_zarr
+from utils.postprocessing import (
+    denormalize_datasets,
+    convert_cartesian_to_spherical_winds,
+    replace_variable_name,
+)
+from utils.visualization import plot_error_map, plot_forecast_map
 
 
 @hydra.main(version_base=None, config_path="config/", config_name="forecast_settings")
@@ -373,7 +48,6 @@ def main(cfg: DictConfig):
     num_atm_features = len(atmospheric_vars) * num_levels
     num_sur_features = len(surface_vars)
     num_features = num_atm_features + num_sur_features
-    num_time_instances = len(dataset)
     num_forecast_steps = cfg.model.forecast_steps
     output_features = list(dataset.dyn_output_features)
 
@@ -389,58 +63,7 @@ def main(cfg: DictConfig):
 
     litmodel.to(device).eval()
 
-    # Initialize forecast and ground truth arrays
-    output_forecast = numpy.empty(
-        (
-            num_time_instances,
-            num_forecast_steps,
-            num_features,
-            dataset.lat_size,
-            dataset.lon_size,
-        )
-    )
-    ground_truth = numpy.empty_like(output_forecast)
-
-    # Run forecast
-    logging.info("Generating forecast...")
-    with torch.no_grad():
-        start_ind = 0
-        for input_data, true_data in datamodule.test_dataloader():
-            batch_size = input_data.shape[0]
-            input_data_step = input_data[:, 0].to(device)
-
-            for step in range(num_forecast_steps):
-                output_data = litmodel(
-                    input_data_step, torch.tensor(step, device=device)
-                )
-
-                if step + 1 < num_forecast_steps:
-                    input_data_step = litmodel._autoregression_input_from_output(
-                        input_data[:, step + 1], output_data
-                    ).to(device)
-
-                # Copy model output into global array results
-                output_forecast[start_ind : start_ind + batch_size, step] = (
-                    output_data.cpu().numpy()
-                )
-                ground_truth[start_ind : start_ind + batch_size, step] = (
-                    true_data[:, step].cpu().numpy()
-                )
-
-            start_ind += batch_size
-
-    # Denormalize data
-    logging.info("Undoing normalizations...")
-    denormalize_ground_truth(ground_truth, dataset)
-    denormalize_forecast(output_forecast, dataset)
-
-    # Post-process cartesian winds
-    convert_cartesian_to_spherical_winds(
-        datamodule, cfg, output_forecast, output_features
-    )
-    convert_cartesian_to_spherical_winds(datamodule, cfg, ground_truth, output_features)
-
-    # Rename output variables in dataset
+    # Rename variables that require post-processing in dataset
     atmospheric_vars = replace_variable_name(
         "wind_x", "u_component_of_wind", atmospheric_vars
     )
@@ -455,88 +78,146 @@ def main(cfg: DictConfig):
         "wind_x_10m", "10m_u_component_of_wind", surface_vars
     )
     surface_vars = replace_variable_name(
-        "wind_y_19m", "10m_v_component_of_wind", surface_vars
+        "wind_y_10m", "10m_v_component_of_wind", surface_vars
     )
 
-    # Save results
-    if save_results_to_file:
-        save_results_to_zarr(
-            output_forecast,
-            atmospheric_vars,
-            surface_vars,
-            constant_vars,
-            datamodule,
-            pressure_levels,
-            "forecast_result.zarr",
-        )
+    # Run forecast
+    logging.info("Generating forecast...")
+    ind = 0
+    with torch.no_grad():
+        for input_data, ground_truth in tqdm(datamodule.test_dataloader()):
+            batch_size = input_data.shape[0]
+            output_forecast = torch.empty(
+                (
+                    batch_size,
+                    num_forecast_steps,
+                    num_features,
+                    dataset.lat_size,
+                    dataset.lon_size,
+                ),
+                device=device,
+            )
 
-        # Save ground truth
-        save_results_to_zarr(
-            ground_truth,
-            atmospheric_vars,
-            surface_vars,
-            constant_vars,
-            datamodule,
-            pressure_levels,
-            "forecast_observation.zarr",
-        )
+            input_data_step = input_data[:, 0].to(device)
 
-        logging.info("Saved forecast files successfuly")
+            for step in range(num_forecast_steps):
+                output_data = litmodel(
+                    input_data_step, torch.tensor(step, device=device)
+                )
 
-    # Also plot results
-    time_ind = 0  # First time instance
-    forecast_ind = num_forecast_steps - 1  # Last in config file
+                if step + 1 < num_forecast_steps:
+                    input_data_step = litmodel._autoregression_input_from_output(
+                        input_data[:, step + 1], output_data
+                    ).to(device)
 
-    time_in = dataset.ds_input.time.values[time_ind]
-    time_out = dataset.ds_input.time.values[time_ind + forecast_ind]
+                # Copy model output into global array results
+                output_forecast[:, step] = output_data
 
-    dt_in = time_in.astype("datetime64[s]").astype(datetime)
-    dt_out = time_out.astype("datetime64[s]").astype(datetime)
-    date_in = dt_in.strftime("%Y-%m-%d %H:%M")
-    date_out = dt_out.strftime("%Y-%m-%d %H:%M")
+            # Transfer output to cpu
+            output_forecast = output_forecast.cpu()
 
-    output_data = output_forecast[time_ind, forecast_ind]
-    true_data = ground_truth[time_ind, forecast_ind]
+            # Remove normalizations
+            denormalize_datasets(ground_truth, output_forecast, dataset)
 
-    # Generate plots for different variables
-    logging.info("Generating forecast plots...")
+            # Convert to numpy arrays
+            ground_truth = ground_truth.numpy()
+            output_forecast = output_forecast.numpy()
 
-    # Plot geopotential at 500 hPa
-    plot_forecast_map(
-        date_in,
-        date_out,
-        output_data,
-        true_data,
-        datamodule,
-        "geopotential",
-        cfg,
-        level=500,
-    )
+            # Post-process cartesian winds to spherical
+            convert_cartesian_to_spherical_winds(
+                datamodule, cfg, output_forecast, output_features
+            )
+            convert_cartesian_to_spherical_winds(
+                datamodule, cfg, ground_truth, output_features
+            )
 
-    # Plot 2m temperature with Celsius conversion
-    plot_forecast_map(
-        date_in,
-        date_out,
-        output_data,
-        true_data,
-        datamodule,
-        "2m_temperature",
-        cfg,
-        temp_offset=273.15,
-    )
+            # Save results
+            if save_results_to_file:
+                save_results_to_zarr(
+                    output_forecast,
+                    atmospheric_vars,
+                    surface_vars,
+                    constant_vars,
+                    datamodule,
+                    pressure_levels,
+                    "results/forecast_result.zarr",
+                    ind,
+                )
 
-    # Plot precipitation
-    plot_forecast_map(
-        date_in,
-        date_out,
-        output_data,
-        true_data,
-        datamodule,
-        "total_precipitation_6hr",
-        cfg,
-    )
+                # Save ground truth
+                save_results_to_zarr(
+                    ground_truth,
+                    atmospheric_vars,
+                    surface_vars,
+                    constant_vars,
+                    datamodule,
+                    pressure_levels,
+                    "results/forecast_observation.zarr",
+                    ind,
+                )
 
-    logging.info("Forecast plots generated successfully")
+            ind += 1
+
+            # Plot results for the first time instance only
+            time_ind = 0
+            forecast_ind = num_forecast_steps - 1
+
+            if time_ind == ind - 1:
+                time_in = dataset.ds_input.time.values[time_ind]
+                time_out = dataset.ds_input.time.values[time_ind + forecast_ind]
+
+                dt_in = time_in.astype("datetime64[s]").astype(datetime)
+                dt_out = time_out.astype("datetime64[s]").astype(datetime)
+                date_in = dt_in.strftime("%Y-%m-%d %H:%M")
+                date_out = dt_out.strftime("%Y-%m-%d %H:%M")
+
+                output_data = output_forecast[time_ind, forecast_ind]
+                true_data = ground_truth[time_ind, forecast_ind]
+
+                # Generate plots for different variables
+                logging.info("Generating forecast plots...")
+
+                # Plot geopotential at 500 hPa
+                plot_forecast_map(
+                    date_in,
+                    date_out,
+                    output_data,
+                    true_data,
+                    datamodule,
+                    "geopotential",
+                    cfg,
+                    level=500,
+                    ind=forecast_ind,
+                )
+
+                # Plot 2m temperature with Celsius conversion
+                plot_forecast_map(
+                    date_in,
+                    date_out,
+                    output_data,
+                    true_data,
+                    datamodule,
+                    "2m_temperature",
+                    cfg,
+                    temp_offset=273.15,
+                    ind=forecast_ind,
+                )
+
+                # Plot precipitations
+                plot_forecast_map(
+                    date_in,
+                    date_out,
+                    output_data,
+                    true_data,
+                    datamodule,
+                    "total_precipitation_6hr",
+                    cfg,
+                    ind=forecast_ind,
+                )
+
+                logging.info("Forecast plots generated successfully")
+
+    logging.info("Saved output files successfuly")
 
 
 if __name__ == "__main__":
