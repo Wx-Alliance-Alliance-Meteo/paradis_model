@@ -26,25 +26,32 @@ trainer:
 
   # 1. OneCycleLR - Recommended for initial training
   scheduler:
-    type: "one_cycle"         # OneCycleLR scheduler
-    warmup_pct_start: 0.      # Percentage of training used for warmup phase
-    lr_div_factor: 25         # Initial learning rate = max_lr/lr_div_factor
-    lr_final_div: 1.0e2       # Final learning rate = max_lr/lr_final_div_factor
+    type: "one_cycle"          # OneCycleLR scheduler
+    warmup_pct_start: 0.       # Percentage of training used for warmup phase
+    lr_div_factor: 25          # Initial learning rate = max_lr/lr_div_factor
+    lr_final_div: 1.0e2         # Final learning rate = initial_lr/lr_final_div_factor
 
   # 2. ReduceLROnPlateau - Recommended for fine-tuning a pre-trained model
   # scheduler:
   #   type: "reduce_lr"       # ReduceLROnPlateau scheduler
   #   factor: 0.5             # Factor by which to reduce learning rate
   #   patience: 5             # Number of epochs with no improvement after which LR will be reduced
-  #   min_lr: 1e-6            # Lower bound on the learning rate
+  #   min_lr: 1e-7            # Lower bound on the learning rate
 
 dataset:
   dataset_dir: /path/to/dataset/
-  start_date: 2000-01-01      # Start date for the dataset (YYYY-MM-DD)
-  end_date: 2019-12-31        # End date for the dataset (YYYY-MM-DD)
-  train_ratio: 0.8            # Ratio of data used for training (rest for validation)
-  batch_size: 64              # Number of samples per batch
-  num_workers: 16              # Number of workers for dataloader
+  training:
+    start_date: 2010-01-01      # Start date for the training dataset (YYYY-MM-DD)
+    end_date: 2017-12-31        # End date for the training dataset (YYYY-MM-DD)
+  validation:
+    start_date: 2018-01-01      # Start date for the validation dataset (YYYY-MM-DD)
+    end_date: 2019-12-31        # End date for the validation dataset (YYYY-MM-DD)
+  testing:
+    start_date: 2022-01-01      # Start date for the dataset (YYYY-MM-DD)
+    end_date: 2022-01-12        # End date for the dataset (YYYY-MM-DD)
+  train_ratio: 0.8              # Ratio of data used for training (rest for validation)
+  batch_size: 64                # Number of samples per batch
+  num_workers: 16               # Number of workers for dataloader
 
 features:
   pressure_levels: # Added to atmospheric variable names

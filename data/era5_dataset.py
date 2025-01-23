@@ -450,21 +450,3 @@ class ERA5Dataset(torch.utils.data.Dataset):
         """
         shift = 10
         return torch.clip(torch.exp(data - shift) - 1e-6, min=0, max=None)
-
-
-def split_dataset(dataset, train_ratio=0.8, seed: int = 42):
-    """Split dataset into training and validation sets.
-
-    Args:
-        dataset: Dataset to split
-        train_ratio: Fraction of data to use for training
-
-    Returns:
-        tuple: (train_dataset, val_dataset)
-    """
-    generator = torch.Generator().manual_seed(seed)
-    split_idx = int(len(dataset) * train_ratio)
-    indices = torch.randperm(len(dataset), generator=generator)
-    train_dataset = torch.utils.data.Subset(dataset, indices[:split_idx])
-    val_dataset = torch.utils.data.Subset(dataset, indices[split_idx:])
-    return train_dataset, val_dataset
