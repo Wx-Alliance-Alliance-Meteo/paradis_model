@@ -1,6 +1,6 @@
 """ERA5 dataset handling"""
 
-import logging
+from datetime import datetime, timedelta
 import os
 import re
 
@@ -9,6 +9,7 @@ import numpy
 from omegaconf import DictConfig
 import torch
 import xarray
+
 
 from data.forcings import time_forcings, toa_radiation
 
@@ -23,9 +24,10 @@ class ERA5Dataset(torch.utils.data.Dataset):
         end_date: str,
         forecast_steps: int = 1,
         dtype=torch.float32,
-        features_cfg: DictConfig = {},
+        cfg: DictConfig = {},
     ) -> None:
 
+        features_cfg = cfg.features
         self.eps = 1e-12
         self.root_dir = root_dir
         self.forecast_steps = forecast_steps
@@ -33,19 +35,11 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.num_common_features = 0
         self.forcing_inputs = features_cfg.input.forcings
 
-        # Extract from the years in the range
-        start_year = int(start_date.split("-")[0])
-        end_year = int(end_date.split("-")[0])
-
-        # Create list of files to open (avoids loading more than necessary)
-        files = [
-            os.path.join(root_dir, str(year))
-            for year in range(start_year, end_year + 1)
-        ]
-
         # Lazy open this dataset
         ds = xarray.open_mfdataset(
-            files, chunks={"time": self.forecast_steps + 1}, engine="zarr"
+            os.path.join(root_dir, "*"),
+            chunks={"time": self.forecast_steps + 1},
+            engine="zarr",
         )
 
         # Add stats to data array
@@ -69,8 +63,22 @@ class ERA5Dataset(torch.utils.data.Dataset):
         ds.attrs["toa_radiation_std"] = ds_stats.attrs["toa_radiation_std"]
         ds.attrs["toa_radiation_mean"] = ds_stats.attrs["toa_radiation_mean"]
 
-        # Filter data to time frame requested
-        ds = ds.sel(time=slice(start_date, end_date))
+        # Add the number of forecast steps to the range of dates
+        time_resolution = int(cfg.dataset.time_resolution[:-1])
+
+        # Number time instances per day (ignoring 24:00)
+        num_times_day = 24 / time_resolution - 1
+
+        # Get the number of additional hours needed in data for autoregression
+        hours = time_resolution * (self.forecast_steps + num_times_day)
+        time_delta = timedelta(hours=hours)
+
+        # Convert end_date to a datetime object and adjust end date
+        end_date_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        adjusted_end_date = end_date_dt + time_delta
+
+        # Select the time range needed to process this dataset
+        ds = ds.sel(time=slice(start_date, adjusted_end_date))
 
         # Extract latitude and longitude to build the graph
         self.lat = ds.latitude.values
@@ -184,7 +192,6 @@ class ERA5Dataset(torch.utils.data.Dataset):
             + len(self.forcing_inputs)
         )
         self.num_out_features = len(self.dyn_output_features)
-
 
     def __len__(self):
         # Do not yield a value for the last time in the dataset since there

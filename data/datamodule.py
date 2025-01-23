@@ -12,6 +12,7 @@ class Era5DataModule(L.LightningDataModule):
         super().__init__()
 
         # Extract configuration parameters for data
+        self.cfg = cfg
         self.root_dir = cfg.dataset.dataset_dir
         self.batch_size = cfg.dataset.batch_size
         self.training = cfg.dataset.training
@@ -39,7 +40,7 @@ class Era5DataModule(L.LightningDataModule):
                 start_date=self.training.start_date,
                 end_date=self.training.end_date,
                 forecast_steps=self.forecast_steps,
-                features_cfg=self.features_cfg,
+                cfg=self.cfg,
             )
 
             # Make the autoregression maps available at a higher level
@@ -62,7 +63,7 @@ class Era5DataModule(L.LightningDataModule):
                     start_date=self.validation.start_date,
                     end_date=self.validation.end_date,
                     forecast_steps=self.forecast_steps,
-                    features_cfg=self.features_cfg,
+                    cfg=self.cfg,
                 )
 
             if self.testing:
@@ -74,9 +75,8 @@ class Era5DataModule(L.LightningDataModule):
                     start_date=self.testing.start_date,
                     end_date=self.testing.end_date,
                     forecast_steps=self.forecast_steps,
-                    features_cfg=self.features_cfg,
+                    cfg=self.cfg,
                 )
-
 
             logging.info(
                 "Dataset contains: %d input features, %d output features.",

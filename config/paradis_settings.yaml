@@ -34,8 +34,8 @@ trainer:
   # 2. ReduceLROnPlateau - Recommended for fine-tuning a pre-trained model
   # scheduler:
   #   type: "reduce_lr"       # ReduceLROnPlateau scheduler
-  #   factor: 0.5             # Factor by which to reduce learning rate
-  #   patience: 5             # Number of epochs with no improvement after which LR will be reduced
+  #   factor: 0.75             # Factor by which to reduce learning rate
+  #   patience: 8             # Number of epochs with no improvement after which LR will be reduced
   #   min_lr: 1e-7            # Lower bound on the learning rate
 
 dataset:
@@ -48,9 +48,10 @@ dataset:
     end_date: 2019-12-31        # End date for the validation dataset (YYYY-MM-DD)
   testing:
     start_date: 2022-01-01      # Start date for the dataset (YYYY-MM-DD)
-    end_date: 2022-01-12        # End date for the dataset (YYYY-MM-DD)
+    end_date: 2022-12-31        # End date for the dataset (YYYY-MM-DD)
   batch_size: 64                # Number of samples per batch
   num_workers: 16               # Number of workers for dataloader
+  time_resolution: 6h            #
 
 features:
   pressure_levels: # Added to atmospheric variable names
