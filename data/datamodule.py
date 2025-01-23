@@ -55,7 +55,7 @@ class Era5DataModule(L.LightningDataModule):
 
             if self.validation:
                 logging.info(
-                    f"Validation date range: {self.training.start_date} to {self.training.end_date}"
+                    f"Validation date range: {self.validation.start_date} to {self.validation.end_date}"
                 )
                 self.val_dataset = ERA5Dataset(
                     root_dir=self.root_dir,
@@ -67,7 +67,7 @@ class Era5DataModule(L.LightningDataModule):
 
             if self.testing:
                 logging.info(
-                    f"Testing date range: {self.training.start_date} to {self.training.end_date}"
+                    f"Testing date range: {self.testing.start_date} to {self.testing.end_date}"
                 )
                 self.test_dataset = ERA5Dataset(
                     root_dir=self.root_dir,
@@ -76,6 +76,13 @@ class Era5DataModule(L.LightningDataModule):
                     forecast_steps=self.forecast_steps,
                     features_cfg=self.features_cfg,
                 )
+
+
+            logging.info(
+                "Dataset contains: %d input features, %d output features.",
+                train_era5_dataset.num_in_features,
+                train_era5_dataset.num_out_features,
+            )
 
             self.has_setup_been_called[stage] = True
             logging.info(f"Dataset setup completed successfully for stage {stage}")

@@ -185,11 +185,6 @@ class ERA5Dataset(torch.utils.data.Dataset):
         )
         self.num_out_features = len(self.dyn_output_features)
 
-        logging.info(
-            "Dataset contains: %d input features, %d output features.",
-            self.num_in_features,
-            self.num_out_features,
-        )
 
     def __len__(self):
         # Do not yield a value for the last time in the dataset since there

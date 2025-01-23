@@ -49,7 +49,6 @@ dataset:
   testing:
     start_date: 2022-01-01      # Start date for the dataset (YYYY-MM-DD)
     end_date: 2022-01-12        # End date for the dataset (YYYY-MM-DD)
-  train_ratio: 0.8              # Ratio of data used for training (rest for validation)
   batch_size: 64                # Number of samples per batch
   num_workers: 16               # Number of workers for dataloader
 
