@@ -19,7 +19,7 @@ from utils.postprocessing import (
 from utils.visualization import plot_error_map, plot_forecast_map
 
 
-@hydra.main(version_base=None, config_path="config/", config_name="forecast_settings")
+@hydra.main(version_base=None, config_path="config/", config_name="paradis_settings")
 def main(cfg: DictConfig):
     """Generate forecasts using a trained model."""
 
