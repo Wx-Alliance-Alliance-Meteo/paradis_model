@@ -41,7 +41,7 @@ trainer:
 dataset:
   dataset_dir: /path/to/dataset/
   training:
-    start_date: 2010-01-01      # Start date for the training dataset (YYYY-MM-DD)
+    start_date: 2008-01-01      # Start date for the training dataset (YYYY-MM-DD)
     end_date: 2017-12-31        # End date for the training dataset (YYYY-MM-DD)
   validation:
     start_date: 2018-01-01      # Start date for the validation dataset (YYYY-MM-DD)
