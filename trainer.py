@@ -29,9 +29,12 @@ class LitParadis(L.LightningModule):
         self.variational = cfg.model.variational
         self.beta = cfg.model.get("beta")
 
-        print(
-            f"Number of trainable parameters: {sum(p.numel() for p in self.model.parameters() if p.requires_grad):,}"
-        )
+        if self.global_rank == 0:
+            logging.info(
+                "Number of trainable parameters: {:,}".format(
+                    sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+                )
+            )
 
         # Access output_name_order from configuration
         self.output_name_order = datamodule.output_name_order
