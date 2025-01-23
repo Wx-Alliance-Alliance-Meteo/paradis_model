@@ -36,7 +36,7 @@ def main(cfg: DictConfig):
     # Initialize data module
     datamodule = Era5DataModule(cfg)
     datamodule.setup(stage="test")
-    dataset = datamodule.dataset
+    dataset = datamodule.test_dataset
 
     # Extract features and dimensions
     atmospheric_vars = cfg.features.output.atmospheric
