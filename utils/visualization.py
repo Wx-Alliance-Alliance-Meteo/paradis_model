@@ -7,7 +7,7 @@ def plot_error_map(
     date_out,
     output_data,
     true_data,
-    datamodule,
+    dataset,
     feature,
     cfg,
     level=None,
@@ -15,7 +15,6 @@ def plot_error_map(
     ind=None,
 ):
     """Plot comparison maps for model output and ground truth."""
-    dataset = datamodule.dataset
 
     # Determine the feature index and name
     if level is not None:
@@ -144,7 +143,7 @@ def plot_forecast_map(
     date_out,
     output_data,
     true_data,
-    datamodule,
+    dataset,
     feature,
     cfg,
     level=None,
@@ -152,7 +151,6 @@ def plot_forecast_map(
     ind=None,
 ):
     """Plot comparison maps for model output and ground truth."""
-    dataset = datamodule.dataset
 
     # Determine the feature index and name
     if level is not None:

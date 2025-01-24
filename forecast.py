@@ -125,10 +125,10 @@ def main(cfg: DictConfig):
 
             # Post-process cartesian winds to spherical
             convert_cartesian_to_spherical_winds(
-                datamodule, cfg, output_forecast, output_features
+                dataset.lat, dataset.lon, cfg, output_forecast, output_features
             )
             convert_cartesian_to_spherical_winds(
-                datamodule, cfg, ground_truth, output_features
+                dataset.lat, dataset.lon, cfg, ground_truth, output_features
             )
 
             # Save results
@@ -138,7 +138,7 @@ def main(cfg: DictConfig):
                     atmospheric_vars,
                     surface_vars,
                     constant_vars,
-                    datamodule,
+                    dataset,
                     pressure_levels,
                     "results/forecast_result.zarr",
                     ind,
@@ -150,7 +150,7 @@ def main(cfg: DictConfig):
                     atmospheric_vars,
                     surface_vars,
                     constant_vars,
-                    datamodule,
+                    dataset,
                     pressure_levels,
                     "results/forecast_observation.zarr",
                     ind,
@@ -183,7 +183,7 @@ def main(cfg: DictConfig):
                     date_out,
                     output_data,
                     true_data,
-                    datamodule,
+                    dataset,
                     "geopotential",
                     cfg,
                     level=500,
@@ -196,7 +196,7 @@ def main(cfg: DictConfig):
                     date_out,
                     output_data,
                     true_data,
-                    datamodule,
+                    dataset,
                     "2m_temperature",
                     cfg,
                     temp_offset=273.15,
@@ -209,7 +209,7 @@ def main(cfg: DictConfig):
                     date_out,
                     output_data,
                     true_data,
-                    datamodule,
+                    dataset,
                     "total_precipitation_6hr",
                     cfg,
                     ind=forecast_ind,

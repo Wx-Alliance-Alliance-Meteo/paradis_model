@@ -1,20 +1,21 @@
+import dask
 import numpy
 import xarray
 
+import time
 
 def save_results_to_zarr(
     data,
     atmospheric_vars,
     surface_vars,
     constant_vars,
-    datamodule,
+    dataset,
     pressure_levels,
     filename,
     ind,
 ):
     """Save results to a Zarr file."""
     data_vars = {}
-    dataset = datamodule.dataset
     num_levels = len(pressure_levels)
 
     # Prepare atmospheric variables
@@ -33,12 +34,13 @@ def save_results_to_zarr(
             data[:, :, len(atmospheric_vars) * num_levels + i],
         )
 
-    # Prepare constant variables
-    con_dims = ["latitude", "longitude"]
-    for i, feature in enumerate(constant_vars):
-        if feature in con_dims:
-            continue
-        data_vars[feature] = (con_dims, dataset.ds_constants[feature].data)
+    if ind == 0:
+        # Prepare constant variables
+        con_dims = ["latitude", "longitude"]
+        for i, feature in enumerate(constant_vars):
+            if feature in con_dims:
+                continue
+            data_vars[feature] = (con_dims, dataset.ds_constants[feature].data)
 
     # Define coordinates
     coords = {
@@ -50,13 +52,15 @@ def save_results_to_zarr(
         * numpy.timedelta64(6 * 3600 * 10**9, "ns"),
     }
 
-    # Save to Zarr
-    if ind == 0:
-        xarray.Dataset(data_vars=data_vars, coords=coords).to_zarr(
-            filename,
-            consolidated=True,
-        )
-    else:
-        xarray.Dataset(data_vars=data_vars, coords=coords).to_zarr(
-            filename, consolidated=True, append_dim="time"
-        )
+    with dask.config.set(scheduler="threads"):
+
+        # Save to Zarr
+        if ind == 0:
+            xarray.Dataset(data_vars=data_vars, coords=coords).to_zarr(
+                filename,
+                consolidated=True,
+            )
+        else:
+            xarray.Dataset(data_vars=data_vars, coords=coords).to_zarr(
+                filename, consolidated=True, append_dim="time"
+            )
