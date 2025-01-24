@@ -74,7 +74,7 @@ def replace_variable_name(variable_old, variable_new, variable_list):
 def convert_cartesian_to_spherical_winds(latitude, longitude, cfg, array, features):
 
     # Convert wind velocities to spherical coordinates
-    longitude, latitude = numpy.meshgrid(latitude, longitude)
+    longitude, latitude = numpy.meshgrid(longitude, latitude)
     pressure_levels = numpy.array([float(val) for val in cfg.features.pressure_levels])
 
     # Extract the variables from the results
