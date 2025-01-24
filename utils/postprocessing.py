@@ -3,6 +3,66 @@ import re
 import numpy
 
 
+def compute_cartesian_wind(
+    latitude,
+    longitude,
+    pressure_levels,
+    temperature,
+    u,
+    v,
+    w,
+    u_10m,
+    v_10m,
+):
+    """
+    Compute spherical wind components (u, v, w) from 3D Cartesian wind components.
+    """
+
+    # Constants
+    g = 9.80616  # Gravitational acceleration m/s^2
+    R = 287.05  # Gas constant for dry air J/(kg·K)
+
+    # Extract necessary data
+    lon_rad = numpy.deg2rad(longitude)
+    lat_rad = numpy.deg2rad(latitude)
+
+    wind_x = (
+        -u * numpy.sin(lon_rad)
+        - v * numpy.sin(lat_rad) * numpy.cos(lon_rad)
+        - w
+        * R
+        * temperature
+        / (pressure_levels[:, None, None] * 100 * g)
+        * numpy.cos(lat_rad)
+        * numpy.cos(lon_rad)
+    )
+
+    wind_y = (
+        u * numpy.cos(lon_rad)
+        - v * numpy.sin(lat_rad) * numpy.sin(lon_rad)
+        - w
+        * R
+        * temperature
+        / (pressure_levels[:, None, None] * 100 * g)
+        * numpy.cos(lat_rad)
+        * numpy.sin(lon_rad)
+    )
+
+    wind_z = v * numpy.cos(lat_rad) - w * R * temperature / (
+        pressure_levels[:, None, None] * 100 * g
+    ) * numpy.sin(lat_rad)
+
+    # Surface wind components (no vertical velocity)
+    wind_x_10m = -u_10m * numpy.sin(lon_rad) - v_10m * numpy.sin(lat_rad) * numpy.cos(
+        lon_rad
+    )
+    wind_y_10m = u_10m * numpy.cos(lon_rad) - v_10m * numpy.sin(lat_rad) * numpy.sin(
+        lon_rad
+    )
+
+    return wind_x, wind_y, wind_z, wind_x_10m, wind_y_10m
+
+
 def compute_spherical_wind(
     latitude,
     longitude,
@@ -42,11 +102,11 @@ def compute_spherical_wind(
     ) * (pressure_levels[:, None, None] * 100 * g / (R * temperature))
 
     # At 10m, w is considered 0
+    # NOTE: This will fail if the poles are included
     u_10m = -wind_x_10m * numpy.sin(lon_rad) + wind_y_10m * numpy.cos(lon_rad)
-
-    v_10m = -wind_x_10m * numpy.sin(lat_rad) * numpy.cos(
-        lon_rad
-    ) - wind_y_10m * numpy.sin(lat_rad) * numpy.sin(lon_rad)
+    v_10m = -wind_x_10m * numpy.cos(lon_rad) / numpy.sin(
+        lat_rad
+    ) - wind_y_10m * numpy.sin(lon_rad) / numpy.sin(lat_rad)
 
     return u, v, w, u_10m, v_10m
 
@@ -67,8 +127,6 @@ def replace_variable_name(variable_old, variable_new, variable_list):
             new_var_name = re.sub(variable_old, variable_new, var)
             variable_list[i] = new_var_name
     return variable_list
-
-
 
 
 def convert_cartesian_to_spherical_winds(latitude, longitude, cfg, array, features):
