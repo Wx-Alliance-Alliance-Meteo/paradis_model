@@ -4,6 +4,7 @@ import xarray
 
 import time
 
+
 def save_results_to_zarr(
     data,
     atmospheric_vars,

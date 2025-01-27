@@ -244,12 +244,7 @@ class NeuralSemiLagrangian(nn.Module):
             align_corners=True,
             mode="bicubic",
             padding_mode="border",
-        )
-
-        # Reshape 
-        interpolated = interpolated.reshape(
-            batch_size, self.hidden_dim, *interpolated.shape[-2:]
-        )
+        ).reshape(batch_size, self.hidden_dim, *interpolated.shape[-2:])
 
         if self.variational:
             return interpolated, kl_loss
