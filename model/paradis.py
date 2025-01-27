@@ -171,14 +171,14 @@ class NeuralSemiLagrangian(nn.Module):
         return lat, lon
 
     def forward(
-        self, hidden_features: torch.Tensor, static: torch.Tensor, dt: float
+        self,
+        hidden_features: torch.Tensor,
+        lat_grid: torch.Tensor,
+        lon_grid: torch.Tensor,
+        dt: float,
     ) -> torch.Tensor:
         """Compute advection using rotated coordinate system."""
         batch_size = hidden_features.shape[0]
-
-        # Extract lat/lon from static features (last 2 channels)
-        lat_grid = static[:, -2, :, :]
-        lon_grid = static[:, -1, :, :]
 
         # Get learned velocities for each channel
         if self.variational:
@@ -237,14 +237,19 @@ class NeuralSemiLagrangian(nn.Module):
             batch_size * self.hidden_dim, 1, *dynamic_padded.shape[-2:]
         )
 
-        # Interpolate and reshape back to original dimensions
+        # Interpolate
         interpolated = torch.nn.functional.grid_sample(
             dynamic_padded,
             grid,
             align_corners=True,
             mode="bicubic",
             padding_mode="border",
-        ).reshape(batch_size, self.hidden_dim, *interpolated.shape[-2:])
+        )
+
+        # Reshape back to original dimensions
+        interpolated = interpolated.reshape(
+            batch_size, self.hidden_dim, *interpolated.shape[-2:]
+        )
 
         if self.variational:
             return interpolated, kl_loss
@@ -319,19 +324,20 @@ class Paradis(nn.Module):
         if t is None:
             t = torch.zeros(x.shape[0], device=x.device)
 
-        # Split features
-        x_dynamic = x[:, : self.dynamic_channels]
+        # Extract lat/lon from static features (last 2 channels)
         x_static = x[:, self.dynamic_channels :]
+        lat_grid = x_static[:, -2, :, :]
+        lon_grid = x_static[:, -1, :, :]
 
         # Project combined features to latent space
-        z = self.input_proj(torch.cat([x_dynamic, x_static], dim=1))
+        z = self.input_proj(x)
 
         # Apply the neural semi-Lagrangian operators
         if self.variational:
             # Propogates up the KL
-            z, kl_loss = self.advection(z, x_static, self.dt)
+            z, kl_loss = self.advection(z, lat_grid, lon_grid, self.dt)
         else:
-            z = self.advection(z, x_static, self.dt)
+            z = self.advection(z, lat_grid, lon_grid, self.dt)
 
         z = self.solve_along_trajectories(z, self.dt)
 
