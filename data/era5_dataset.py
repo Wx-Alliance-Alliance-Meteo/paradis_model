@@ -1,6 +1,6 @@
 """ERA5 dataset handling"""
 
-import logging
+from datetime import datetime, timedelta
 import os
 import re
 
@@ -9,6 +9,7 @@ import numpy
 from omegaconf import DictConfig
 import torch
 import xarray
+
 
 from data.forcings import time_forcings, toa_radiation
 
@@ -23,29 +24,21 @@ class ERA5Dataset(torch.utils.data.Dataset):
         end_date: str,
         forecast_steps: int = 1,
         dtype=torch.float32,
-        features_cfg: DictConfig = {},
+        cfg: DictConfig = {},
     ) -> None:
 
+        features_cfg = cfg.features
         self.eps = 1e-12
         self.root_dir = root_dir
         self.forecast_steps = forecast_steps
         self.dtype = dtype
-        self.num_common_features = 0
         self.forcing_inputs = features_cfg.input.forcings
-
-        # Extract from the years in the range
-        start_year = int(start_date.split("-")[0])
-        end_year = int(end_date.split("-")[0])
-
-        # Create list of files to open (avoids loading more than necessary)
-        files = [
-            os.path.join(root_dir, str(year))
-            for year in range(start_year, end_year + 1)
-        ]
 
         # Lazy open this dataset
         ds = xarray.open_mfdataset(
-            files, chunks={"time": self.forecast_steps + 1}, engine="zarr"
+            os.path.join(root_dir, "*"),
+            chunks={"time": self.forecast_steps + 1},
+            engine="zarr",
         )
 
         # Add stats to data array
@@ -69,8 +62,22 @@ class ERA5Dataset(torch.utils.data.Dataset):
         ds.attrs["toa_radiation_std"] = ds_stats.attrs["toa_radiation_std"]
         ds.attrs["toa_radiation_mean"] = ds_stats.attrs["toa_radiation_mean"]
 
-        # Filter data to time frame requested
-        ds = ds.sel(time=slice(start_date, end_date))
+        # Add the number of forecast steps to the range of dates
+        time_resolution = int(cfg.dataset.time_resolution[:-1])
+
+        # Number time instances per day (ignoring 24:00)
+        num_times_day = 24 / time_resolution - 1
+
+        # Get the number of additional hours needed in data for autoregression
+        hours = time_resolution * (self.forecast_steps + num_times_day)
+        time_delta = timedelta(hours=hours)
+
+        # Convert end_date to a datetime object and adjust end date
+        end_date_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        adjusted_end_date = end_date_dt + time_delta
+
+        # Select the time range needed to process this dataset
+        ds = ds.sel(time=slice(start_date, adjusted_end_date))
 
         # Extract latitude and longitude to build the graph
         self.lat = ds.latitude.values
@@ -105,6 +112,8 @@ class ERA5Dataset(torch.utils.data.Dataset):
                 output_atmospheric + features_cfg["output"]["surface"],
             )
         )
+
+        self.num_common_features = len(common_features)
 
         # Constant input variables
         ds_constants = xarray.open_dataset(
@@ -185,18 +194,13 @@ class ERA5Dataset(torch.utils.data.Dataset):
         )
         self.num_out_features = len(self.dyn_output_features)
 
-        logging.info(
-            "Dataset contains: %d input features, %d output features.",
-            self.num_in_features,
-            self.num_out_features,
-        )
-
     def __len__(self):
         # Do not yield a value for the last time in the dataset since there
         # is no future data
         return self.length - self.forecast_steps
 
     def __getitem__(self, ind: int):
+
         # Extract values from the requested indices
         input_data = self.ds_input.isel(time=slice(ind, ind + self.forecast_steps))
 
@@ -310,9 +314,11 @@ class ERA5Dataset(torch.utils.data.Dataset):
         # Prepare variables required in custom normalization
 
         # Maximum and minimum specific humidity in dataset
-        self.q_max = torch.max(self.input_max[self.norm_humidity_in]).item()
-        self.q_min = torch.min(self.input_min[self.norm_humidity_in]).item()
-        self.q_min = max([self.q_min, self.eps])
+        self.q_max = torch.max(self.input_max[self.norm_humidity_in]).detach()
+        self.q_min = torch.min(self.input_min[self.norm_humidity_in]).detach()
+
+        if self.q_min < self.eps:
+            self.q_min = torch.tensor(self.eps).detach()
 
         # Extract the toa_radiation mean and std
         self.toa_rad_std = ds_input.attrs["toa_radiation_std"]
@@ -387,7 +393,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
     def _denormalize_standard(self, norm_data, mean, std):
         return norm_data * std + mean
 
-    def _normalize_humidity(self, data: numpy.ndarray) -> numpy.ndarray:
+    def _normalize_humidity(self, data: torch.tensor) -> torch.tensor:
         """Normalize specific humidity using physically-motivated logarithmic transform.
 
         This normalization accounts for the exponential variation of specific humidity
@@ -401,13 +407,13 @@ class ERA5Dataset(torch.utils.data.Dataset):
         """
         # Apply normalization
         q_norm = (
-            numpy.log(numpy.clip(data, 0, self.q_max) + self.eps)
-            - numpy.log(self.q_min)
-        ) / (numpy.log(self.q_max) - numpy.log(self.q_min))
+            torch.log(torch.clip(data, 0, self.q_max) + self.eps)
+            - torch.log(self.q_min)
+        ) / (torch.log(self.q_max) - torch.log(self.q_min))
 
         return q_norm
 
-    def _denormalize_humidity(self, data: numpy.ndarray) -> numpy.ndarray:
+    def _denormalize_humidity(self, data: torch.tensor) -> torch.tensor:
         """Denormalize specific humidity data from normalized space back to kg/kg.
 
         Args:
@@ -418,15 +424,15 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
         # Invert the normalization
         q = (
-            numpy.exp(
-                data * (numpy.log(self.q_max) - numpy.log(self.q_min))
-                + numpy.log(self.q_min)
+            torch.exp(
+                data * (torch.log(self.q_max) - torch.log(self.q_min))
+                + torch.log(self.q_min)
             )
             - self.eps
         )
-        return numpy.clip(q, 0, self.q_max)
+        return torch.clip(q, 0, self.q_max)
 
-    def _normalize_precipitation(self, data: numpy.ndarray) -> numpy.ndarray:
+    def _normalize_precipitation(self, data: torch.tensor) -> torch.tensor:
         """Normalize precipitation using logarithmic transform.
 
         Args:
@@ -435,9 +441,9 @@ class ERA5Dataset(torch.utils.data.Dataset):
             Normalized precipitation data
         """
         shift = 10
-        return numpy.log(data + 1e-6) + shift
+        return torch.log(data + 1e-6) + shift
 
-    def _denormalize_precipitation(self, data: numpy.ndarray) -> numpy.ndarray:
+    def _denormalize_precipitation(self, data: torch.tensor) -> torch.tensor:
         """Denormalize precipitation data.
 
         Args:
@@ -446,22 +452,4 @@ class ERA5Dataset(torch.utils.data.Dataset):
             Precipitation data in original scale
         """
         shift = 10
-        return numpy.clip(numpy.exp(data - shift) - 1e-6, a_min=0, a_max=None)
-
-
-def split_dataset(dataset, train_ratio=0.8, seed: int = 42):
-    """Split dataset into training and validation sets.
-
-    Args:
-        dataset: Dataset to split
-        train_ratio: Fraction of data to use for training
-
-    Returns:
-        tuple: (train_dataset, val_dataset)
-    """
-    generator = torch.Generator().manual_seed(seed)
-    split_idx = int(len(dataset) * train_ratio)
-    indices = torch.randperm(len(dataset), generator=generator)
-    train_dataset = torch.utils.data.Subset(dataset, indices[:split_idx])
-    val_dataset = torch.utils.data.Subset(dataset, indices[split_idx:])
-    return train_dataset, val_dataset
+        return torch.clip(torch.exp(data - shift) - 1e-6, min=0, max=None)

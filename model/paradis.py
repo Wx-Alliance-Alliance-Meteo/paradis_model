@@ -126,17 +126,17 @@ class NeuralSemiLagrangian(nn.Module):
         # For cubic interpolation
         self.padding = 1
         self.padding_interp = GeoCyclicPadding(self.padding, hidden_dim)
+        self.hidden_dim = hidden_dim
 
         # Flag for variational variant to be used in forward
         self.variational = variational
 
         # Neural network that will learn an effective velocity along the trajectory
-        # Output 2 channels, for u and v
+        # Output 2 channels per hidden dimension for u and v
         if not self.variational:
-            # Variational CLP processor
-            self.velocity_net = CLP(hidden_dim, 2, mesh_size)
+            self.velocity_net = CLP(hidden_dim, 2 * hidden_dim, mesh_size)
         else:
-            self.velocity_net = VariationalCLP(hidden_dim, 2, mesh_size)
+            self.velocity_net = VariationalCLP(hidden_dim, 2 * hidden_dim, mesh_size)
 
     def _transform_to_latlon(
         self,
@@ -165,30 +165,36 @@ class NeuralSemiLagrangian(nn.Module):
         lon = lon_p + torch.atan2(num, den)
 
         # Normalize longitude to [0, 2π]
-        lon = torch.where(lon < 0, lon + 2 * torch.pi, lon)
-        lon = torch.where(lon > 2 * torch.pi, lon - 2 * torch.pi, lon)
+        lon = torch.remainder(lon + 2 * torch.pi, 2 * torch.pi)
 
         return lat, lon
 
     def forward(
-        self, hidden_features: torch.Tensor, static: torch.Tensor, dt: float
+        self,
+        hidden_features: torch.Tensor,
+        lat_grid: torch.Tensor,
+        lon_grid: torch.Tensor,
+        dt: float,
     ) -> torch.Tensor:
         """Compute advection using rotated coordinate system."""
         batch_size = hidden_features.shape[0]
 
-        # Extract lat/lon from static features (last 2 channels)
-        lat_grid = static[:, -2, :, :]
-        lon_grid = static[:, -1, :, :]
-
-        # Get learned velocities
+        # Get learned velocities for each channel
         if self.variational:
-            # Returns back the KL loss as well
             velocities, kl_loss = self.velocity_net(hidden_features)
         else:
             velocities = self.velocity_net(hidden_features)
 
-        u = velocities[:, 0]
-        v = velocities[:, 1]
+        # Reshape velocities to separate u,v components per channel
+        # [batch, 2*hidden_dim, lat, lon] -> [batch, hidden_dim, 2, lat, lon]
+        velocities = velocities.reshape(
+            batch_size, 2, self.hidden_dim, *velocities.shape[-2:]
+        )
+        velocities = velocities.transpose(1, 2)
+
+        # Extract u,v components
+        u = velocities[:, :, 0]  # [batch, hidden_dim, lat, lon]
+        v = velocities[:, :, 1]
 
         # Compute departure points in a local rotated coordinate system in which the origin
         # of latitude and longitude is moved to the arrival point
@@ -196,6 +202,10 @@ class NeuralSemiLagrangian(nn.Module):
         lat_prime = -v * dt
 
         # Transform from rotated coordinates back to standard coordinates
+        # Expand lat/lon grid for broadcasting with per-channel coordinates
+        lat_grid = lat_grid.unsqueeze(1).expand(-1, self.hidden_dim, -1, -1)
+        lon_grid = lon_grid.unsqueeze(1).expand(-1, self.hidden_dim, -1, -1)
+
         lat_dep, lon_dep = self._transform_to_latlon(
             lat_prime, lon_prime, lat_grid, lon_grid
         )
@@ -212,36 +222,38 @@ class NeuralSemiLagrangian(nn.Module):
             hidden_features.size(-2) / padded_height
         )
 
+        # Reshape grid coordinates for interpolation
+        # [batch, hidden_dim, lat, lon] -> [batch*hidden_dim, lat, lon]
+        grid_x = grid_x.reshape(batch_size * self.hidden_dim, *grid_x.shape[-2:])
+        grid_y = grid_y.reshape(batch_size * self.hidden_dim, *grid_y.shape[-2:])
+
         # Create interpolation grid
-        grid = torch.stack(
-            [grid_x.expand(batch_size, -1, -1), grid_y.expand(batch_size, -1, -1)],
-            dim=-1,
+        grid = torch.stack([grid_x, grid_y], dim=-1)
+
+        # Apply padding and reshape hidden features
+        dynamic_padded = self.padding_interp(hidden_features)
+        dynamic_padded = dynamic_padded.reshape(
+            batch_size * self.hidden_dim, 1, *dynamic_padded.shape[-2:]
         )
 
-        # Apply padding
-        dynamic_padded = self.padding_interp(hidden_features)
-
         # Interpolate
-        if self.variational:
-            # Propogates up the KL
-            return (
-                torch.nn.functional.grid_sample(
-                    dynamic_padded,
-                    grid,
-                    align_corners=True,
-                    mode="bicubic",
-                    padding_mode="border",
-                ),
-                kl_loss,
-            )
-
-        return torch.nn.functional.grid_sample(
+        interpolated = torch.nn.functional.grid_sample(
             dynamic_padded,
             grid,
             align_corners=True,
             mode="bicubic",
             padding_mode="border",
         )
+
+        # Reshape back to original dimensions
+        interpolated = interpolated.reshape(
+            batch_size, self.hidden_dim, *interpolated.shape[-2:]
+        )
+
+        if self.variational:
+            return interpolated, kl_loss
+
+        return interpolated
 
 
 class ForcingsIntegrator(nn.Module):
@@ -278,6 +290,9 @@ class ForcingsIntegrator(nn.Module):
 class Paradis(nn.Module):
     """Weather forecasting model main class."""
 
+    # Synoptic time scale (~1/Ω) in seconds
+    SYNOPTIC_TIME_SCALE = 7.29212e5
+
     def __init__(self, datamodule, cfg):
         super().__init__()
 
@@ -309,9 +324,8 @@ class Paradis(nn.Module):
             self.dynamic_channels + self.static_channels, hidden_dim, mesh_size
         )
 
-        # Rescale the time step to a fraction of a synoptic time scale (~1/Ω)
-        time_scale = 7.29212e5
-        self.dt = cfg.model.base_dt / time_scale
+        # Rescale the time step to a fraction of a synoptic time scale
+        self.dt = cfg.model.base_dt / self.SYNOPTIC_TIME_SCALE
 
         # Physics operators
         self.advection = NeuralSemiLagrangian(hidden_dim, mesh_size, self.variational)
@@ -328,19 +342,20 @@ class Paradis(nn.Module):
         if t is None:
             t = torch.zeros(x.shape[0], device=x.device)
 
-        # Split features
-        x_dynamic = x[:, : self.dynamic_channels]
+        # Extract lat/lon from static features (last 2 channels)
         x_static = x[:, self.dynamic_channels :]
+        lat_grid = x_static[:, -2, :, :]
+        lon_grid = x_static[:, -1, :, :]
 
         # Project combined features to latent space
-        z = self.input_proj(torch.cat([x_dynamic, x_static], dim=1))
+        z = self.input_proj(x)
 
         # Apply the neural semi-Lagrangian operators
         if self.variational:
             # Propogates up the KL
-            z, kl_loss = self.advection(z, x_static, self.dt)
+            z, kl_loss = self.advection(z, lat_grid, lon_grid, self.dt)
         else:
-            z = self.advection(z, x_static, self.dt)
+            z = self.advection(z, lat_grid, lon_grid, self.dt)
 
         z = self.solve_along_trajectories(z, self.dt)
 

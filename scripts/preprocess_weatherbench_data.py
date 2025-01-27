@@ -336,7 +336,7 @@ def compute_statistics(output_base_dir):
     ]
 
     # Open with a larger chunk as this will accumulate data
-    ds = xarray.open_mfdataset(files, chunks={"time": 200}, engine="zarr")
+    ds = xarray.open_mfdataset(files, chunks={"time": 1}, engine="zarr")
 
     # Compute time-mean and time-standard deviation (per-level)
     # This skips nan values, which may appear for certain quantities
