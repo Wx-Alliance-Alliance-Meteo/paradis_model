@@ -126,17 +126,17 @@ class NeuralSemiLagrangian(nn.Module):
         # For cubic interpolation
         self.padding = 1
         self.padding_interp = GeoCyclicPadding(self.padding, hidden_dim)
+        self.hidden_dim = hidden_dim
 
         # Flag for variational variant to be used in forward
         self.variational = variational
 
         # Neural network that will learn an effective velocity along the trajectory
-        # Output 2 channels, for u and v
+        # Output 2 channels per hidden dimension for u and v
         if not self.variational:
-            # Variational CLP processor
-            self.velocity_net = CLP(hidden_dim, 2, mesh_size)
+            self.velocity_net = CLP(hidden_dim, 2 * hidden_dim, mesh_size)
         else:
-            self.velocity_net = VariationalCLP(hidden_dim, 2, mesh_size)
+            self.velocity_net = VariationalCLP(hidden_dim, 2 * hidden_dim, mesh_size)
 
     def _transform_to_latlon(
         self,
@@ -180,15 +180,22 @@ class NeuralSemiLagrangian(nn.Module):
         lat_grid = static[:, -2, :, :]
         lon_grid = static[:, -1, :, :]
 
-        # Get learned velocities
+        # Get learned velocities for each channel
         if self.variational:
-            # Returns back the KL loss as well
             velocities, kl_loss = self.velocity_net(hidden_features)
         else:
             velocities = self.velocity_net(hidden_features)
 
-        u = velocities[:, 0]
-        v = velocities[:, 1]
+        # Reshape velocities to separate u,v components per channel
+        # [batch, 2*hidden_dim, lat, lon] -> [batch, hidden_dim, 2, lat, lon]
+        velocities = velocities.reshape(
+            batch_size, 2, self.hidden_dim, *velocities.shape[-2:]
+        )
+        velocities = velocities.transpose(1, 2)
+
+        # Extract u,v components
+        u = velocities[:, :, 0]  # [batch, hidden_dim, lat, lon]
+        v = velocities[:, :, 1]
 
         # Compute departure points in a local rotated coordinate system in which the origin
         # of latitude and longitude is moved to the arrival point
@@ -196,6 +203,10 @@ class NeuralSemiLagrangian(nn.Module):
         lat_prime = -v * dt
 
         # Transform from rotated coordinates back to standard coordinates
+        # Expand lat/lon grid for broadcasting with per-channel coordinates
+        lat_grid = lat_grid.unsqueeze(1).expand(-1, self.hidden_dim, -1, -1)
+        lon_grid = lon_grid.unsqueeze(1).expand(-1, self.hidden_dim, -1, -1)
+
         lat_dep, lon_dep = self._transform_to_latlon(
             lat_prime, lon_prime, lat_grid, lon_grid
         )
@@ -212,36 +223,38 @@ class NeuralSemiLagrangian(nn.Module):
             hidden_features.size(-2) / padded_height
         )
 
+        # Reshape grid coordinates for interpolation
+        # [batch, hidden_dim, lat, lon] -> [batch*hidden_dim, lat, lon]
+        grid_x = grid_x.reshape(batch_size * self.hidden_dim, *grid_x.shape[-2:])
+        grid_y = grid_y.reshape(batch_size * self.hidden_dim, *grid_y.shape[-2:])
+
         # Create interpolation grid
-        grid = torch.stack(
-            [grid_x.expand(batch_size, -1, -1), grid_y.expand(batch_size, -1, -1)],
-            dim=-1,
+        grid = torch.stack([grid_x, grid_y], dim=-1)
+
+        # Apply padding and reshape hidden features
+        dynamic_padded = self.padding_interp(hidden_features)
+        dynamic_padded = dynamic_padded.reshape(
+            batch_size * self.hidden_dim, 1, *dynamic_padded.shape[-2:]
         )
 
-        # Apply padding
-        dynamic_padded = self.padding_interp(hidden_features)
-
-        # Interpolate
-        if self.variational:
-            # Propogates up the KL
-            return (
-                torch.nn.functional.grid_sample(
-                    dynamic_padded,
-                    grid,
-                    align_corners=True,
-                    mode="bicubic",
-                    padding_mode="border",
-                ),
-                kl_loss,
-            )
-
-        return torch.nn.functional.grid_sample(
+        # Interpolate and reshape back to original dimensions
+        interpolated = torch.nn.functional.grid_sample(
             dynamic_padded,
             grid,
             align_corners=True,
             mode="bicubic",
             padding_mode="border",
         )
+
+        # Reshape 
+        interpolated = interpolated.reshape(
+            batch_size, self.hidden_dim, *interpolated.shape[-2:]
+        )
+
+        if self.variational:
+            return interpolated, kl_loss
+
+        return interpolated
 
 
 class ForcingsIntegrator(nn.Module):
