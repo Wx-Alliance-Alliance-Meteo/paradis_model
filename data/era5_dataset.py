@@ -32,7 +32,6 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.root_dir = root_dir
         self.forecast_steps = forecast_steps
         self.dtype = dtype
-        self.num_common_features = 0
         self.forcing_inputs = features_cfg.input.forcings
 
         # Lazy open this dataset
@@ -113,6 +112,8 @@ class ERA5Dataset(torch.utils.data.Dataset):
                 output_atmospheric + features_cfg["output"]["surface"],
             )
         )
+
+        self.num_common_features = len(common_features)
 
         # Constant input variables
         ds_constants = xarray.open_dataset(
