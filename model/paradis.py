@@ -7,34 +7,61 @@ from torch import nn
 from model.padding import GeoCyclicPadding
 
 
-# Deterministic CLP
-def CLP(dim_in, dim_out, mesh_size, kernel_size=3, activation=nn.SiLU):
-    """Convolutional layer processor."""
-    return nn.Sequential(
-        GeoCyclicPadding(kernel_size // 2, dim_in),
-        nn.Conv2d(dim_in, dim_in, kernel_size=kernel_size),
-        nn.LayerNorm([dim_in, mesh_size[0], mesh_size[1]]),
-        activation(),
-        GeoCyclicPadding(kernel_size // 2, dim_in),
-        nn.Conv2d(dim_in, dim_out, kernel_size=kernel_size),
-    )
-
-
-# Reusable CLP block
 class CLPBlock(nn.Module):
+    """Convolutional Layer Processor block."""
+
     def __init__(
-        self, input_dim, output_dim, mesh_size, kernel_size=3, activation=nn.SiLU
+        self,
+        input_dim: int,
+        output_dim: int,
+        mesh_size: tuple,
+        kernel_size: int = 3,
+        activation: nn.Module = nn.SiLU,
+        double_conv: bool = False,
     ):
         super().__init__()
-        self.layers = nn.Sequential(
-            GeoCyclicPadding(kernel_size // 2, input_dim),
-            nn.Conv2d(input_dim, output_dim, kernel_size=kernel_size),
-            nn.LayerNorm([output_dim, mesh_size[0], mesh_size[1]]),
-            activation(),
-        )
 
-    def forward(self, x):
+        # First convolution block
+        layers = [
+            GeoCyclicPadding(kernel_size // 2, input_dim),
+            nn.Conv2d(
+                input_dim,
+                input_dim if double_conv else output_dim,
+                kernel_size=kernel_size,
+            ),
+            nn.LayerNorm(
+                [input_dim if double_conv else output_dim, mesh_size[0], mesh_size[1]]
+            ),
+            activation(),
+        ]
+
+        # Optional second convolution block
+        if double_conv:
+            layers.extend(
+                [
+                    GeoCyclicPadding(kernel_size // 2, input_dim),
+                    nn.Conv2d(input_dim, output_dim, kernel_size=kernel_size),
+                ]
+            )
+
+        self.layers = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.layers(x)
+
+
+# Helper function
+def CLP(
+    dim_in: int,
+    dim_out: int,
+    mesh_size: tuple,
+    kernel_size: int = 3,
+    activation: nn.Module = nn.SiLU,
+):
+    """Create a double-convolution CLP block."""
+    return CLPBlock(
+        dim_in, dim_out, mesh_size, kernel_size, activation, double_conv=True
+    )
 
 
 # CLP processor with structured latent
@@ -187,10 +214,9 @@ class NeuralSemiLagrangian(nn.Module):
 
         # Reshape velocities to separate u,v components per channel
         # [batch, 2*hidden_dim, lat, lon] -> [batch, hidden_dim, 2, lat, lon]
-        velocities = velocities.reshape(
+        velocities = velocities.view(
             batch_size, 2, self.hidden_dim, *velocities.shape[-2:]
-        )
-        velocities = velocities.transpose(1, 2)
+        ).transpose(1, 2)
 
         # Extract u,v components
         u = velocities[:, :, 0]  # [batch, hidden_dim, lat, lon]
@@ -224,15 +250,15 @@ class NeuralSemiLagrangian(nn.Module):
 
         # Reshape grid coordinates for interpolation
         # [batch, hidden_dim, lat, lon] -> [batch*hidden_dim, lat, lon]
-        grid_x = grid_x.reshape(batch_size * self.hidden_dim, *grid_x.shape[-2:])
-        grid_y = grid_y.reshape(batch_size * self.hidden_dim, *grid_y.shape[-2:])
+        grid_x = grid_x.view(batch_size * self.hidden_dim, *grid_x.shape[-2:])
+        grid_y = grid_y.view(batch_size * self.hidden_dim, *grid_y.shape[-2:])
 
         # Create interpolation grid
         grid = torch.stack([grid_x, grid_y], dim=-1)
 
         # Apply padding and reshape hidden features
         dynamic_padded = self.padding_interp(hidden_features)
-        dynamic_padded = dynamic_padded.reshape(
+        dynamic_padded = dynamic_padded.view(
             batch_size * self.hidden_dim, 1, *dynamic_padded.shape[-2:]
         )
 
@@ -246,7 +272,7 @@ class NeuralSemiLagrangian(nn.Module):
         )
 
         # Reshape back to original dimensions
-        interpolated = interpolated.reshape(
+        interpolated = interpolated.view(
             batch_size, self.hidden_dim, *interpolated.shape[-2:]
         )
 
@@ -321,9 +347,6 @@ class Paradis(nn.Module):
         self, x: torch.Tensor, t: typing.Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """Forward pass through the model."""
-        # Setup time input if not provided
-        if t is None:
-            t = torch.zeros(x.shape[0], device=x.device)
 
         # Extract lat/lon from static features (last 2 channels)
         x_static = x[:, self.dynamic_channels :]
