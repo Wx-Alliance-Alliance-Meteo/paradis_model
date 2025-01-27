@@ -165,8 +165,7 @@ class NeuralSemiLagrangian(nn.Module):
         lon = lon_p + torch.atan2(num, den)
 
         # Normalize longitude to [0, 2π]
-        lon = torch.where(lon < 0, lon + 2 * torch.pi, lon)
-        lon = torch.where(lon > 2 * torch.pi, lon - 2 * torch.pi, lon)
+        lon = torch.remainder(lon + 2 * torch.pi, 2 * torch.pi)
 
         return lat, lon
 
@@ -274,6 +273,9 @@ class ForcingsIntegrator(nn.Module):
 class Paradis(nn.Module):
     """Weather forecasting model main class."""
 
+    # Synoptic time scale (~1/Ω) in seconds
+    SYNOPTIC_TIME_SCALE = 7.29212e5
+
     def __init__(self, datamodule, cfg):
         super().__init__()
 
@@ -305,9 +307,8 @@ class Paradis(nn.Module):
             self.dynamic_channels + self.static_channels, hidden_dim, mesh_size
         )
 
-        # Rescale the time step to a fraction of a synoptic time scale (~1/Ω)
-        time_scale = 7.29212e5
-        self.dt = cfg.model.base_dt / time_scale
+        # Rescale the time step to a fraction of a synoptic time scale
+        self.dt = cfg.model.base_dt / self.SYNOPTIC_TIME_SCALE
 
         # Physics operators
         self.advection = NeuralSemiLagrangian(hidden_dim, mesh_size, self.variational)
