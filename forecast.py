@@ -31,7 +31,10 @@ def main(cfg: DictConfig):
     )
 
     # Decide whether to save results to file
-    save_results_to_file = False
+    save_results_to_file = True
+
+    # Use the following when weatherbench data is not available
+    save_observations_to_file = False
 
     # Initialize data module
     datamodule = Era5DataModule(cfg)
@@ -85,6 +88,7 @@ def main(cfg: DictConfig):
     logging.info("Generating forecast...")
     ind = 0
     with torch.no_grad():
+        time_start_ind = 0
         for input_data, ground_truth in tqdm(datamodule.test_dataloader()):
             batch_size = input_data.shape[0]
             output_forecast = torch.empty(
@@ -142,9 +146,14 @@ def main(cfg: DictConfig):
                     pressure_levels,
                     "results/forecast_result.zarr",
                     ind,
+                    time_start_ind,
+                    time_start_ind + batch_size,
                 )
 
-                # Save ground truth
+            # Save ground truth
+            # This currently saves more data than it should, only initial input times
+            # without steps
+            if save_observations_to_file:
                 save_results_to_zarr(
                     ground_truth,
                     atmospheric_vars,
@@ -154,17 +163,20 @@ def main(cfg: DictConfig):
                     pressure_levels,
                     "results/forecast_observation.zarr",
                     ind,
+                    time_start_ind,
+                    time_start_ind + batch_size,
                 )
 
             ind += 1
+            time_start_ind += batch_size
 
             # Plot results for the first time instance only
             time_ind = 0
-            forecast_ind = num_forecast_steps - 1
+            forecast_ind = 0
 
             if time_ind == ind - 1:
                 time_in = dataset.ds_input.time.values[time_ind]
-                time_out = dataset.ds_input.time.values[time_ind + forecast_ind]
+                time_out = dataset.ds_input.time.values[time_ind + forecast_ind + 1]
 
                 dt_in = time_in.astype("datetime64[s]").astype(datetime)
                 dt_out = time_out.astype("datetime64[s]").astype(datetime)
@@ -216,7 +228,6 @@ def main(cfg: DictConfig):
                 )
 
                 logging.info("Forecast plots generated successfully")
-
     logging.info("Saved output files successfuly")
 
 
