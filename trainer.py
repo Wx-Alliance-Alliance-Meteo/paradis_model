@@ -8,7 +8,7 @@ import torch
 import lightning as L
 
 from model.paradis import Paradis
-from utils.loss import WeightedHybridLoss
+from utils.loss import ReversedHuberLoss
 
 
 class LitParadis(L.LightningModule):
@@ -79,8 +79,7 @@ class LitParadis(L.LightningModule):
             if var_name in var_name_to_weight:
                 var_loss_weights_reordered[i] = var_name_to_weight[var_name]
 
-        self.loss_fn = WeightedHybridLoss(
-            grid_lat=torch.from_numpy(datamodule.lat),
+        self.loss_fn = ReversedHuberLoss(
             pressure_levels=torch.tensor(
                 cfg.features.pressure_levels, dtype=torch.float32
             ),
@@ -88,7 +87,6 @@ class LitParadis(L.LightningModule):
             num_surface_vars=len(cfg.features.output.surface),
             var_loss_weights=var_loss_weights_reordered,
             output_name_order=datamodule.output_name_order,
-            alpha=cfg.model.get("loss_alpha"),
         )
 
         self.forecast_steps = cfg.model.forecast_steps
