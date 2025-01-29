@@ -1,3 +1,5 @@
+import os
+import shutil
 import dask
 import numpy
 import xarray
@@ -52,6 +54,10 @@ def save_results_to_zarr(
         "prediction_timedelta": (numpy.arange(data.shape[1]) + 1)
         * numpy.timedelta64(6 * 3600 * 10**9, "ns"),
     }
+
+    # If this is the first write, remove any existing Zarr store
+    if ind == 0 and os.path.exists(filename):
+        shutil.rmtree(filename)
 
     with dask.config.set(scheduler="threads"):
 
