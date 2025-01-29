@@ -91,8 +91,8 @@ class ReversedHuberLoss(torch.nn.Module):
 
         return feature_weights
 
-    def _reversed_huber_loss(self, error: torch.Tensor) -> torch.Tensor:
-        """Compute the reversed Huber loss.
+    def _pseudo_reversed_huber_loss(self, error: torch.Tensor) -> torch.Tensor:
+        """Compute the psudo reversed Huber loss.
 
         Args:
             error: Error tensor (pred - target)
@@ -101,15 +101,10 @@ class ReversedHuberLoss(torch.nn.Module):
             Loss tensor with same shape as input
         """
         abs_error = torch.abs(error)
-        is_small_error = abs_error <= self.delta
-
-        # Linear region shifted to ensure non-negative values
-        linear_loss = self.delta * abs_error
-
-        # Quadratic loss adjusted for continuity at transition
-        squared_loss = 0.5 * (error**2) + 0.5 * self.delta**2
-
-        return torch.where(is_small_error, linear_loss, squared_loss)
+        small_error = self.delta * abs_error
+        large_error = 0.5 * error**2
+        weight = 1 / (1 + torch.exp(-2 * (abs_error - self.delta)))
+        return (1 - weight) * small_error + weight * large_error
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """Calculate weighted inverted Huber loss.
@@ -128,7 +123,7 @@ class ReversedHuberLoss(torch.nn.Module):
         error = pred - target
 
         # Pseudo-reversed-Huber loss
-        loss = self._reversed_huber_loss(error)
+        loss = self._pseudo_reversed_huber_loss(error)
 
         # Apply weights to loss components
         weighted_loss = loss * feature_weights
