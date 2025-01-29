@@ -92,7 +92,7 @@ class ReversedHuberLoss(torch.nn.Module):
         return feature_weights
 
     def _pseudo_reversed_huber_loss(self, error: torch.Tensor) -> torch.Tensor:
-        """Compute the psudo reversed Huber loss.
+        """Compute the pseudo reversed Huber loss.
 
         Args:
             error: Error tensor (pred - target)
