@@ -17,7 +17,7 @@ trainer:
   use_amp: true               # Use Automatic Mixed Precision
   print_losses: false
   early_stopping:
-    enabled: false            # Whether to use early stopping
+    enabled: true             # Whether to use early stopping
     patience: 8               # Number of epochs with no improvement after which training will stop
 
   # Scheduler configuration - Choose ONE of the following scheduler types by
@@ -27,7 +27,7 @@ trainer:
   scheduler:
     type: "reduce_lr"       # ReduceLROnPlateau scheduler
     factor: 0.75            # Factor by which to reduce learning rate
-    patience: 8             # Number of epochs with no improvement after which LR will be reduced
+    patience: 4             # Number of epochs with no improvement after which LR will be reduced
     min_lr: 1e-7            # Lower bound on the learning rate
 
   # 2. OneCycleLR
@@ -40,11 +40,11 @@ trainer:
 dataset:
   dataset_dir: /path/to/dataset/
   training:
-    start_date: 2008-01-01      # Start date for the training dataset (YYYY-MM-DD)
-    end_date: 2017-12-31        # End date for the training dataset (YYYY-MM-DD)
+    start_date: 2010-01-01      # Start date for the training dataset (YYYY-MM-DD)
+    end_date: 2019-12-31        # End date for the training dataset (YYYY-MM-DD)
   validation:
-    start_date: 2018-01-01      # Start date for the validation dataset (YYYY-MM-DD)
-    end_date: 2019-12-31        # End date for the validation dataset (YYYY-MM-DD)
+    start_date: 2008-01-01      # Start date for the validation dataset (YYYY-MM-DD)
+    end_date: 2009-12-31        # End date for the validation dataset (YYYY-MM-DD)
   testing:
     start_date: 2022-01-01      # Start date for the dataset (YYYY-MM-DD)
     end_date: 2022-12-31        # End date for the dataset (YYYY-MM-DD)
