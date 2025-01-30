@@ -57,8 +57,6 @@ class LitParadis(L.LightningModule):
             ],
             dtype=torch.float32,
         )
-        # Concatenate atmospheric and surface weights
-        var_loss_weights = torch.cat([atmospheric_weights, surface_weights])
 
         # Create a mapping of variable names to their weights
         atmospheric_vars = cfg.features.output.atmospheric

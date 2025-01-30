@@ -192,6 +192,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
             + self.constant_data.shape[-1]
             + len(self.forcing_inputs)
         )
+
         self.num_out_features = len(self.dyn_output_features)
 
     def __len__(self):
@@ -362,15 +363,12 @@ class ERA5Dataset(torch.utils.data.Dataset):
         for var in self.forcing_inputs:
             if var == "toa_incident_solar_radiation":
                 toa_rad = toa_radiation(input_data["time"].values, self.lat, self.lon)
+
                 toa_rad = torch.tensor(
                     (toa_rad - self.toa_rad_mean) / self.toa_rad_std,
                     dtype=self.dtype,
-                )
-                if len(toa_rad.shape) == 3:  # If time dimension is present
-                    toa_rad = toa_rad.permute(1, 2, 0)
-                toa_rad = toa_rad.reshape(
-                    self.forecast_steps, self.lat_size, self.lon_size, 1
-                )
+                ).unsqueeze(-1)
+
                 forcings.append(toa_rad)
             else:
                 # Get the time forcings
