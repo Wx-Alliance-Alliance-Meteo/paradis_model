@@ -94,6 +94,7 @@ def main(cfg: DictConfig):
         enable_progress_bar=not cfg.trainer.print_losses,
         enable_model_summary=True,
         logger=True,
+        profiler='simple',
     )
 
     # Train model

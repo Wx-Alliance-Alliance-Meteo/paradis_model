@@ -2,6 +2,7 @@
 
 import typing
 import torch
+import time
 from torch import nn
 
 from model.padding import GeoCyclicPadding
@@ -266,26 +267,28 @@ class ForcingsIntegrator(nn.Module):
 
     def forward(self, hidden_features: torch.Tensor, dt: float) -> torch.Tensor:
         """Integrate over a time step of size dt."""
-        
-        # Forward Euler 
-        fe = hidden_features + dt * self.diffusion_reaction_net(hidden_features)
+        rk_method = "rk4"
 
-        # Heun 
-        #k1 = self.diffusion_reaction_net(hidden_features)
-        #k2 = hidden_features + dt * k1
-        #heun = hidden_features + dt/2*(k1 + self.diffusion_reaction_net(k2))
+        if rk_method == "fe":
+            # Forward Euler 
+            new_state = hidden_features + dt * self.diffusion_reaction_net(hidden_features)
+        elif rk_method == "heun":
+            # Heun 
+            k1 = self.diffusion_reaction_net(hidden_features)
+            k2 = hidden_features + dt * k1
+            new_state = hidden_features + dt/2*(k1 + self.diffusion_reaction_net(k2))
+        elif rk_method == "rk4":
+            # RK4
+            k1 = self.diffusion_reaction_net(hidden_features)
+            k1y = hidden_features + dt/2 * k1
+            k2 = self.diffusion_reaction_net(k1y)
+            k2y =  hidden_features + dt/2 * k2 
+            k3 = self.diffusion_reaction_net(k2y)
+            k3y =  hidden_features + dt * k3
+            k4 = self.diffusion_reaction_net(k3y)
+            new_state = hidden_features + dt/6 *(k1 + 2*k2 + 2*k3 + k4) 
 
-        # RK4
-        #k1 = self.diffusion_reaction_net(hidden_features)
-        #k1y = hidden_features + dt/2 * k1
-        #k2 = self.diffusion_reaction_net(k1y)
-        #k2y =  hidden_features + dt/2 * k2 
-        #k3 = self.diffusion_reaction_net(k2y)
-        #k3y =  hidden_features + dt * k3
-        #k4 = self.diffusion_reaction_net(k3y)
-        #rk4 = hidden_features + dt/6 *(k1 + 2*k2 + 2*k3 + k4) 
-
-        return fe
+        return new_state
 
 class Paradis(nn.Module):
     """Weather forecasting model main class."""
@@ -349,14 +352,13 @@ class Paradis(nn.Module):
 
         # Project combined features to latent space
         z = self.input_proj(x)
-
         # Apply the neural semi-Lagrangian operators
         if self.variational:
             # Propogates up the KL
             z, kl_loss = self.advection(z, lat_grid, lon_grid, self.dt)
         else:
             z = self.advection(z, lat_grid, lon_grid, self.dt)
-
+        
         z = self.solve_along_trajectories(z, self.dt)
 
         # Project to output space
