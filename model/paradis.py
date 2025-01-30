@@ -1,6 +1,5 @@
 """Physically inspired neural architecture for the weather forecasting model."""
 
-import typing
 import torch
 from torch import nn
 
@@ -98,6 +97,7 @@ class VariationalCLP(nn.Module):
             activation(),
             nn.Conv2d(self.expansion_factor * latent_dim, latent_dim, kernel_size=1),
         )
+
         self.logvar = nn.Sequential(
             nn.Conv2d(latent_dim, self.expansion_factor * latent_dim, kernel_size=1),
             nn.LayerNorm(
@@ -343,9 +343,7 @@ class Paradis(nn.Module):
         # Output projection
         self.output_proj = CLP(hidden_dim, output_dim, mesh_size)
 
-    def forward(
-        self, x: torch.Tensor, t: typing.Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through the model."""
 
         # Extract lat/lon from static features (last 2 channels)
@@ -368,6 +366,6 @@ class Paradis(nn.Module):
         # Project to output space
         if self.variational:
             # Propogates up the KL
-            return (self.output_proj(z), kl_loss)
+            return self.output_proj(z), kl_loss
 
         return self.output_proj(z)

@@ -102,9 +102,9 @@ class LitParadis(L.LightningModule):
 
         self.epoch_start_time = None
 
-    def forward(self, x, t=None):
+    def forward(self, x):
         """Forward pass through the model."""
-        return self.model(x, t)
+        return self.model(x)
 
     def configure_optimizers(self):
         """Configure optimizer and learning rate scheduler."""
@@ -228,13 +228,9 @@ class LitParadis(L.LightningModule):
             # Forward pass
             if self.variational:
                 # Propogates up the KL
-                output_data, kl_loss = self(
-                    input_data_step, torch.tensor(step, device=self.device)
-                )
+                output_data, kl_loss = self(input_data_step)
             else:
-                output_data = self(
-                    input_data_step, torch.tensor(step, device=self.device)
-                )
+                output_data = self(input_data_step)
 
             loss = self.loss_fn(output_data, true_data[:, step])
 
