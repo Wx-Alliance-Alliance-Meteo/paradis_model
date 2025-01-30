@@ -8,7 +8,7 @@ import torch
 import lightning as L
 
 from model.paradis import Paradis
-from utils.loss import WeightedHybridLoss
+from utils.loss import ReversedHuberLoss
 
 
 class LitParadis(L.LightningModule):
@@ -26,10 +26,15 @@ class LitParadis(L.LightningModule):
         # Instantiate the model
         self.model = Paradis(datamodule, cfg)
         self.cfg = cfg
+        self.variational = cfg.model.variational
+        self.beta = cfg.model.get("beta")
 
-        print(
-            f"Number of trainable parameters: {sum(p.numel() for p in self.model.parameters() if p.requires_grad):,}"
-        )
+        if self.global_rank == 0:
+            logging.info(
+                "Number of trainable parameters: {:,}".format(
+                    sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+                )
+            )
 
         # Access output_name_order from configuration
         self.output_name_order = datamodule.output_name_order
@@ -52,8 +57,6 @@ class LitParadis(L.LightningModule):
             ],
             dtype=torch.float32,
         )
-        # Concatenate atmospheric and surface weights
-        var_loss_weights = torch.cat([atmospheric_weights, surface_weights])
 
         # Create a mapping of variable names to their weights
         atmospheric_vars = cfg.features.output.atmospheric
@@ -74,8 +77,7 @@ class LitParadis(L.LightningModule):
             if var_name in var_name_to_weight:
                 var_loss_weights_reordered[i] = var_name_to_weight[var_name]
 
-        self.loss_fn = WeightedHybridLoss(
-            grid_lat=torch.from_numpy(datamodule.lat),
+        self.loss_fn = ReversedHuberLoss(
             pressure_levels=torch.tensor(
                 cfg.features.pressure_levels, dtype=torch.float32
             ),
@@ -83,7 +85,6 @@ class LitParadis(L.LightningModule):
             num_surface_vars=len(cfg.features.output.surface),
             var_loss_weights=var_loss_weights_reordered,
             output_name_order=datamodule.output_name_order,
-            alpha=cfg.model.get("loss_alpha"),
         )
 
         self.forecast_steps = cfg.model.forecast_steps
@@ -101,9 +102,9 @@ class LitParadis(L.LightningModule):
 
         self.epoch_start_time = None
 
-    def forward(self, x, t=None):
+    def forward(self, x):
         """Forward pass through the model."""
-        return self.model(x, t)
+        return self.model(x)
 
     def configure_optimizers(self):
         """Configure optimizer and learning rate scheduler."""
@@ -157,7 +158,10 @@ class LitParadis(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         """Training step."""
-        loss = self._common_step(batch, batch_idx)
+        if self.variational:
+            loss, kl_loss = self._common_step(batch, batch_idx)
+        else:
+            loss = self._common_step(batch, batch_idx)
 
         # Log metrics
         self.log(
@@ -169,6 +173,15 @@ class LitParadis(L.LightningModule):
             sync_dist=True,
         )
         self.log("lr", self.optimizers().param_groups[0]["lr"], prog_bar=True)
+        if self.variational:
+            self.log(
+                "kl_loss",
+                kl_loss,
+                on_step=True,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
 
         # Clip gradients manually if gradient_clip_val is set
         if self.cfg.trainer.gradient_clip_val > 0:
@@ -182,10 +195,26 @@ class LitParadis(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         """Validation step."""
-        loss = self._common_step(batch, batch_idx)
+
+        if self.variational:
+            # Propogates up the KL
+            loss, kl_loss = self._common_step(batch, batch_idx)
+        else:
+            loss = self._common_step(batch, batch_idx)
+
         self.log(
             "val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True
         )
+        if self.variational:
+            # View the KL as well
+            self.log(
+                "kl_loss",
+                kl_loss,
+                on_step=True,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
         return loss
 
     def _common_step(self, batch, batch_idx):
@@ -197,10 +226,19 @@ class LitParadis(L.LightningModule):
 
         for step in range(self.forecast_steps):
             # Forward pass
-            output_data = self(input_data_step, torch.tensor(step, device=self.device))
+            if self.variational:
+                # Propogates up the KL
+                output_data, kl_loss = self(input_data_step)
+            else:
+                output_data = self(input_data_step)
+
+            loss = self.loss_fn(output_data, true_data[:, step])
+
+            if self.variational:
+                # beta-VAE
+                loss += self.beta * kl_loss
 
             # Compute loss (data is already transformed by dataset)
-            loss = self.loss_fn(output_data, true_data[:, step])
             batch_loss += loss
 
             # Prepare next step input
@@ -208,6 +246,10 @@ class LitParadis(L.LightningModule):
                 input_data_step = self._autoregression_input_from_output(
                     input_data[:, step + 1], output_data
                 )
+
+        if self.variational:
+            # Propogates up the KL
+            return batch_loss / self.forecast_steps, kl_loss
 
         return batch_loss / self.forecast_steps
 

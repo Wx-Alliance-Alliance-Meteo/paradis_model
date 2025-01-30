@@ -1,0 +1,45 @@
+variable_mappings:
+  10m_u_component_of_wind:
+    new_name: UU
+    ip1: 75597472
+    conversion: "data_slice * 1.94384"    #m/s to knots
+  10m_v_component_of_wind:
+    new_name: VV
+    ip1: 75597472
+    conversion: "data_slice * 1.94384"    #m/s to knots    
+  2m_temperature:
+    new_name: TT
+    ip1: 76696048 
+    conversion: "data_slice - 273.15"    #K to C
+  geopotential:
+    new_name: GZ
+    conversion: "data_slice / 98.1"    #1/10*g
+  geopotential_at_surface:
+    new_name: GZ
+    conversion: "data_slice / 98.1"    #1/10*g
+  land_sea_mask:
+    new_name: MG
+  mean_sea_level_pressure:
+    new_name: PN
+    conversion: "data_slice / 100"
+  specific_humidity:
+    new_name: HU
+  temperature:
+    new_name: TT
+    conversion: "data_slice - 273.15"    #K to C
+  total_precipitation_6hr:
+    new_name: PR
+    conversion: "data_slice / 1000"
+  u_component_of_wind:
+    new_name: UU
+    conversion: "data_slice * 1.94384"    #m/s to knots    
+  v_component_of_wind:
+    new_name: VV
+    conversion: "data_slice * 1.94384"    #m/s to knots    
+  vertical_velocity:
+    new_name: WW
+  surface_pressure:
+    new_name: P0
+    conversion: "data_slice / 100" 
+  total_column_water:
+    new_name: CQ1  
