@@ -26,8 +26,8 @@ class LitParadis(L.LightningModule):
         # Instantiate the model
         self.model = Paradis(datamodule, cfg)
         self.cfg = cfg
-        self.variational = cfg.model.variational
-        self.beta = cfg.model.get("beta")
+        self.variational = cfg.ensemble.enable
+        self.beta = cfg.ensemble.get("beta", None)
 
         if self.global_rank == 0:
             logging.info(
@@ -41,10 +41,10 @@ class LitParadis(L.LightningModule):
 
         num_levels = len(cfg.features.pressure_levels)
 
-        # Construct variable_loss_weights tensor from YAML configuration
+        # Construct variable loss weight tensor from YAML configuration
         atmospheric_weights = torch.tensor(
             [
-                cfg.variable_loss_weights.atmospheric[var]
+                cfg.training.variable_loss_weights.atmospheric[var]
                 for var in cfg.features.output.atmospheric
             ],
             dtype=torch.float32,
@@ -52,7 +52,7 @@ class LitParadis(L.LightningModule):
 
         surface_weights = torch.tensor(
             [
-                cfg.variable_loss_weights.surface[var]
+                cfg.training.variable_loss_weights.surface[var]
                 for var in cfg.features.output.surface
             ],
             dtype=torch.float32,
@@ -89,9 +89,9 @@ class LitParadis(L.LightningModule):
 
         self.forecast_steps = cfg.model.forecast_steps
         self.num_common_features = datamodule.num_common_features
-        self.print_losses = cfg.trainer.print_losses
+        self.print_losses = cfg.training.parameters.print_losses
 
-        if cfg.model.compile:
+        if cfg.compute.compile:
             self.model = torch.compile(
                 self.model,
                 mode="default",
@@ -108,19 +108,21 @@ class LitParadis(L.LightningModule):
 
     def configure_optimizers(self):
         """Configure optimizer and learning rate scheduler."""
+        train_cfg = self.cfg.training.parameters
+
         optimizer = torch.optim.AdamW(
             self.model.parameters(),
             betas=[0.9, 0.999],
-            lr=self.cfg.trainer.lr,
-            weight_decay=self.cfg.trainer.weight_decay,
+            lr=train_cfg.lr,
+            weight_decay=train_cfg.weight_decay,
         )
 
-        scheduler_cfg = self.cfg.trainer.scheduler
+        scheduler_cfg = train_cfg.scheduler
         if scheduler_cfg.type == "one_cycle":
             scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 optimizer,
                 total_steps=self.trainer.estimated_stepping_batches,
-                max_lr=self.cfg.trainer.lr,
+                max_lr=train_cfg.lr,
                 pct_start=scheduler_cfg.warmup_pct_start,
                 div_factor=scheduler_cfg.lr_div_factor,
                 final_div_factor=scheduler_cfg.lr_final_div,
@@ -184,10 +186,10 @@ class LitParadis(L.LightningModule):
             )
 
         # Clip gradients manually if gradient_clip_val is set
-        if self.cfg.trainer.gradient_clip_val > 0:
+        if self.cfg.training.parameters.gradient_clip_val > 0:
             self.clip_gradients(
                 self.optimizers(),
-                gradient_clip_val=self.cfg.trainer.gradient_clip_val,
+                gradient_clip_val=self.cfg.training.parameters.gradient_clip_val,
                 gradient_clip_algorithm="norm",
             )
 

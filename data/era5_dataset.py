@@ -62,19 +62,28 @@ class ERA5Dataset(torch.utils.data.Dataset):
         ds.attrs["toa_radiation_std"] = ds_stats.attrs["toa_radiation_std"]
         ds.attrs["toa_radiation_mean"] = ds_stats.attrs["toa_radiation_mean"]
 
+        # Make sure start date and end_date provide the time, othersize asume 0Z and 24Z respectively
+        if "T" not in start_date:
+            start_date += "T00:00:00"
+
         # Add the number of forecast steps to the range of dates
         time_resolution = int(cfg.dataset.time_resolution[:-1])
 
-        # Number time instances per day (ignoring 24:00)
-        num_times_day = 24 / time_resolution - 1
-
-        # Get the number of additional hours needed in data for autoregression
-        hours = time_resolution * (self.forecast_steps + num_times_day)
+        # Get the number of additional time instances needed in data for autoregression
+        hours = time_resolution * (self.forecast_steps)
         time_delta = timedelta(hours=hours)
 
         # Convert end_date to a datetime object and adjust end date
-        end_date_dt = datetime.strptime(end_date, "%Y-%m-%d")
-        adjusted_end_date = end_date_dt + time_delta
+        if end_date is not None:
+
+            if "T" not in end_date:
+                end_date += "T23:59:59"
+
+            end_date_dt = numpy.datetime64(end_date)
+            adjusted_end_date = end_date_dt + time_delta
+        else:
+            start_date_dt = numpy.datetime64(start_date)
+            adjusted_end_date = start_date_dt + time_delta
 
         # Select the time range needed to process this dataset
         ds = ds.sel(time=slice(start_date, adjusted_end_date))

@@ -38,13 +38,13 @@ def main(cfg: DictConfig):
 
     # Define callbacks
     callbacks = []
-    if cfg.trainer.early_stopping.enabled:
+    if cfg.training.parameters.early_stopping.enabled:
         # Stop epochs when validation loss is not decreasing during a coupe of epochs
         callbacks.append(
             EarlyStopping(
                 monitor="val_loss",
                 mode="min",
-                patience=cfg.trainer.early_stopping.patience,
+                patience=cfg.training.parameters.early_stopping.patience,
                 check_finite=True,  # Make sure validation has not gone to nan
             )
         )
@@ -59,7 +59,6 @@ def main(cfg: DictConfig):
             every_n_epochs=1,  # Save at the end of every epoch
         )
     )
-
     callbacks.append(
         ModelCheckpoint(
             filename="best",
@@ -70,7 +69,7 @@ def main(cfg: DictConfig):
     )
 
     # Choose double (32-true) or mixed (16-mixed) precision via AMP
-    if cfg.trainer.use_amp:
+    if cfg.compute.use_amp:
         precision = "16-mixed"
         torch.set_float32_matmul_precision("medium")
     else:
@@ -78,18 +77,20 @@ def main(cfg: DictConfig):
         torch.set_float32_matmul_precision("high")
 
     # Instantiate lightning trainer with options
+    train_params = cfg.training.parameters
+
     trainer = L.Trainer(
         default_root_dir="logs/",
-        accelerator=cfg.trainer.accelerator,
-        devices=cfg.trainer.num_devices,
+        accelerator=cfg.compute.accelerator,
+        devices=cfg.compute.num_devices,
         strategy="ddp",
-        max_epochs=cfg.trainer.max_epochs,
-        gradient_clip_val=cfg.trainer.gradient_clip_val,
+        max_epochs=train_params.max_epochs,
+        gradient_clip_val=train_params.gradient_clip_val,
         gradient_clip_algorithm="norm",
         log_every_n_steps=20,
         callbacks=callbacks,
         precision=precision,
-        enable_progress_bar=not cfg.trainer.print_losses,
+        enable_progress_bar=not train_params.print_losses,
         enable_model_summary=True,
         logger=True,
     )

@@ -313,7 +313,7 @@ class Paradis(nn.Module):
         num_levels = len(cfg.features.pressure_levels)
 
         # Flag for variational
-        self.variational = cfg.model.variational
+        self.variational = cfg.ensemble.enable
 
         # Get channel sizes
         self.dynamic_channels = len(
