@@ -26,7 +26,7 @@ class ReversedHuberLoss(torch.nn.Module):
         num_surface_vars: int,
         var_loss_weights: torch.Tensor,
         output_name_order: list,
-        delta: float = 1.0,
+        delta: float = 1,
     ) -> None:
         """Initialize the weighted reversed Huber loss function.
 
