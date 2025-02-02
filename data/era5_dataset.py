@@ -218,8 +218,9 @@ class ERA5Dataset(torch.utils.data.Dataset):
             time=slice(ind + 1, ind + self.forecast_steps + 1)
         )
 
-        # Load arrays into CPU memory
-        input_data, true_data = dask.compute(input_data, true_data)
+        # Load arrays into CPU memory using slower but thread-safe dask computation
+        with dask.config.set(scheduler='synchronous'):
+            input_data, true_data = dask.compute(input_data, true_data)
 
         # # Add checks for invalid values
         if numpy.isnan(input_data.data).any() or numpy.isnan(true_data.data).any():
