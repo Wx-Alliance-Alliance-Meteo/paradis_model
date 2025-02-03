@@ -16,7 +16,7 @@ from utils.postprocessing import (
     convert_cartesian_to_spherical_winds,
     replace_variable_name,
 )
-from utils.visualization import plot_error_map, plot_forecast_map
+from utils.visualization import plot_forecast_map
 
 
 @hydra.main(version_base=None, config_path="config/", config_name="paradis_settings")
@@ -31,7 +31,10 @@ def main(cfg: DictConfig):
     )
 
     # Decide whether to save results to file
-    save_results_to_file = False
+    save_results_to_file = True
+
+    # Use the following when weatherbench data is not available
+    save_observations_to_file = False
 
     # Initialize data module
     datamodule = Era5DataModule(cfg)
@@ -85,6 +88,7 @@ def main(cfg: DictConfig):
     logging.info("Generating forecast...")
     ind = 0
     with torch.no_grad():
+        time_start_ind = 0
         for input_data, ground_truth in tqdm(datamodule.test_dataloader()):
             batch_size = input_data.shape[0]
             output_forecast = torch.empty(
@@ -101,9 +105,7 @@ def main(cfg: DictConfig):
             input_data_step = input_data[:, 0].to(device)
 
             for step in range(num_forecast_steps):
-                output_data = litmodel(
-                    input_data_step, torch.tensor(step, device=device)
-                )
+                output_data = litmodel(input_data_step)
 
                 if step + 1 < num_forecast_steps:
                     input_data_step = litmodel._autoregression_input_from_output(
@@ -142,9 +144,14 @@ def main(cfg: DictConfig):
                     pressure_levels,
                     "results/forecast_result.zarr",
                     ind,
+                    time_start_ind,
+                    time_start_ind + batch_size,
                 )
 
-                # Save ground truth
+            # Save ground truth
+            # This currently saves more data than it should, only initial input times
+            # without steps
+            if save_observations_to_file:
                 save_results_to_zarr(
                     ground_truth,
                     atmospheric_vars,
@@ -154,28 +161,36 @@ def main(cfg: DictConfig):
                     pressure_levels,
                     "results/forecast_observation.zarr",
                     ind,
+                    time_start_ind,
+                    time_start_ind + batch_size,
                 )
 
             ind += 1
+            time_start_ind += batch_size
 
             # Plot results for the first time instance only
             time_ind = 0
-            forecast_ind = num_forecast_steps - 1
 
-            if time_ind == ind - 1:
+            if time_ind != ind - 1:
+                continue
+
+            # Generate plots for different variables
+            logging.info("Generating forecast plots...")
+
+            # Generate a plot for each forecast step
+            for forecast_ind in range(num_forecast_steps):
+
+                # Generate a string for the input and output times
                 time_in = dataset.ds_input.time.values[time_ind]
-                time_out = dataset.ds_input.time.values[time_ind + forecast_ind]
-
+                time_out = dataset.ds_input.time.values[time_ind + forecast_ind + 1]
                 dt_in = time_in.astype("datetime64[s]").astype(datetime)
                 dt_out = time_out.astype("datetime64[s]").astype(datetime)
                 date_in = dt_in.strftime("%Y-%m-%d %H:%M")
                 date_out = dt_out.strftime("%Y-%m-%d %H:%M")
 
+                # Extract data for this forecast step and time index
                 output_data = output_forecast[time_ind, forecast_ind]
                 true_data = ground_truth[time_ind, forecast_ind]
-
-                # Generate plots for different variables
-                logging.info("Generating forecast plots...")
 
                 # Plot geopotential at 500 hPa
                 plot_forecast_map(
@@ -215,7 +230,7 @@ def main(cfg: DictConfig):
                     ind=forecast_ind,
                 )
 
-                logging.info("Forecast plots generated successfully")
+            logging.info("Forecast plots generated successfully")
 
     logging.info("Saved output files successfuly")
 

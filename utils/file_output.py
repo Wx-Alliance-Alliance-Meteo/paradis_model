@@ -1,8 +1,8 @@
+import os
+import shutil
 import dask
 import numpy
 import xarray
-
-import time
 
 
 def save_results_to_zarr(
@@ -14,6 +14,8 @@ def save_results_to_zarr(
     pressure_levels,
     filename,
     ind,
+    time_ind_start,
+    time_ind_end,
 ):
     """Save results to a Zarr file."""
     data_vars = {}
@@ -47,11 +49,15 @@ def save_results_to_zarr(
     coords = {
         "latitude": dataset.lat,
         "longitude": dataset.lon,
-        "time": dataset.time[: data.shape[0]],
+        "time": dataset.time[time_ind_start:time_ind_end],
         "level": pressure_levels,
         "prediction_timedelta": (numpy.arange(data.shape[1]) + 1)
         * numpy.timedelta64(6 * 3600 * 10**9, "ns"),
     }
+
+    # If this is the first write, remove any existing Zarr store
+    if ind == 0 and os.path.exists(filename):
+        shutil.rmtree(filename)
 
     with dask.config.set(scheduler="threads"):
 

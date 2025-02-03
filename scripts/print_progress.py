@@ -4,7 +4,7 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 import matplotlib.pyplot as plt
 
 # Path to your events file (add version number)
-log_dir = "../logs/lightning_logs/version_n/"
+log_dir = "/space/hall5/sitestore/eccc/mrd/rpnatm/siw001/paradis/logs/lightning_logs/version_n/"
 
 # Initialize the event accumulator to read the TensorBoard logs
 event_acc = EventAccumulator(log_dir)

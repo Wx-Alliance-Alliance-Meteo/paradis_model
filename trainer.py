@@ -8,7 +8,7 @@ import torch
 import lightning as L
 
 from model.paradis import Paradis
-from utils.loss import WeightedHybridLoss
+from utils.loss import ReversedHuberLoss
 
 
 class LitParadis(L.LightningModule):
@@ -57,8 +57,6 @@ class LitParadis(L.LightningModule):
             ],
             dtype=torch.float32,
         )
-        # Concatenate atmospheric and surface weights
-        var_loss_weights = torch.cat([atmospheric_weights, surface_weights])
 
         # Create a mapping of variable names to their weights
         atmospheric_vars = cfg.features.output.atmospheric
@@ -79,8 +77,7 @@ class LitParadis(L.LightningModule):
             if var_name in var_name_to_weight:
                 var_loss_weights_reordered[i] = var_name_to_weight[var_name]
 
-        self.loss_fn = WeightedHybridLoss(
-            grid_lat=torch.from_numpy(datamodule.lat),
+        self.loss_fn = ReversedHuberLoss(
             pressure_levels=torch.tensor(
                 cfg.features.pressure_levels, dtype=torch.float32
             ),
@@ -88,7 +85,6 @@ class LitParadis(L.LightningModule):
             num_surface_vars=len(cfg.features.output.surface),
             var_loss_weights=var_loss_weights_reordered,
             output_name_order=datamodule.output_name_order,
-            alpha=cfg.model.get("loss_alpha"),
         )
 
         self.forecast_steps = cfg.model.forecast_steps
@@ -106,9 +102,9 @@ class LitParadis(L.LightningModule):
 
         self.epoch_start_time = None
 
-    def forward(self, x, t=None):
+    def forward(self, x):
         """Forward pass through the model."""
-        return self.model(x, t)
+        return self.model(x)
 
     def configure_optimizers(self):
         """Configure optimizer and learning rate scheduler."""
@@ -232,13 +228,9 @@ class LitParadis(L.LightningModule):
             # Forward pass
             if self.variational:
                 # Propogates up the KL
-                output_data, kl_loss = self(
-                    input_data_step, torch.tensor(step, device=self.device)
-                )
+                output_data, kl_loss = self(input_data_step)
             else:
-                output_data = self(
-                    input_data_step, torch.tensor(step, device=self.device)
-                )
+                output_data = self(input_data_step)
 
             loss = self.loss_fn(output_data, true_data[:, step])
 
