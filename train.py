@@ -49,14 +49,14 @@ def main(cfg: DictConfig):
                 check_finite=True,  # Make sure validation has not gone to nan
             )
         )
-    '''
+    
     # Keep the last 10 checkpoints and the top "best" checkpoint
     callbacks.append(
         ModelCheckpoint(
             filename="{epoch}",  # Filename format for the checkpoints
             monitor="train_loss",
-            save_top_k=10,  # Keep the last 10 checkpoints
-            save_last=True,  # Always save the most recent checkpoint
+            save_top_k=1,  # Keep the last k checkpoints
+            save_last=False,  # Always save the most recent checkpoint
             every_n_epochs=1,  # Save at the end of every epoch
         )
     )
@@ -69,7 +69,7 @@ def main(cfg: DictConfig):
             save_top_k=1,  # Keep only the best checkpoint
         )
     )
-    '''
+
 
     # Choose double (32-true) or mixed (16-mixed) precision via AMP
     if cfg.trainer.use_amp:
