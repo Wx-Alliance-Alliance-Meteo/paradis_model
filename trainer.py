@@ -85,6 +85,7 @@ class LitParadis(L.LightningModule):
             num_surface_vars=len(cfg.features.output.surface),
             var_loss_weights=var_loss_weights_reordered,
             output_name_order=datamodule.output_name_order,
+            delta=cfg.training.parameters.reversed_huber_delta,
         )
 
         self.forecast_steps = cfg.model.forecast_steps

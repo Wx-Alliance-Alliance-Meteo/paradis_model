@@ -43,6 +43,7 @@ training:
 
   parameters:
     lr: 1.0e-3                     # Learning rate (LR) for the optimizer
+    reversed_huber_delta: 1        # Threshold parameter for loss: linear penalties if |error| ≤ delta, quadratic otherwise
     weight_decay: 1.e-5            # Weight decay coefficient for regularization
     gradient_clip_val: -1          # Gradient clipping value, set to -1 to disable
     max_epochs: 1000               # Maximum number of epochs the training is allowed
