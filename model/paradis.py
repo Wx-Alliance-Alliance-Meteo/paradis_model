@@ -40,6 +40,7 @@ class CLPBlock(nn.Module):
                 [
                     GeoCyclicPadding(kernel_size // 2, input_dim),
                     nn.Conv2d(input_dim, output_dim, kernel_size=kernel_size),
+                    activation(),
                 ]
             )
 
