@@ -248,7 +248,7 @@ class NeuralSemiLagrangian(nn.Module):
 
         # Mirror values outside of the range [-1, 1]
         grid_y = torch.where(grid_y < -1, -(2 + grid_y), grid_y)
-        grid_y = torch.where(grid_y > 1, 2 + grid_y, grid_y)
+        grid_y = torch.where(grid_y > 1, 2 - grid_y, grid_y)
 
         # Reshape grid coordinates for interpolation
         # [batch, hidden_dim, lat, lon] -> [batch*hidden_dim, lat, lon]
