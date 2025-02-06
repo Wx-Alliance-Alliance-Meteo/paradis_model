@@ -14,7 +14,7 @@ class ReversedHuberLoss(torch.nn.Module):
     2. Variable-specific weighting: Allows different weights for various meteorological variables
        (e.g., temperature, wind, precipitation) to balance their relative importance.
 
-    The final loss uses an reversed Huber loss which applies:
+    The final loss uses a reversed Huber loss, which applies:
     - Linear penalties to small errors (|error| ≤ delta)
     - Quadratic penalties to large errors (|error| > delta)
     """
@@ -26,8 +26,7 @@ class ReversedHuberLoss(torch.nn.Module):
         num_surface_vars: int,
         var_loss_weights: torch.Tensor,
         output_name_order: list,
-        initial_delta: float = 1.0,
-        final_delta: float = 0.1,
+        delta_loss: float = 1.0,
     ) -> None:
         """Initialize the weighted reversed Huber loss function.
 
@@ -37,22 +36,15 @@ class ReversedHuberLoss(torch.nn.Module):
             num_surface_vars: Number of surface-level variables
             var_loss_weights: Variable-specific weights for the loss calculation
             output_name_order: List of variable names in order of output features
-            initial_delta: Initial threshold parameter for the reversed Huber loss
-            final_delta: Final threshold parameter for the reversed Huber loss
+            delta_loss: Threshold parameter for the Huber loss
         """
         super().__init__()
 
         # Ensure inputs are float32
         self.pressure_levels = pressure_levels.to(torch.float32)
 
-        # Store delta schedule parameters as buffers to ensure proper device placement
-        self.register_buffer(
-            "initial_delta", torch.tensor(initial_delta, dtype=torch.float32)
-        )
-        self.register_buffer(
-            "final_delta", torch.tensor(final_delta, dtype=torch.float32)
-        )
-        self.register_buffer("delta", torch.tensor(initial_delta, dtype=torch.float32))
+        self.delta = delta_loss
+        self.reversed = reversed
 
         # Store dimensions
         self.num_levels = len(pressure_levels)
@@ -64,34 +56,6 @@ class ReversedHuberLoss(torch.nn.Module):
 
         # Create combined feature weights
         self.feature_weights = self._create_feature_weights()
-
-    def update_delta(
-        self, current_epoch: int, max_epochs: int, total_schedule_epochs: int
-    ) -> None:
-        """Update the delta parameter.
-
-        Args:
-            current_epoch: Current training epoch
-            max_epochs: Maximum number of epochs for training
-            total_schedule_epochs: Number of epochs over which delta will be reduced
-        """
-        # Compute progress based on schedule length, clamped to [0, 1]
-        progress = min(1.0, max(0.0, current_epoch / total_schedule_epochs))
-
-        # Linear annealing schedule
-        current_delta = (
-                    self.initial_delta * (1 - progress) + self.final_delta * progress
-        )
-        self.delta.fill_(current_delta)
-
-
-    def get_delta(self) -> float:
-        """Get the current delta parameter value.
-
-        Returns:
-            Current delta value
-        """
-        return self.delta.item()
 
     def _create_feature_weights(self) -> torch.Tensor:
         """Create weights for all features."""
@@ -144,7 +108,7 @@ class ReversedHuberLoss(torch.nn.Module):
         return (1 - weight) * small_error + weight * large_error
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """Calculate weighted inverted Huber loss.
+        """Calculate weighted reversed Huber loss.
 
         Args:
             pred: Predicted values

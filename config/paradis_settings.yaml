@@ -45,17 +45,18 @@ training:
     lr: 1.0e-3                     # Learning rate (LR) for the optimizer
     weight_decay: 1.e-5            # Weight decay coefficient for regularization
     gradient_clip_val: -1          # Gradient clipping value, set to -1 to disable
-    max_epochs: 100                # Maximum number of epochs the training is allowed
+    max_epochs: 500                # Maximum number of epochs the training is allowed
     print_losses: false            # Manually print losses to screen (removes progress bar)
     log_every_n_steps: 50          # Write to log every n steps
     early_stopping:
       enabled: true                # Whether to use early stopping
       patience: 8                  # Number of epochs with no improvement after which training will stop
 
-    delta_schedule:                # Threshold parameter for loss: linear penalties if |error| ≤ delta, quadratic otherwise  
-      initial_delta: 1.0           # Initial delta value for reversed Huber loss
-      final_delta: 1.e-4           # Final delta value for reversed Huber loss
-      total_epochs: 50             # when the schedule should reach final_delta
+    loss_function:
+      delta_loss: 1                # Threshold parameter for loss
+      reversed:  true              # Standard Huber if False and reversed if true
+                                   #    Standard : quadratic penalties if |error| ≤ delta, linear otherwise
+                                   #    Reversed : linear penalties if |error| ≤ delta, quadratic otherwise
 
     # Scheduler configuration - Choose ONE of the following scheduler types by
     # commenting/uncommenting the appropriate section:
@@ -73,7 +74,7 @@ training:
     scheduler:
       type: "one_cycle"          # OneCycleLR scheduler
       warmup_pct_start: 0.       # Percentage of training used for warmup phase
-      lr_div_factor: 25          # Initial learning rate = max_lr/lr_div_factor
+      lr_div_factor: 1           # Initial learning rate = max_lr/lr_div_factor
       lr_final_div: 100          # Final learning rate = initial_lr/lr_final_div_factor
 
   variable_loss_weights:
