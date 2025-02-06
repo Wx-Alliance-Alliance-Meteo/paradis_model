@@ -4,8 +4,8 @@ import torch
 import re
 
 
-class HuberLoss(torch.nn.Module):
-    """Loss function that combines Huber loss with custom weighting.
+class ReversedHuberLoss(torch.nn.Module):
+    """Loss function that combines reversed Huber loss with custom weighting.
 
     This loss function implements a weighting scheme that accounts for key aspects
     of meteorological data:
@@ -14,12 +14,7 @@ class HuberLoss(torch.nn.Module):
     2. Variable-specific weighting: Allows different weights for various meteorological variables
        (e.g., temperature, wind, precipitation) to balance their relative importance.
 
-    The final loss uses either standard or reversed Huber loss depending on the reversed flag:
-    Standard Huber:
-    - Quadratic penalties to small errors (|error| ≤ delta)
-    - Linear penalties to large errors (|error| > delta)
-
-    Reversed Huber:
+    The final loss uses a reversed Huber loss, which applies:
     - Linear penalties to small errors (|error| ≤ delta)
     - Quadratic penalties to large errors (|error| > delta)
     """
@@ -32,9 +27,8 @@ class HuberLoss(torch.nn.Module):
         var_loss_weights: torch.Tensor,
         output_name_order: list,
         delta_loss: float = 1.0,
-        reversed: bool = False,
     ) -> None:
-        """Initialize the weighted Huber loss function.
+        """Initialize the weighted reversed Huber loss function.
 
         Args:
             pressure_levels: Pressure levels in hPa used in the model
@@ -43,7 +37,6 @@ class HuberLoss(torch.nn.Module):
             var_loss_weights: Variable-specific weights for the loss calculation
             output_name_order: List of variable names in order of output features
             delta_loss: Threshold parameter for the Huber loss
-            reversed: If True, use reversed Huber loss, otherwise use standard Huber loss
         """
         super().__init__()
 
@@ -63,36 +56,6 @@ class HuberLoss(torch.nn.Module):
 
         # Create combined feature weights
         self.feature_weights = self._create_feature_weights()
-
-    def _standard_huber_loss(self, error: torch.Tensor) -> torch.Tensor:
-        """Compute the standard Huber loss.
-
-        Args:
-            error: Error tensor (pred - target)
-
-        Returns:
-            Loss tensor with same shape as input
-        """
-        abs_error = torch.abs(error)
-        mask = abs_error <= self.delta
-        squared_loss = 0.5 * error**2
-        linear_loss = self.delta * abs_error - 0.5 * self.delta**2
-        return torch.where(mask, squared_loss, linear_loss)
-
-    def _reversed_huber_loss(self, error: torch.Tensor) -> torch.Tensor:
-        """Compute the reversed Huber loss.
-
-        Args:
-            error: Error tensor (pred - target)
-
-        Returns:
-            Loss tensor with same shape as input
-        """
-        abs_error = torch.abs(error)
-        small_error = self.delta * abs_error
-        large_error = 0.5 * error**2
-        weight = 1 / (1 + torch.exp(-2 * (abs_error - self.delta)))
-        return (1 - weight) * small_error + weight * large_error
 
     def _create_feature_weights(self) -> torch.Tensor:
         """Create weights for all features."""
@@ -129,8 +92,23 @@ class HuberLoss(torch.nn.Module):
 
         return feature_weights
 
+    def _pseudo_reversed_huber_loss(self, error: torch.Tensor) -> torch.Tensor:
+        """Compute the pseudo reversed Huber loss.
+
+        Args:
+            error: Error tensor (pred - target)
+
+        Returns:
+            Loss tensor with same shape as input
+        """
+        abs_error = torch.abs(error)
+        small_error = self.delta * abs_error
+        large_error = 0.5 * error**2
+        weight = 1 / (1 + torch.exp(-2 * (abs_error - self.delta)))
+        return (1 - weight) * small_error + weight * large_error
+
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """Calculate weighted Huber loss.
+        """Calculate weighted reversed Huber loss.
 
         Args:
             pred: Predicted values
@@ -145,11 +123,8 @@ class HuberLoss(torch.nn.Module):
         # Compute errors
         error = pred - target
 
-        # Apply appropriate Huber loss variant
-        if self.reversed:
-            loss = self._reversed_huber_loss(error)
-        else:
-            loss = self._standard_huber_loss(error)
+        # Pseudo-reversed-Huber loss
+        loss = self._pseudo_reversed_huber_loss(error)
 
         # Apply weights to loss components
         weighted_loss = loss * feature_weights
