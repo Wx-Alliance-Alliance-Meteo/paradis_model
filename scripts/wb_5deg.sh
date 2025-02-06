@@ -12,7 +12,7 @@ python3.12 train.py \
     training.parameters.print_losses=True \
     training.dataset.start_date=2016-01-01 \
     training.dataset.end_date=2019-12-31 \
-    training.dataset.scheduler.lr_final_div=1 \
+    training.parameters.scheduler.lr_final_div=1 \
     training.parameters.max_epochs=25 \
 
 PREV_CHECKPOINT="logs/lightning_logs/version_0/checkpoints/best.ckpt"
