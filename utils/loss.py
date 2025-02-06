@@ -44,7 +44,6 @@ class ReversedHuberLoss(torch.nn.Module):
         self.pressure_levels = pressure_levels.to(torch.float32)
 
         self.delta = delta_loss
-        self.reversed = reversed
 
         # Store dimensions
         self.num_levels = len(pressure_levels)

@@ -54,9 +54,6 @@ training:
 
     loss_function:
       delta_loss: 1                # Threshold parameter for loss
-      reversed:  true              # Standard Huber if False and reversed if true
-                                   #    Standard : quadratic penalties if |error| ≤ delta, linear otherwise
-                                   #    Reversed : linear penalties if |error| ≤ delta, quadratic otherwise
 
     # Scheduler configuration - Choose ONE of the following scheduler types by
     # commenting/uncommenting the appropriate section:
