@@ -295,7 +295,7 @@ class ForcingsIntegrator(nn.Module):
     def forward(self, hidden_features: torch.Tensor, dt: float) -> torch.Tensor:
         """Integrate over a time step of size dt."""
 
-        return hidden_features + dt * self.diffusion_reaction_net(hidden_features)
+        return dt * self.diffusion_reaction_net(hidden_features)
 
 
 class Paradis(nn.Module):
@@ -348,6 +348,8 @@ class Paradis(nn.Module):
             nn.Conv2d(hidden_dim, output_dim, kernel_size=3),
         )
 
+        self.num_common_features = datamodule.num_common_features
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through the model."""
 
@@ -373,4 +375,4 @@ class Paradis(nn.Module):
             # Propogates up the KL
             return self.output_proj(z), kl_loss
 
-        return self.output_proj(z)
+        return x[:, : self.num_common_features] + self.output_proj(z)
