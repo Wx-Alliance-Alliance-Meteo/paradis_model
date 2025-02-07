@@ -322,7 +322,7 @@ class Paradis(nn.Module):
         num_levels = len(cfg.features.pressure_levels)
 
         # Flag for variational
-        self.variational = cfg.model.variational
+        self.variational = cfg.ensemble.enable
 
         # Get channel sizes
         self.dynamic_channels = len(
@@ -350,7 +350,10 @@ class Paradis(nn.Module):
         self.solve_along_trajectories = ForcingsIntegrator(hidden_dim, mesh_size)
 
         # Output projection
-        self.output_proj = CLP(hidden_dim, output_dim, mesh_size)
+        self.output_proj = nn.Sequential(
+            GeoCyclicPadding(1, hidden_dim),
+            nn.Conv2d(hidden_dim, output_dim, kernel_size=3),
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through the model."""

@@ -2,8 +2,8 @@
 
 import time
 import re
-
 import logging
+
 import torch
 import lightning as L
 
@@ -26,8 +26,8 @@ class LitParadis(L.LightningModule):
         # Instantiate the model
         self.model = Paradis(datamodule, cfg)
         self.cfg = cfg
-        self.variational = cfg.model.variational
-        self.beta = cfg.model.get("beta")
+        self.variational = cfg.ensemble.enable
+        self.beta = cfg.ensemble.get("beta", None)
 
         if self.global_rank == 0:
             logging.info(
@@ -41,10 +41,10 @@ class LitParadis(L.LightningModule):
 
         num_levels = len(cfg.features.pressure_levels)
 
-        # Construct variable_loss_weights tensor from YAML configuration
+        # Construct variable loss weight tensor from YAML configuration
         atmospheric_weights = torch.tensor(
             [
-                cfg.variable_loss_weights.atmospheric[var]
+                cfg.training.variable_loss_weights.atmospheric[var]
                 for var in cfg.features.output.atmospheric
             ],
             dtype=torch.float32,
@@ -52,7 +52,7 @@ class LitParadis(L.LightningModule):
 
         surface_weights = torch.tensor(
             [
-                cfg.variable_loss_weights.surface[var]
+                cfg.training.variable_loss_weights.surface[var]
                 for var in cfg.features.output.surface
             ],
             dtype=torch.float32,
@@ -77,6 +77,8 @@ class LitParadis(L.LightningModule):
             if var_name in var_name_to_weight:
                 var_loss_weights_reordered[i] = var_name_to_weight[var_name]
 
+        # Initialize loss function with delta schedule parameters
+        delta_cfg = cfg.training.parameters.delta_schedule
         self.loss_fn = ReversedHuberLoss(
             pressure_levels=torch.tensor(
                 cfg.features.pressure_levels, dtype=torch.float32
@@ -85,13 +87,15 @@ class LitParadis(L.LightningModule):
             num_surface_vars=len(cfg.features.output.surface),
             var_loss_weights=var_loss_weights_reordered,
             output_name_order=datamodule.output_name_order,
+            initial_delta=delta_cfg.initial_delta,
+            final_delta=delta_cfg.final_delta,
         )
 
         self.forecast_steps = cfg.model.forecast_steps
         self.num_common_features = datamodule.num_common_features
-        self.print_losses = cfg.trainer.print_losses
+        self.print_losses = cfg.training.parameters.print_losses
 
-        if cfg.model.compile:
+        if cfg.compute.compile:
             self.model = torch.compile(
                 self.model,
                 mode="default",
@@ -108,19 +112,21 @@ class LitParadis(L.LightningModule):
 
     def configure_optimizers(self):
         """Configure optimizer and learning rate scheduler."""
+        train_cfg = self.cfg.training.parameters
+
         optimizer = torch.optim.AdamW(
             self.model.parameters(),
             betas=[0.9, 0.999],
-            lr=self.cfg.trainer.lr,
-            weight_decay=self.cfg.trainer.weight_decay,
+            lr=train_cfg.lr,
+            weight_decay=train_cfg.weight_decay,
         )
 
-        scheduler_cfg = self.cfg.trainer.scheduler
+        scheduler_cfg = train_cfg.scheduler
         if scheduler_cfg.type == "one_cycle":
             scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 optimizer,
                 total_steps=self.trainer.estimated_stepping_batches,
-                max_lr=self.cfg.trainer.lr,
+                max_lr=train_cfg.lr,
                 pct_start=scheduler_cfg.warmup_pct_start,
                 div_factor=scheduler_cfg.lr_div_factor,
                 final_div_factor=scheduler_cfg.lr_final_div,
@@ -137,14 +143,16 @@ class LitParadis(L.LightningModule):
                 mode="min",
                 factor=scheduler_cfg.factor,
                 patience=scheduler_cfg.patience,
+                threshold=scheduler_cfg.threshold,
+                threshold_mode=scheduler_cfg.threshold_mode,
                 min_lr=scheduler_cfg.min_lr,
             )
             return {
                 "optimizer": optimizer,
                 "lr_scheduler": {
                     "scheduler": scheduler,
-                    "monitor": "val_loss",
-                    "interval": "epoch",
+                    "monitor": "val_loss_epoch",  # Monitor epoch-level validation loss
+                    "interval": "epoch",  # When the scheduler should make decisions
                     "frequency": 1,
                 },
             }
@@ -155,6 +163,16 @@ class LitParadis(L.LightningModule):
         """Record the start time of the epoch."""
         if self.print_losses:
             self.epoch_start_time = time.time()
+
+        # Extract total schedule epochs, default to max_epochs if not specified
+        total_schedule_epochs = self.cfg.training.parameters.delta_schedule.get(
+            "total_epochs", self.trainer.max_epochs
+        )
+
+        # Update delta using current epoch and schedule length
+        self.loss_fn.update_delta(
+            self.current_epoch, self.trainer.max_epochs, total_schedule_epochs
+        )
 
     def training_step(self, batch, batch_idx):
         """Training step."""
@@ -184,10 +202,10 @@ class LitParadis(L.LightningModule):
             )
 
         # Clip gradients manually if gradient_clip_val is set
-        if self.cfg.trainer.gradient_clip_val > 0:
+        if self.cfg.training.parameters.gradient_clip_val > 0:
             self.clip_gradients(
                 self.optimizers(),
-                gradient_clip_val=self.cfg.trainer.gradient_clip_val,
+                gradient_clip_val=self.cfg.training.parameters.gradient_clip_val,
                 gradient_clip_algorithm="norm",
             )
 
@@ -195,9 +213,7 @@ class LitParadis(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         """Validation step."""
-
         if self.variational:
-            # Propogates up the KL
             loss, kl_loss = self._common_step(batch, batch_idx)
         else:
             loss = self._common_step(batch, batch_idx)
@@ -206,7 +222,6 @@ class LitParadis(L.LightningModule):
             "val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True
         )
         if self.variational:
-            # View the KL as well
             self.log(
                 "kl_loss",
                 kl_loss,
@@ -227,7 +242,6 @@ class LitParadis(L.LightningModule):
         for step in range(self.forecast_steps):
             # Forward pass
             if self.variational:
-                # Propogates up the KL
                 output_data, kl_loss = self(input_data_step)
             else:
                 output_data = self(input_data_step)
@@ -235,7 +249,6 @@ class LitParadis(L.LightningModule):
             loss = self.loss_fn(output_data, true_data[:, step])
 
             if self.variational:
-                # beta-VAE
                 loss += self.beta * kl_loss
 
             # Compute loss (data is already transformed by dataset)
@@ -248,7 +261,6 @@ class LitParadis(L.LightningModule):
                 )
 
         if self.variational:
-            # Propogates up the KL
             return batch_loss / self.forecast_steps, kl_loss
 
         return batch_loss / self.forecast_steps
@@ -258,6 +270,7 @@ class LitParadis(L.LightningModule):
         if self.print_losses and self.epoch_start_time is not None:
             elapsed_time = time.time() - self.epoch_start_time
             current_lr = self.optimizers().param_groups[0]["lr"]
+            current_delta = self.loss_fn.get_delta()
 
             # Get the losses using the logged metrics
             train_loss = self.trainer.callback_metrics.get("train_loss")
@@ -265,10 +278,11 @@ class LitParadis(L.LightningModule):
 
             if train_loss is not None and val_loss is not None:
                 print(
-                    f"Epoch {self.current_epoch:4d} | ",
-                    f"Train Loss: {train_loss.item():.6f} | ",
-                    f"Val Loss: {val_loss.item():.6f} | ",
-                    f"LR: {current_lr:.2e} | ",
+                    f"Epoch {self.current_epoch:4d} | "
+                    f"Train Loss: {train_loss.item():.6f} | "
+                    f"Val Loss: {val_loss.item():.6f} | "
+                    f"LR: {current_lr:.2e} | "
+                    f"Delta: {current_delta:.2e} | "
                     f"Elapsed time: {elapsed_time:.4f}s"
                 )
 

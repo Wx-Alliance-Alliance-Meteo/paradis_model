@@ -26,7 +26,8 @@ class ReversedHuberLoss(torch.nn.Module):
         num_surface_vars: int,
         var_loss_weights: torch.Tensor,
         output_name_order: list,
-        delta: float = 1.0,
+        initial_delta: float = 1.0,
+        final_delta: float = 0.1,
     ) -> None:
         """Initialize the weighted reversed Huber loss function.
 
@@ -36,13 +37,22 @@ class ReversedHuberLoss(torch.nn.Module):
             num_surface_vars: Number of surface-level variables
             var_loss_weights: Variable-specific weights for the loss calculation
             output_name_order: List of variable names in order of output features
-            delta: Threshold parameter for the reversed Huber loss
+            initial_delta: Initial threshold parameter for the reversed Huber loss
+            final_delta: Final threshold parameter for the reversed Huber loss
         """
         super().__init__()
 
         # Ensure inputs are float32
         self.pressure_levels = pressure_levels.to(torch.float32)
-        self.delta = delta
+
+        # Store delta schedule parameters as buffers to ensure proper device placement
+        self.register_buffer(
+            "initial_delta", torch.tensor(initial_delta, dtype=torch.float32)
+        )
+        self.register_buffer(
+            "final_delta", torch.tensor(final_delta, dtype=torch.float32)
+        )
+        self.register_buffer("delta", torch.tensor(initial_delta, dtype=torch.float32))
 
         # Store dimensions
         self.num_levels = len(pressure_levels)
@@ -54,6 +64,34 @@ class ReversedHuberLoss(torch.nn.Module):
 
         # Create combined feature weights
         self.feature_weights = self._create_feature_weights()
+
+    def update_delta(
+        self, current_epoch: int, max_epochs: int, total_schedule_epochs: int
+    ) -> None:
+        """Update the delta parameter.
+
+        Args:
+            current_epoch: Current training epoch
+            max_epochs: Maximum number of epochs for training
+            total_schedule_epochs: Number of epochs over which delta will be reduced
+        """
+        # Compute progress based on schedule length, clamped to [0, 1]
+        progress = min(1.0, max(0.0, current_epoch / total_schedule_epochs))
+
+        # Linear annealing schedule
+        current_delta = (
+                    self.initial_delta * (1 - progress) + self.final_delta * progress
+        )
+        self.delta.fill_(current_delta)
+
+
+    def get_delta(self) -> float:
+        """Get the current delta parameter value.
+
+        Returns:
+            Current delta value
+        """
+        return self.delta.item()
 
     def _create_feature_weights(self) -> torch.Tensor:
         """Create weights for all features."""
@@ -67,7 +105,6 @@ class ReversedHuberLoss(torch.nn.Module):
 
         # Process atmospheric variables (with pressure levels)
         for i in range(0, self.num_atmospheric_vars, self.num_levels):
-
             # Get the variable name independent of pressure level
             var_name = re.sub(r"_h\d+$", "", self.output_name_order[i])
 

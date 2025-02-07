@@ -26,7 +26,7 @@ def main(cfg: DictConfig):
     # Set device
     device = torch.device(
         "cuda"
-        if torch.cuda.is_available() and cfg.trainer.accelerator == "gpu"
+        if torch.cuda.is_available() and cfg.compute.accelerator == "gpu"
         else "cpu"
     )
 
@@ -38,8 +38,8 @@ def main(cfg: DictConfig):
 
     # Initialize data module
     datamodule = Era5DataModule(cfg)
-    datamodule.setup(stage="test")
-    dataset = datamodule.test_dataset
+    datamodule.setup(stage="predict")
+    dataset = datamodule.dataset
 
     # Extract features and dimensions
     atmospheric_vars = cfg.features.output.atmospheric
@@ -52,6 +52,11 @@ def main(cfg: DictConfig):
     num_sur_features = len(surface_vars)
     num_features = num_atm_features + num_sur_features
     num_forecast_steps = cfg.model.forecast_steps
+
+    # Get the output number of forecast steps based on the output frequency
+    output_frequency = cfg.forecast.output_frequency
+    output_num_forecast_steps = max(1, num_forecast_steps // output_frequency)
+
     output_features = list(dataset.dyn_output_features)
 
     # Load model
@@ -89,12 +94,13 @@ def main(cfg: DictConfig):
     ind = 0
     with torch.no_grad():
         time_start_ind = 0
-        for input_data, ground_truth in tqdm(datamodule.test_dataloader()):
+        for input_data, ground_truth in tqdm(datamodule.predict_dataloader()):
             batch_size = input_data.shape[0]
+
             output_forecast = torch.empty(
                 (
                     batch_size,
-                    num_forecast_steps,
+                    output_num_forecast_steps,
                     num_features,
                     dataset.lat_size,
                     dataset.lon_size,
@@ -104,6 +110,7 @@ def main(cfg: DictConfig):
 
             input_data_step = input_data[:, 0].to(device)
 
+            frequency_counter = 0
             for step in range(num_forecast_steps):
                 output_data = litmodel(input_data_step)
 
@@ -112,8 +119,10 @@ def main(cfg: DictConfig):
                         input_data[:, step + 1], output_data
                     ).to(device)
 
-                # Copy model output into global array results
-                output_forecast[:, step] = output_data
+                # Store only at required frequency
+                if step % cfg.forecast.output_frequency == 0:
+                    output_forecast[:, frequency_counter] = output_data
+                    frequency_counter += 1
 
             # Transfer output to cpu
             output_forecast = output_forecast.cpu()
@@ -121,16 +130,12 @@ def main(cfg: DictConfig):
             # Remove normalizations
             denormalize_datasets(ground_truth, output_forecast, dataset)
 
-            # Convert to numpy arrays
-            ground_truth = ground_truth.numpy()
+            # Convert from pytorch tensor to numpy array
             output_forecast = output_forecast.numpy()
 
             # Post-process cartesian winds to spherical
             convert_cartesian_to_spherical_winds(
                 dataset.lat, dataset.lon, cfg, output_forecast, output_features
-            )
-            convert_cartesian_to_spherical_winds(
-                dataset.lat, dataset.lon, cfg, ground_truth, output_features
             )
 
             # Save results
@@ -148,25 +153,11 @@ def main(cfg: DictConfig):
                     time_start_ind + batch_size,
                 )
 
-            # Save ground truth
-            # This currently saves more data than it should, only initial input times
-            # without steps
-            if save_observations_to_file:
-                save_results_to_zarr(
-                    ground_truth,
-                    atmospheric_vars,
-                    surface_vars,
-                    constant_vars,
-                    dataset,
-                    pressure_levels,
-                    "results/forecast_observation.zarr",
-                    ind,
-                    time_start_ind,
-                    time_start_ind + batch_size,
-                )
-
             ind += 1
             time_start_ind += batch_size
+
+            if not cfg.forecast.generate_plots:
+                continue
 
             # Plot results for the first time instance only
             time_ind = 0
@@ -174,15 +165,27 @@ def main(cfg: DictConfig):
             if time_ind != ind - 1:
                 continue
 
+            # Prepare ground truth for plots
+            ground_truth = ground_truth.numpy()
+
+            # Make sure ground truth has the same frequency as output_forecast
+            ground_truth = ground_truth[:, :: cfg.forecast.output_frequency]
+
+            convert_cartesian_to_spherical_winds(
+                dataset.lat, dataset.lon, cfg, ground_truth, output_features
+            )
+
             # Generate plots for different variables
             logging.info("Generating forecast plots...")
 
             # Generate a plot for each forecast step
-            for forecast_ind in range(num_forecast_steps):
+            for forecast_ind in range(output_num_forecast_steps):
 
                 # Generate a string for the input and output times
                 time_in = dataset.ds_input.time.values[time_ind]
-                time_out = dataset.ds_input.time.values[time_ind + forecast_ind + 1]
+                time_out = dataset.ds_input.time.values[
+                    time_ind + forecast_ind * output_frequency + 1
+                ]
                 dt_in = time_in.astype("datetime64[s]").astype(datetime)
                 dt_out = time_out.astype("datetime64[s]").astype(datetime)
                 date_in = dt_in.strftime("%Y-%m-%d %H:%M")

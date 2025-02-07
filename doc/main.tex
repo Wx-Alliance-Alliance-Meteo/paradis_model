@@ -1,0 +1,251 @@
+
+\documentclass[preprint]{article}
+\usepackage{authblk}
+\usepackage{geometry}
+\newgeometry{vmargin={30mm}, hmargin={25mm,25mm}}
+\usepackage{graphicx}%
+\usepackage{multirow}%
+\usepackage{amsmath,amssymb,amsfonts}%
+\usepackage{amsthm}%
+\usepackage{mathrsfs}%
+\usepackage[title]{appendix}%
+\usepackage{xcolor}%
+\usepackage{textcomp}%
+\usepackage{manyfoot}%
+\usepackage{booktabs}%
+\usepackage{algorithm}%
+\usepackage{algorithmicx}%
+\usepackage{algpseudocode}%
+\usepackage{listings}%
+\usepackage{hyperref}
+%%%%
+
+\bibliographystyle{unsrt}
+
+\DeclareMathOperator{\arctantwo}{arctan2}
+\usepackage{todonotes}
+\newcommand{\TODO}[2][]{\todo[inline, #1]{#2}}
+
+\begin{document}
+
+\title{On the Application of a Neural Semi-Lagrangian Architecture for Weather Forecasting}
+
+
+\author[1]{St\'ephane Gaudreault$^*$}
+\author[1]{Carlos Pereira}
+\author[1]{Christopher Subich}
+\author[1]{Mohammad Mortezazadeh}
+\author[2]{Eldad Haber}
+\author[3]{David Millard}
+\author[1]{Siqi Wei}
+
+\affil[1]{\small Recherche en pr\'evision num\'erique atmosph\'erique, Environnement et Changement climatique Canada, 2121 Route Transcanadienne, Dorval, H9P 1J3, QC, Canada}
+\affil[2]{Department of Earth, Ocean and Atmospheric Sciences, University of British Columbia, 2020 -- 2207 Main Mall, Vancouver, V6T 1Z4, British Columbia, Canada}
+\affil[3]{Golisano College of CIS, Rochester Institute of Technology, Rochester, USA}
+\affil[ ]{\textit{stephane.gaudreault@ec.gc.ca}}
+
+
+
+% \keywords{keyword1, Keyword2, Keyword3, Keyword4}
+\maketitle
+
+\TODO{The current version of this work introduces the basis of the new Canadian PARADIS model for ML-based weather forecasting. Future versions of this manuscript will include the respective implementation details, results and analysis.}
+
+\begin{abstract}Data-driven models have revolutionized weather forecasting. We present a physics-inspired neural network for weather prediction. Our approach mimics the advection-diffusion-reaction components of the physical mechanisms, allowing for a better representation of these phenomena with a significant improvement in the typical over-smoothing issue of existing ML-based weather forecasting. This method utilizes a semi-Lagrangian approach, where the interpolation and integration trajectories are part of the set of learned parameters. 
+\end{abstract}
+
+
+\section{From physical principles to a neural network}\label{sec:neural_architecture}
+
+In meteorology, a Lagrangian form of the governing equations is often used to describe the motion of atmospheric properties by tracking individual air parcels as they move through space and time. At the coarsest level, atmospheric dynamics can be described by a system of differential equations of the form 
+\begin{align}\label{eq:governing_equations}
+\dfrac{D\mathbf{q}}{Dt} &= \mathcal{F}(\mathbf{q}),\\
+\dfrac{d\mathbf{x}}{dt} &= \mathbf{V},
+\end{align}
+where $\dfrac{D}{Dt} = \dfrac{\partial}{\partial t} + \mathbf{V} \cdot \nabla$ is the material derivative, $\mathbf{q}$ is the state vector, $\mathbf{x}$ is the position of a fluid element, $\mathbf{V}$ is a smooth velocity field and $\mathcal{F}$ is the function describing all forcings. This general ansatz encapsulates three fundamental types of physical processes 
+\begin{itemize}
+    \item Transport of fluid properties by winds (e.g., advection).
+    \item Spatial mixing (e.g., pressure gradient forces and diffusion).
+    \item Local interactions between variables (e.g., the Coriolis effect, cloud microphysics, and atmospheric chemistry).
+\end{itemize}
+This decomposition naturally suggests that an appropriate neural architecture would be one where different components specialize in capturing these types of physical processes. 
+
+In a neural network, it is often useful to design the architecture to work with a projection of the data into a latent space. Hence, starting with the input vector $\mathbf{q} (\mathbf{x},t)=[\mathbf{q}_0(\mathbf{x},t),\mathbf{q}_1(\mathbf{x},t)],\ldots,\mathbf{q}_n(\mathbf{x},t)]$, where $m$ is the number of input channels, we first embed it in a higher-dimensional space to a vector $\mathbf{h}(\mathbf{x},t)$ of $n>m$ channels. The previous ansatz, Eq.\eqref{eq:governing_equations}, is then reformulated as follows
+\begin{align}\label{eq:ansatz}
+\frac{D}{Dt}\mathbf{h}(\mathbf{x},t) &= \mathcal{F}_\text{net}(\mathbf{h}(\mathbf x, t)),\\
+\nonumber \dfrac{d\mathbf{x}}{dt} &= \mathbf{V}_\text{net}.
+\end{align}
+
+Here, $\mathbf{h}(\mathbf{x}, t)$ represents the \textit{hidden state} of the system at any time $t$, and $\mathcal{F}_\text{net}$ is a neural network that models the rate of change of the hidden state. Similarly, the velocity field $\mathbf{V}_\text{net}=[\mathbf{V}_1,\mathbf{V}_2]$ contains $2n$ channels, also implemented as a neural network. The architecture used to model these quantities can be chosen with a certain degree of freedom. For instance, they can be modeled using approaches such as convolutional neural networks (CNNs), transformers, or Kolmogorov-Arnold networks \cite{liu2024kan}. In this work, we choose a simple base architecture consisting of two layers of convolution with a kernel size of $3\times3$. The first convolution layer maintains the input dimension $m$ and is followed by layer normalization and a SiLU (Swish) activation function. The second convolution maps from $m$ to $n$ channels while preserving spatial dimensions through appropriate padding. (See Appendix~\ref{appendix:padding} for details on our padding approach). This block is consistently used for projection to and from the latent space, $\mathcal{F}_\text{net}$ and $\mathbf{V}_\text{net}$.
+
+
+A common approach in numerical weather prediction for solving systems of the form \eqref{eq:ansatz} is the semi-Lagrangian method \cite{robert1981stable}. The semi-Lagrangian method offers several key advantages \cite{fletcher2019semi}: it is highly stable, allowing atmospheric models to use large time steps efficiently; it resolves phase speeds accurately; and it exhibits relatively low numerical dispersion.
+
+The semi-Lagrangian method can be seen as a discrete version of the method of characteristics. First, it traces back the trajectory of a fluid parcel from its current position on the grid $x^+$ at time $t^+$, to its origin at the previous time step $t^- = t^+ - \Delta t$ by computing
+
+\begin{equation}\label{eq:traj}
+x^- = x^+ - \Delta t \mathbf{V}_\text{net} .  
+\end{equation}\label{eq:SL}
+
+Once the departure point $x^-$ is determined, the method interpolates the field values $h^-$ at these locations from the known values on the grid, as departure points generally does not align with the grid points. A common approach for this task is the Lagrange cubic interpolation \cite{mcdonald1984accuracy}. Finally, one can integrate all the forcings and source terms along the traced trajectory of the parcel to obtain the values of $h^+$ at the next time step on the grid via
+\begin{equation}\label{eq:SL}
+h^+ = h^- + \Delta t \mathcal{F}_\text{net}(h^-).    
+\end{equation}
+
+\begin{appendices}
+
+\section{Methods}
+
+\subsection{Data Normalization}
+
+Normalization is a key step in preparing data for machine learning. It scales features to a similar range, making predictive models more accurate and reliable. Different normalization strategies are chosen based on the physical characteristics of the variables. For most atmospheric variables, such as temperature, wind components, and geopotential, we compute the mean and standard deviation independently at each pressure level. Then, Z-score normalization is applied as follows
+\begin{equation}
+q_{\text{normalized}} = \frac{q - \mu(q)}{\sigma(q)}.
+\end{equation}
+Here, $\mu(q)$ and $\sigma(q)$ represent the mean and standard deviation of the variable $q$ for a given pressure level. For precipitation, a logarithmic transformation is used to address its highly skewed distribution via
+\begin{equation}
+q_{\text{normalized}} = \log(q + \varepsilon) + c,
+\end{equation}
+where $\varepsilon$ is a small positive constant ensuring the argument of the logarithm remains strictly positive, and $c = 10$ is an offset. This transformation ensures non-negative values during inversion and effectively handles the skewness, where small values dominate over large ones.
+
+Specific humidity requires a physically motivated logarithmic normalization 
+\begin{equation}
+q_{\text{normalized}} = \frac{\log(\text{clip}(q, 0, q_{\text{max}}) + \varepsilon) - \log(q_{\text{min}})}{\log(q_{\text{max}}) - \log(q_{\text{min}})},
+\end{equation}
+where $q_{\text{min}}$ and $q_{\text{max}}$ are the global minimum and maximum humidity values in the dataset, and $\varepsilon$ is a small constant. This method ensures non-negative normalized values and accounts for the large variation of specific humidity with altitude.
+
+\subsection{Spherical geometry}\label{appendix:padding}
+
+The implementation of the semi-Lagrangian scheme in spherical coordinates is inspired by \cite{mcdonald1989semi}, who introduced an ``auxiliary spherical coordinate system" to address difficulties near the poles. For each arrival point $(\phi_a, \lambda_a)$, a rotated coordinate system $(\phi', \lambda')$ is defined, where the origin coincides with the arrival point, and the equator of this rotated system passes through the point in question. In this local system, $\lambda'$ measures the angular distance along the rotated equator, while $\phi'$ measures the angular distance perpendicular to it.
+
+The departure point coordinates are first computed in the rotated system
+\begin{align*} 
+    \lambda'_d &= -u_\text{net} \Delta t, \\
+    \phi'_d &= -v_\text{net} \Delta t, 
+\end{align*} 
+where $u_\text{net}$ and $v_\text{net}$ are the trained velocities obtained from the output of the $V_\text{net}$ neural network, and $\Delta t$ is the time step. The transformation from these rotated coordinates back to standard spherical coordinates is given by
+\begin{align*} 
+\lambda &= \lambda_a + \arctantwo(\cos(\phi')\sin(\lambda'),\cos(\phi')\cos(\lambda')\cos(\phi_a) - \sin(\phi')\sin(\phi_a)),  \\
+\phi &=  \arcsin\left( \sin(\phi')\cos(\phi_a) +\cos(\phi')\cos(\lambda')\sin(\phi_a) \right).
+\end{align*}
+Since the grid does not include the poles, a geocyclic padding similar to \cite{cheon2024karina} is employed to handle boundary conditions for both convolution operations and trajectory interpolation. In the longitudinal direction, the domain is extended periodically, with points beyond $\lambda = 360^\circ$ mapping to $\lambda = 0^\circ + \text{remainder}$. For latitudinal boundaries, points beyond the poles are handled through reflection and rotation. For a point beyond $\phi = 90^\circ\text{N}$, the padding coordinates are
+\begin{align*}
+\phi_\text{pad} &= 180^\circ - \phi, \\
+\lambda_\text{pad} &= \lambda + 180^\circ.
+\end{align*}
+When applying the geocyclic padding, there is a difficulty in handling wind vectors near the Earth's poles due to the convergence of meridians, which creates artificial discontinuities in the latitude-longitude coordinate system. This would force the neural networks to learn unnatural, discontinuous transformations in their latent space representations. Hence, we propose to transform wind vectors from spherical coordinates into Cartesian coordinates in a pre-processing step. This transformation ensures that the wind components remain continuous across the poles. The transformation from spherical velocity components $(u, v, w)$ to Cartesian components $(u_x, u_y, u_z)$ is given by
+\begin{align*} 
+    u_x &= -u\sin(\lambda) - v\sin(\phi)\cos(\lambda) - w\cos(\phi)\cos(\lambda) \\ 
+    u_y &= u\cos(\lambda) - v\sin(\phi)\sin(\lambda) - w\cos(\phi)\sin(\lambda) \\ 
+    u_z &= v\cos(\phi) - w\sin(\phi). 
+\end{align*}
+Then, the neural network operates on these continuous Cartesian components, and the output is transformed back to spherical coordinates during post-processing. The inverse transformation is given by
+\begin{align*} 
+    u &= -u_x\sin(\lambda) + u_y\cos(\lambda), \\ 
+    v &= -u_x\sin(\phi)\cos(\lambda) - u_y\sin(\phi)\sin(\lambda) + u_z\cos(\phi), \\ 
+    w &= -u_x\cos(\phi)\cos(\lambda) - u_y\cos(\phi)\sin(\lambda) - u_z\sin(\phi).
+\end{align*}
+
+\subsection{Radiation Parametrization}
+
+% csubich -- see https://gitlab.science.gc.ca/csu001/graphcast/-/blob/gforecast/forecast/toa_radiation.py
+Following the implementation of \cite{lam2023learning}, we included the one-hour accumulated top-of-atmosphere incoming solar radiation as a conditioning channel available to the forecast model.  We believe that the model uses this channel as a combined time-of-day and season-of-year signal, since it is not given enough information to compute a detailed radiative balance.
+
+The calculation generally follows that of \cite{wald_basics_2019}, and it takes into account the ellipticity of Earth's orbit but not the variable solar cycle.  With $\lambda$ as the local latitude, $T$ as the Julian day (referenced to 1 Jan 2000, 12h UTC), $\delta(T)$ as the solar declination, $d(T)$ as the solar distance (in astronomical units), and $t(T,\lambda)$ as the longitude-dependent local solar time, the instantaneous top-of-atmosphere radiation is given by
+\begin{equation} \label{eqn:toa_rad_local}
+R(\phi,\lambda,T) = \frac{1360.56}{d(T)^2} \max(0,\sin(\phi)\sin(\delta(T)) + \cos(\phi)\cos(\delta(T))\cos(t(T,\lambda))),
+\end{equation}
+which has units of watts per square meter.
+
+The solar distance, declination, and local solar time depend on the parameters of the Earth's orbit and the Julian day.  The time-dependent obliquity (in radians) of Earth's orbit is approximately
+\begin{equation*}
+    \epsilon(T) = \frac{\pi}{180} (23.439 - 3.6 \cdot 10^{-7}T),
+\end{equation*}
+the mean anomaly is
+\begin{equation*}
+    M(T) = \frac{\pi}{180} (357.529 + 0.985600028T),
+\end{equation*}
+the mean longitude is
+\begin{equation*}
+    L(T) = \frac{\pi}{180} (280.459 + 0.98564736T),
+\end{equation*}
+the geocentric apparent longitude is
+\begin{equation*}
+    \lambda_\odot(T) = L(T) + \frac{\pi}{180}(1.915 \sin(M(T)) + 0.020 \sin(2M(T))),
+\end{equation*}
+the solar distance is
+\begin{equation*}
+    d(T) = 1.00014 - 0.01671 \cos(M(T)) - 1.4 \cdot 10^{-4} \cos(2M(T)),
+\end{equation*}
+the right ascension is
+\begin{equation*}
+    \alpha(T) = \arctan\left(\frac
+    {\cos(\epsilon(T)) \sin(\lambda_\odot(T)}{\cos(\lambda_\odot(T)}
+    \right),
+\end{equation*}
+and the declination is
+\begin{equation*}
+    \delta(T) = \arcsin(\sin(\epsilon(T)) \sin(\lambda_\odot(T))).
+\end{equation*}
+Computing the local solar time requires computing the equation of time
+\begin{equation*}
+    EOT(T) = L(T) - \alpha(T),
+\end{equation*}
+and finally, the local solar time is obtained via
+\begin{equation*}
+    t(T,\lambda) = \lambda + 2\pi T + EOT(T).
+\end{equation*}
+During computation, all radian values are limited to the $[-\pi,\pi]$ interval, and the solar radiation is accumulated by integrating \eqref{eqn:toa_rad_local} over the 1-hour period that ends at the specified time.
+
+
+\section{Code availability}
+
+The implementation of the PARADIS model presented in this work   is available on GitHub at\\ \href{https://github.com/Wx-Alliance-Alliance-Meteo/paradis_model}{https://github.com/Wx-Alliance-Alliance-Meteo/paradis\_model}.
+
+\end{appendices}
+
+\begin{thebibliography}{9}
+
+\bibitem{liu2024kan}
+Ziming Liu, Yixuan Wang, Sachin Vaidya, Fabian Ruehle, James Halverson, Marin Solja{\v{c}}i{\'c}, Thomas~Y Hou, and Max Tegmark.
+\newblock {KAN}: Kolmogorov{\textendash}arnold networks.
+\newblock In {\em Submitted to The Thirteenth International Conference on Learning Representations}, 2024.
+\newblock under review.
+
+\bibitem{robert1981stable}
+Andr{\'e} Robert.
+\newblock A stable numerical integration scheme for the primitive meteorological equations.
+\newblock {\em Atmosphere-Ocean}, 19(1):35--46, 1981.
+
+\bibitem{fletcher2019semi}
+Steven~J Fletcher.
+\newblock {\em Semi-{Lagrangian} advection methods and their applications in geoscience}.
+\newblock Elsevier, 2019.
+
+\bibitem{mcdonald1984accuracy}
+A~McDonald.
+\newblock Accuracy of multiply-upstream, semi-lagrangian advective schemes.
+\newblock {\em Monthly Weather Review}, 112(6):1267--1275, 1984.
+
+\bibitem{mcdonald1989semi}
+A~McDonald and JR~Bates.
+\newblock Semi-lagrangian integration of a gridpoint shallow water model on the sphere.
+\newblock {\em Monthly Weather Review}, 117(1):130--137, 1989.
+
+\bibitem{cheon2024karina}
+Minjong Cheon, Yo-Hwan Choi, Seon-Yu Kang, Yumi Choi, Jeong-Gil Lee, and Daehyun Kang.
+\newblock Karina: An efficient deep learning model for global weather forecast.
+\newblock {\em arXiv preprint arXiv:2403.10555}, 2024.
+
+\bibitem{lam2023learning}
+Remi Lam, Alvaro Sanchez-Gonzalez, Matthew Willson, Peter Wirnsberger, Meire Fortunato, Ferran Alet, Suman Ravuri, Timo Ewalds, Zach Eaton-Rosen, Weihua Hu, et~al.
+\newblock Learning skillful medium-range global weather forecasting.
+\newblock {\em Science}, 382(6677):1416--1421, 2023.
+
+\bibitem{wald_basics_2019}
+Lucien Wald.
+\newblock Basics in solar radiation at {Earth} surface v2, July 2019.
+
+\end{thebibliography}
+
+\end{document}

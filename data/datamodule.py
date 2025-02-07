@@ -13,78 +13,97 @@ class Era5DataModule(L.LightningDataModule):
 
         # Extract configuration parameters for data
         self.cfg = cfg
-        self.root_dir = cfg.dataset.dataset_dir
-        self.batch_size = cfg.dataset.batch_size
-        self.training = cfg.dataset.training
-        self.validation = cfg.dataset.validation
-        self.testing = cfg.dataset.testing
-        self.num_workers = cfg.dataset.num_workers
-        self.features_cfg = cfg.features
-
+        self.root_dir = cfg.dataset.root_dir
+        self.batch_size = cfg.compute.batch_size
         self.forecast_steps = cfg.model.forecast_steps
-        self.drop_last = cfg.model.compile  # Drop last batch when using compiled model
+        self.num_workers = cfg.compute.num_workers
 
-        self.has_setup_been_called = {"fit": False, "test": False}
+        # Drop last batch when using compiled model
+        self.drop_last = cfg.compute.compile
+
+        self.has_setup_been_called = {"fit": False, "predict": False}
 
     def setup(self, stage=None):
 
         if not self.has_setup_been_called[stage]:
             logging.info(f"Loading dataset from {self.root_dir}")
-            logging.info(
-                f"Training date range: {self.training.start_date} to {self.training.end_date}"
-            )
 
-            # Generate dataset
-            train_era5_dataset = ERA5Dataset(
-                root_dir=self.root_dir,
-                start_date=self.training.start_date,
-                end_date=self.training.end_date,
-                forecast_steps=self.forecast_steps,
-                cfg=self.cfg,
-            )
-
-            # Make the autoregression maps available at a higher level
-            self.dataset = train_era5_dataset
-            self.num_common_features = train_era5_dataset.num_common_features
-            self.num_in_features = train_era5_dataset.num_in_features
-            self.num_out_features = train_era5_dataset.num_out_features
-            self.output_name_order = train_era5_dataset.dyn_output_features
-            self.lat = train_era5_dataset.lat
-            self.lon = train_era5_dataset.lon
-            self.lat_size = train_era5_dataset.lat_size
-            self.lon_size = train_era5_dataset.lon_size
-
-            if self.validation:
+            if stage == "fit":
+                # Generate training dataset
+                train_start_date = self.cfg.training.dataset.start_date
+                train_end_date = self.cfg.training.dataset.end_date
                 logging.info(
-                    f"Validation date range: {self.validation.start_date} to {self.validation.end_date}"
+                    f"Training date range: {train_start_date} to {train_end_date}"
                 )
+
+                train_era5_dataset = ERA5Dataset(
+                    root_dir=self.root_dir,
+                    start_date=train_start_date,
+                    end_date=train_end_date,
+                    forecast_steps=self.forecast_steps,
+                    cfg=self.cfg,
+                )
+
+                # Generate validation dataset
+                val_start_date = self.cfg.training.validation_dataset.start_date
+                val_end_date = self.cfg.training.validation_dataset.end_date
+
+                logging.info(
+                    f"Validation date range: {val_start_date} to {val_end_date}"
+                )
+
                 self.val_dataset = ERA5Dataset(
                     root_dir=self.root_dir,
-                    start_date=self.validation.start_date,
-                    end_date=self.validation.end_date,
+                    start_date=val_start_date,
+                    end_date=val_end_date,
                     forecast_steps=self.forecast_steps,
                     cfg=self.cfg,
                 )
 
-            if self.testing:
-                logging.info(
-                    f"Testing date range: {self.testing.start_date} to {self.testing.end_date}"
-                )
-                self.test_dataset = ERA5Dataset(
+                # Make certain attributes available at the datamodule level
+                self.dataset = train_era5_dataset
+                self.num_common_features = train_era5_dataset.num_common_features
+                self.num_in_features = train_era5_dataset.num_in_features
+                self.num_out_features = train_era5_dataset.num_out_features
+                self.output_name_order = train_era5_dataset.dyn_output_features
+                self.lat = train_era5_dataset.lat
+                self.lon = train_era5_dataset.lon
+                self.lat_size = train_era5_dataset.lat_size
+                self.lon_size = train_era5_dataset.lon_size
+
+            if stage == "predict":
+                pred_start_date = self.cfg.forecast.start_date
+                pred_end_date = self.cfg.forecast.get("end_date", None)
+
+                if pred_end_date is None:
+                    logging.info(f"Forecast from {pred_start_date}")
+                else:
+                    logging.info(f"Forecast from {pred_start_date} to {pred_end_date}")
+                self.dataset = ERA5Dataset(
                     root_dir=self.root_dir,
-                    start_date=self.testing.start_date,
-                    end_date=self.testing.end_date,
+                    start_date=pred_start_date,
+                    end_date=pred_end_date,
                     forecast_steps=self.forecast_steps,
                     cfg=self.cfg,
                 )
+
+                self.num_common_features = self.dataset.num_common_features
+                self.num_in_features = self.dataset.num_in_features
+                self.num_out_features = self.dataset.num_out_features
+                self.output_name_order = self.dataset.dyn_output_features
+                self.lat = self.dataset.lat
+                self.lon = self.dataset.lon
+                self.lat_size = self.dataset.lat_size
+                self.lon_size = self.dataset.lon_size
 
             logging.info(
                 "Dataset contains: %d input features, %d output features.",
-                train_era5_dataset.num_in_features,
-                train_era5_dataset.num_out_features,
+                self.num_in_features,
+                self.num_out_features,
             )
 
             self.has_setup_been_called[stage] = True
+
             logging.info(f"Dataset setup completed successfully for stage {stage}")
 
     def train_dataloader(self):
@@ -109,10 +128,10 @@ class Era5DataModule(L.LightningDataModule):
             drop_last=self.drop_last,
         )
 
-    def test_dataloader(self):
-        """Return the test dataloader (includes all data)."""
+    def predict_dataloader(self):
+        """Return the forecasting dataloader (includes all data)."""
         return DataLoader(
-            self.test_dataset,
+            self.dataset,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             shuffle=False,
