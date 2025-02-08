@@ -13,10 +13,9 @@ python3.12 train.py \
     training.dataset.start_date=2010-01-01 \
     training.dataset.end_date=2019-12-31 \
     training.parameters.lr=1e-3 \
-    training.parameters.max_epochs=500 \
-    model.checkpoint_path=$PREV_CHECKPOINT
+    training.parameters.max_epochs=500
 
-PREV_CHECKPOINT="logs/lightning_logs/version_3/checkpoints/best.ckpt"
+PREV_CHECKPOINT="logs/lightning_logs/version_0/checkpoints/best.ckpt"
 
 echo "Starting Phase 3: Final finetuning with more forecast steps"
 python3.12 train.py \

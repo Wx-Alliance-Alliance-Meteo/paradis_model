@@ -49,7 +49,7 @@ training:
     print_losses: false            # Manually print losses to screen (removes progress bar)
     log_every_n_steps: 50          # Write to log every n steps
     early_stopping:
-      enabled: true                # Whether to use early stopping
+      enabled: false               # Whether to use early stopping
       patience: 8                  # Number of epochs with no improvement after which training will stop
 
     loss_function:
@@ -58,7 +58,14 @@ training:
     # Scheduler configuration - Choose ONE of the following scheduler types by
     # commenting/uncommenting the appropriate section:
 
-    # 1. ReduceLROnPlateau
+    # 1. OneCycleLR
+    scheduler:
+      type: "one_cycle"          # OneCycleLR scheduler
+      warmup_pct_start: 0.       # Percentage of training used for warmup phase
+      lr_div_factor: 1           # Initial learning rate = max_lr/lr_div_factor
+      lr_final_div: 100          # Final learning rate = initial_lr/lr_final_div_factor
+
+    # 2. ReduceLROnPlateau
 #    scheduler:
 #      type: "reduce_lr"            # ReduceLROnPlateau scheduler
 #      factor: 0.75                 # Factor by which to reduce learning rate
@@ -66,13 +73,6 @@ training:
 #      threshold: 1.e-4
 #      threshold_mode: "rel"
 #      min_lr: 1.e-7                # Lower bound on the learning rate
-
-    # 2. OneCycleLR
-    scheduler:
-      type: "one_cycle"          # OneCycleLR scheduler
-      warmup_pct_start: 0.       # Percentage of training used for warmup phase
-      lr_div_factor: 1           # Initial learning rate = max_lr/lr_div_factor
-      lr_final_div: 100          # Final learning rate = initial_lr/lr_final_div_factor
 
   variable_loss_weights:
     atmospheric:
