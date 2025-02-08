@@ -192,7 +192,7 @@ class NeuralSemiLagrangian(nn.Module):
 
         lon = lon_p + torch.atan2(num, den)
 
-        # Normalize longitude to [0, 2?]
+        # Normalize longitude to [0, 2π]
         lon = torch.remainder(lon + 2 * torch.pi, 2 * torch.pi)
 
         return lat, lon
