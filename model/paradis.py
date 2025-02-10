@@ -148,13 +148,22 @@ class VariationalCLP(nn.Module):
 class NeuralSemiLagrangian(nn.Module):
     """Implements the semi-Lagrangian advection."""
 
-    def __init__(self, dynamic_channels: int, mesh_size: tuple, variational: bool):
+    def __init__(
+        self,
+        dynamic_channels: int,
+        velocity_channels: int,
+        mesh_size: tuple,
+        vel_ind: torch.tensor,
+        variational: bool,
+    ):
         super().__init__()
 
         # For cubic interpolation
         self.padding = 1
         self.padding_interp = GeoCyclicPadding(self.padding, dynamic_channels)
         self.dynamic_channels = dynamic_channels
+        self.velocity_channels = velocity_channels
+        self.vel_ind = vel_ind
 
         # Flag for variational variant to be used in forward
         self.variational = variational
@@ -162,9 +171,11 @@ class NeuralSemiLagrangian(nn.Module):
         # Neural network that will learn an effective velocity along the trajectory
         # Output 2 channels per dynamic channel for u and v
         if not self.variational:
-            self.velocity_net = CLP(dynamic_channels, 2 * dynamic_channels, mesh_size)
+            self.velocity_net = CLP(dynamic_channels, 2 * velocity_channels, mesh_size)
         else:
-            self.velocity_net = VariationalCLP(dynamic_channels, 2 * dynamic_channels, mesh_size)
+            self.velocity_net = VariationalCLP(
+                dynamic_channels, 2 * velocity_channels, mesh_size
+            )
 
     def _transform_to_latlon(
         self,
@@ -213,7 +224,7 @@ class NeuralSemiLagrangian(nn.Module):
         # Reshape velocities to separate u,v components per channel
         # [batch, 2*dynamic_channels, lat, lon] -> [batch, dynamic_channels, 2, lat, lon]
         velocities = velocities.view(
-            batch_size, 2, self.dynamic_channels, *velocities.shape[-2:]
+            batch_size, 2, self.velocity_channels, *velocities.shape[-2:]
         ).transpose(1, 2)
 
         # Extract u,v components
@@ -227,8 +238,8 @@ class NeuralSemiLagrangian(nn.Module):
 
         # Transform from rotated coordinates back to standard coordinates
         # Expand lat/lon grid for broadcasting with per-channel coordinates
-        lat_grid = lat_grid.unsqueeze(1).expand(-1, self.dynamic_channels, -1, -1)
-        lon_grid = lon_grid.unsqueeze(1).expand(-1, self.dynamic_channels, -1, -1)
+        lat_grid = lat_grid.unsqueeze(1).expand(-1, self.velocity_channels, -1, -1)
+        lon_grid = lon_grid.unsqueeze(1).expand(-1, self.velocity_channels, -1, -1)
 
         lat_dep, lon_dep = self._transform_to_latlon(
             lat_prime, lon_prime, lat_grid, lon_grid
@@ -249,6 +260,9 @@ class NeuralSemiLagrangian(nn.Module):
 
         # Reshape grid coordinates for interpolation
         # [batch, dynamic_channels, lat, lon] -> [batch*dynamic_channels, lat, lon]
+        grid_x = grid_x[:, self.vel_ind]
+        grid_y = grid_y[:, self.vel_ind]
+
         grid_x = grid_x.view(batch_size * self.dynamic_channels, *grid_x.shape[-2:])
         grid_y = grid_y.view(batch_size * self.dynamic_channels, *grid_y.shape[-2:])
 
@@ -336,11 +350,23 @@ class Paradis(nn.Module):
             nn.Conv2d(hidden_dim, output_dim, kernel_size=3),
         )
 
+        # Get the number of velocity channels to learn (one per level, and one per surface variable)
+        self.velocity_channels = num_levels + len(cfg.features.input.get("surface", []))
+
         # Rescale the time step to a fraction of a synoptic time scale
         self.dt = cfg.model.base_dt / self.SYNOPTIC_TIME_SCALE
 
+        # Get the mapping between velocities and features
+        vel_ind = datamodule.vel_ind
+
         # Physics operators
-        self.advection = NeuralSemiLagrangian(self.dynamic_channels, mesh_size, self.variational)
+        self.advection = NeuralSemiLagrangian(
+            self.dynamic_channels,
+            self.velocity_channels,
+            mesh_size,
+            vel_ind,
+            self.variational,
+        )
         self.solve_along_trajectories = ForcingsIntegrator(hidden_dim, mesh_size)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

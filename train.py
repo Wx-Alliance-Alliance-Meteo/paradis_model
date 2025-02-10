@@ -31,9 +31,10 @@ def main(cfg: DictConfig):
     # Initialize model
     litmodel = LitParadis(datamodule, cfg)
 
+    # Load the model weights if a checkpoint path is provided
     if cfg.model.checkpoint_path:
-        # Load the model weights if a checkpoint path is provided
-        checkpoint = torch.load(cfg.model.checkpoint_path, weights_only=True)
+        # Load into CPU, then Lightning will transfer to GPU
+        checkpoint = torch.load(cfg.model.checkpoint_path, weights_only=True, map_location="cpu")
         litmodel.load_state_dict(checkpoint["state_dict"])
 
     # Define callbacks

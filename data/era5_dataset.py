@@ -204,6 +204,30 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
         self.num_out_features = len(self.dyn_output_features)
 
+        # Determine the learned velocity indices
+        num_pressure_levels = len(features_cfg.pressure_levels)
+        pressure_level_inds = [i for i in range(num_pressure_levels)]
+        vel_ind = []
+        sur_vel_ind = num_pressure_levels
+        input_feature_names = []
+
+        # Clean up features to retain order and remain unique
+        for i, feature in enumerate(self.dyn_input_features):
+            feature_name = re.sub(
+                r"_h\d+$", "", feature
+            )  # Remove height suffix (e.g., "_h10")
+            if feature_name not in input_feature_names:
+                input_feature_names.append(feature_name)
+
+        for i, feature in enumerate(input_feature_names):
+            if feature in features_cfg.input.atmospheric:
+                vel_ind.extend(pressure_level_inds)
+            elif feature in features_cfg.input.surface:
+                vel_ind.append(sur_vel_ind)
+                sur_vel_ind += 1
+
+        self.vel_ind = torch.tensor(vel_ind)
+
     def __len__(self):
         # Do not yield a value for the last time in the dataset since there
         # is no future data
