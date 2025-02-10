@@ -349,7 +349,7 @@ class Paradis(nn.Module):
         )
 
         # Rescale the time step to a fraction of a synoptic time scale
-        self.dt = 1
+        self.dt = cfg.model.base_dt / self.SYNOPTIC_TIME_SCALE
 
         # Physics operators
         self.advection = NeuralSemiLagrangian(hidden_dim, mesh_size, self.variational)
