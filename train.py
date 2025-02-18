@@ -36,16 +36,6 @@ def main(cfg: DictConfig):
         # Load the model weights if a checkpoint path is provided
         checkpoint = torch.load(cfg.model.checkpoint_path, weights_only=True)
         litmodel.load_state_dict(checkpoint["state_dict"])
-        # Force using the delta values from the config
-        litmodel.loss_fn.initial_delta.fill_(
-            cfg.training.parameters.delta_schedule.initial_delta
-        )
-        litmodel.loss_fn.final_delta.fill_(
-            cfg.training.parameters.delta_schedule.final_delta
-        )
-        litmodel.loss_fn.delta.fill_(
-            cfg.training.parameters.delta_schedule.initial_delta
-        )
 
     # Define callbacks
     callbacks = []

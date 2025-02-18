@@ -41,6 +41,7 @@ class CLPBlock(nn.Module):
                 [
                     GeoCyclicPadding(kernel_size // 2, input_dim),
                     nn.Conv2d(input_dim, output_dim, kernel_size=kernel_size),
+                    activation(),
                 ]
             )
 
@@ -237,17 +238,18 @@ class NeuralSemiLagrangian(nn.Module):
             lat_prime, lon_prime, lat_grid, lon_grid
         )
 
-        # Compute the dimensions of the padded input
-        padded_width = hidden_features.size(-1) + 2 * self.padding
-        padded_height = hidden_features.size(-2) + 2 * self.padding
-
         # Convert to normalized grid coordinates [-1, 1] adjusted for padding
-        grid_x = ((lon_dep / (2 * torch.pi)) * 2 - 1) * (
-            hidden_features.size(-1) / padded_width
-        )
-        grid_y = ((lat_dep / torch.pi) * 2 - 1) * (
-            hidden_features.size(-2) / padded_height
-        )
+        grid_x = lon_dep / torch.pi  # [0, 2]
+
+        # Apply periodicity for outside values along longitude set to [-1, 1]
+        grid_x = torch.remainder(grid_x, 2) - 1
+
+        # Lat_dep is in [-pi/2, pi/2] -> [-1, 1]
+        grid_y = 2 * lat_dep / torch.pi
+
+        # Mirror values outside of the range [-1, 1]
+        grid_y = torch.where(grid_y < -1, -(2 + grid_y), grid_y)
+        grid_y = torch.where(grid_y > 1, 2 - grid_y, grid_y)
 
         # Reshape grid coordinates for interpolation
         # [batch, hidden_dim, lat, lon] -> [batch*hidden_dim, lat, lon]
