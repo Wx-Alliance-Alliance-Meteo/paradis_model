@@ -80,7 +80,7 @@ class LitParadis(L.LightningModule):
         # Initialize loss function with delta schedule parameters
         loss_cfg = cfg.training.parameters.loss_function
         self.loss_fn = ParadisLoss(
-            loss_function = cfg.training.loss_function,
+            loss_function=cfg.training.loss_function,
             lat_grid=datamodule.lat,
             pressure_levels=torch.tensor(
                 cfg.features.pressure_levels, dtype=torch.float32
@@ -165,6 +165,15 @@ class LitParadis(L.LightningModule):
         if self.print_losses:
             self.epoch_start_time = time.time()
 
+    def _get_persistence_loss(self, input_data, pred_data):
+        p_loss = 0.0
+        for step in range(self.forecast_steps):
+            loss = self.loss_fn(
+                input_data[:, step, : self.num_common_features], pred_data[:, step]
+            )
+            p_loss += loss
+        return p_loss.detach()
+
     def training_step(self, batch, batch_idx):
         """Training step."""
         if self.variational:
@@ -182,6 +191,21 @@ class LitParadis(L.LightningModule):
             sync_dist=True,
         )
         self.log("lr", self.optimizers().param_groups[0]["lr"], prog_bar=True)
+
+        # Get persistence for the first epoch (does not vary with epoch)
+        if self.current_epoch < 1:
+            p_loss = self._get_persistence_loss(batch[0], batch[1])
+
+            # Log the persistence loss for monitoring
+            self.log(
+                "persistence_loss",
+                p_loss,
+                on_step=True,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
+
         if self.variational:
             self.log(
                 "kl_loss",

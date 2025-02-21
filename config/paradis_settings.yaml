@@ -4,7 +4,7 @@ model:
   forecast_steps: 1                # Number of autoregressive steps for forecasting
   base_dt: 21600                   # 6 hours * 3600 seconds
   checkpoint_path: null            # Path to model checkpoint for loading pre-trained weights
-  num_layers: 2                    # Number of advection-diffusion layers
+  num_substeps: 2                  # Number of time substeps
 
 # Input dataset
 dataset:

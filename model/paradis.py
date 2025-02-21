@@ -340,16 +340,20 @@ class Paradis(nn.Module):
         )
 
         # Rescale the time step to a fraction of a synoptic time scale
-        self.dt = cfg.model.base_dt / self.SYNOPTIC_TIME_SCALE
-        self.nlayers = cfg.model.num_layers
+        self.num_substeps = cfg.model.num_substeps
+        self.dt = cfg.model.base_dt / self.SYNOPTIC_TIME_SCALE / self.num_substeps
+
+        # Advection layers
         self.advection = nn.ModuleList(
             [
                 NeuralSemiLagrangian(hidden_dim, mesh_size, self.variational)
-                for _ in range(self.nlayers)
+                for _ in range(self.num_substeps)
             ]
         )
+
+        # Diffusion-reaction layers
         self.diffusion_reaction = nn.ModuleList(
-            [CLP(hidden_dim, hidden_dim, mesh_size) for _ in range(self.nlayers)]
+            [CLP(hidden_dim, hidden_dim, mesh_size) for _ in range(self.num_substeps)]
         )
 
         # Output projection
@@ -375,7 +379,7 @@ class Paradis(nn.Module):
         z0 = z.clone()
 
         # Compute advection and diffusion-reaction
-        for i in range(self.nlayers):
+        for i in range(self.num_substeps):
             # Advect the features in latent space using a Semi-Lagrangian step
             z_adv = self.advection[i](z, lat_grid, lon_grid, self.dt)
 
