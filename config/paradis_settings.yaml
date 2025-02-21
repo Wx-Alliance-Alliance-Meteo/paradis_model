@@ -4,6 +4,7 @@ model:
   forecast_steps: 1                # Number of autoregressive steps for forecasting
   base_dt: 21600                   # 6 hours * 3600 seconds
   checkpoint_path: null            # Path to model checkpoint for loading pre-trained weights
+  num_layers: 2                    # Number of advection-diffusion layers
 
 # Input dataset
 dataset:
@@ -73,7 +74,7 @@ training:
 #      threshold: 1.e-4
 #      threshold_mode: "rel"
 #      min_lr: 1.e-7                # Lower bound on the learning rate
-
+  loss_function: "mse"            # mse or reversed_huber
   variable_loss_weights:
     atmospheric:
       wind_x: 1.0
@@ -83,13 +84,13 @@ training:
       specific_humidity: 1.0
       temperature: 1.0
     surface:
-      wind_x_10m: 0.1
-      wind_y_10m: 0.1
-      2m_temperature: 0.1
-      mean_sea_level_pressure: 0.1
-      surface_pressure: 0.1
-      total_column_water: 0.1
-      total_precipitation_6hr: 0.1
+      wind_x_10m: 1.0
+      wind_y_10m: 1.0
+      2m_temperature: 1.0
+      mean_sea_level_pressure: 1.0
+      surface_pressure: 1.0
+      total_column_water: 1.0
+      total_precipitation_6hr: 1.0
 
 features:
   pressure_levels:

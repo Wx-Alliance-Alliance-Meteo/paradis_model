@@ -8,7 +8,7 @@ import torch
 import lightning as L
 
 from model.paradis import Paradis
-from utils.loss import ReversedHuberLoss
+from utils.loss import ParadisLoss
 
 
 class LitParadis(L.LightningModule):
@@ -79,7 +79,9 @@ class LitParadis(L.LightningModule):
 
         # Initialize loss function with delta schedule parameters
         loss_cfg = cfg.training.parameters.loss_function
-        self.loss_fn = ReversedHuberLoss(
+        self.loss_fn = ParadisLoss(
+            loss_function = cfg.training.loss_function,
+            lat_grid=datamodule.lat,
             pressure_levels=torch.tensor(
                 cfg.features.pressure_levels, dtype=torch.float32
             ),
