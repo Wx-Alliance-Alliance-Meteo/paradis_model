@@ -88,7 +88,7 @@ def main(cfg: DictConfig):
         max_epochs=train_params.max_epochs,
         gradient_clip_val=train_params.gradient_clip_val,
         gradient_clip_algorithm="norm",
-        log_every_n_steps=20,
+        log_every_n_steps=cfg.training.parameters.log_every_n_steps,
         callbacks=callbacks,
         precision=precision,
         enable_progress_bar=not train_params.print_losses,

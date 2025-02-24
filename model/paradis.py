@@ -17,6 +17,7 @@ class CLPBlock(nn.Module):
         kernel_size: int = 3,
         activation: nn.Module = nn.SiLU,
         double_conv: bool = False,
+        diffusion: bool = False,
     ):
         super().__init__()
 
@@ -34,12 +35,13 @@ class CLPBlock(nn.Module):
             activation(),
         ]
 
-        # 1x1 convolutions for channel mixing
-        layers += [
-            nn.Conv2d(input_dim, 2 * input_dim, kernel_size=1),
-            nn.ReLU(),
-            nn.Conv2d(2 * input_dim, input_dim, kernel_size=1),
-        ]
+        # 1x1 convolutions for additional channel mixing
+        if diffusion:
+            layers += [
+                nn.Conv2d(input_dim, 2 * input_dim, kernel_size=1),
+                activation(),
+                nn.Conv2d(2 * input_dim, input_dim, kernel_size=1),
+            ]
 
         # Optional second convolution block
         if double_conv:
@@ -55,6 +57,26 @@ class CLPBlock(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.layers(x)
+
+
+# Helper function
+def CLPDiffusion(
+    dim_in: int,
+    dim_out: int,
+    mesh_size: tuple,
+    kernel_size: int = 3,
+    activation: nn.Module = nn.SiLU,
+):
+    """Create a double-convolution CLP block."""
+    return CLPBlock(
+        dim_in,
+        dim_out,
+        mesh_size,
+        kernel_size,
+        activation,
+        double_conv=True,
+        diffusion=True,
+    )
 
 
 # Helper function
@@ -343,27 +365,17 @@ class Paradis(nn.Module):
         self.num_substeps = cfg.model.num_substeps
         self.dt = cfg.model.base_dt / self.SYNOPTIC_TIME_SCALE / self.num_substeps
 
-        # Advection layers
-        self.advection = nn.ModuleList(
-            [
-                NeuralSemiLagrangian(hidden_dim, mesh_size, self.variational)
-                for _ in range(self.num_substeps)
-            ]
-        )
+        # Advection layer
+        self.advection = NeuralSemiLagrangian(hidden_dim, mesh_size, self.variational)
 
-        # Diffusion-reaction layers
-        self.diffusion_reaction = nn.ModuleList(
-            [CLP(hidden_dim, hidden_dim, mesh_size) for _ in range(self.num_substeps)]
-        )
+        # Diffusion-reaction layer
+        self.diffusion_reaction = CLPDiffusion(hidden_dim, hidden_dim, mesh_size)
 
         # Output projection
         self.output_proj = nn.Sequential(
             GeoCyclicPadding(1),
             nn.Conv2d(hidden_dim, output_dim, kernel_size=3),
         )
-
-        # Learnable residual scaling factor
-        self.alpha = nn.Parameter(torch.ones(1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
@@ -381,16 +393,13 @@ class Paradis(nn.Module):
         # Compute advection and diffusion-reaction
         for i in range(self.num_substeps):
             # Advect the features in latent space using a Semi-Lagrangian step
-            z_adv = self.advection[i](z, lat_grid, lon_grid, self.dt)
+            z_adv = self.advection(z, lat_grid, lon_grid, self.dt)
 
             # Compute the diffusion residual
-            dz = self.diffusion_reaction[i](z_adv)
+            dz = self.diffusion_reaction(z_adv)
 
             # Update the latent space features
             z += z_adv + self.dt * dz
 
-        # Ensure alpha is in [0, 1]
-        alpha = torch.sigmoid(self.alpha)
-
         # Return a scaled residual formulation
-        return alpha * x[:, : self.num_common_features] + self.output_proj(z - z0)
+        return x[:, : self.num_common_features] + self.output_proj(z - z0)

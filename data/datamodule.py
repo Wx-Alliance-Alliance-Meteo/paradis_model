@@ -132,9 +132,10 @@ class Era5DataModule(L.LightningDataModule):
 
     def predict_dataloader(self):
         """Return the forecasting dataloader (includes all data)."""
+        logging.info("Batch size set to 1 automatically for inference mode.")
         return DataLoader(
             self.dataset,
-            batch_size=self.batch_size,
+            batch_size=1,
             num_workers=self.num_workers,
             shuffle=False,
             pin_memory=True,
