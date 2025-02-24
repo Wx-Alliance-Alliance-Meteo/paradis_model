@@ -12,7 +12,7 @@ import torch
 class GeoCyclicPadding(torch.nn.Module):
     """Cyclic padding layer for regular lat-lon grids."""
 
-    def __init__(self, pad_width, channels):
+    def __init__(self, pad_width):
         super().__init__()
         self.pad_width = pad_width
 
