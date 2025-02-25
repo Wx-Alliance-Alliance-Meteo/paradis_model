@@ -72,7 +72,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         # Get the number of additional time instances needed in data for autoregression
         hours = time_resolution * (self.forecast_steps)
         time_delta = timedelta(hours=hours)
-
+        
         # Convert end_date to a datetime object and adjust end date
         if end_date is not None:
 
@@ -87,6 +87,10 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
         # Select the time range needed to process this dataset
         ds = ds.sel(time=slice(start_date, adjusted_end_date))
+        
+        # Select data that are $time_resolution hr apart 
+        ds_time_skip = time_resolution//6
+        ds = ds.isel(time=slice(None, None, ds_time_skip))
 
         # Extract latitude and longitude to build the graph
         self.lat = ds.latitude.values

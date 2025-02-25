@@ -16,24 +16,36 @@ nvidia-smi
 # activate conda env
 conda activate /home/cap003/hall5/software/miniconda3/envs/gatmosphere
 
-start_date="2010-01-01" 
-end_date="2010-12-31" 
-max_epoch=50
-forecast_steps=4
-initial_LR=1.0e-3
-num_workers=8
+forecast_start_date="2018-01-01" 
+forecast_steps=6
+output_freq=1
+forecast_dt=21600
 num_gpu=2
 hidden_multiplier=4
 method=rk4
-echo forecast steps = , ${forecast_steps},  num_works = , $num_workers, num_gpu, $num_gpu, hidden_multiplier, $hidden_multiplier
+train_dt=6hr
+forcing="forcing" 
+forecast_data_time_resol=6h
 
-output_dir="./testoutput-vicky/compare_rk4_fe"
-mkdir -p $output_dir
-output_file=${method}_from_${start_date}_to_${end_date}_${num_workers}_num_worker_${forecast_steps}_forecast_step_${num_gpu}_gpu_${hidden_multiplier}_hidden_multiplier_${max_epoch}_max_epoch.txt
+forecast_inf=forecast_with_${method}_train_${train_dt}_forecast_${forecast_dt}s_${forcing}
 
-srun python forecast.py model.checkpoint_path=logs/lightning_logs/version_3629440/checkpoints/best.ckpt
+echo $forecast_inf 
 
+python forecast.py \
+        model.checkpoint_path=/home/siw001/hall6/paradis_model_fe/logs/lightning_logs/version_fe_8yr_6hr_1step_500epoch/checkpoints/best.ckpt \
+        forecast.start_date=${forecast_start_date} \
+        model.forecast_steps=${forecast_steps} \
+        model.base_dt=${forecast_dt} \
+        forecast.output_frequency=${output_freq} \
+        dataset.time_resolution=${forecast_data_time_resol} \
+        --config-name=paradis_settings_forecast
 
+#logs/lightning_logs/version_rk4_8yr_${train_dt}_1step_forcing_500epoch/checkpoints/best.ckpt 
+
+#cd results
+#zip /home/siw001/hall6/paradis_model_rk4/testoutput-vicky/forecast_plots/${forecast_inf}.zip *
+#zip /home/siw001/hall6/paradis_model_rk4/testoutput-vicky/forecast_plots/${forecast_inf}_data.zip */*/*
+#rm -rf *
 
 
 

@@ -40,7 +40,7 @@ def main(cfg: DictConfig):
     datamodule = Era5DataModule(cfg)
     datamodule.setup(stage="predict")
     dataset = datamodule.dataset
-
+    
     # Extract features and dimensions
     atmospheric_vars = cfg.features.output.atmospheric
     surface_vars = cfg.features.output.surface
@@ -95,7 +95,7 @@ def main(cfg: DictConfig):
     with torch.no_grad():
         time_start_ind = 0
         for input_data, ground_truth in tqdm(datamodule.predict_dataloader()):
-            batch_size = input_data.shape[0]
+            batch_size = input_data.shape[0] 
 
             output_forecast = torch.empty(
                 (
