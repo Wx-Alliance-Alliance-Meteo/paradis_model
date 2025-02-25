@@ -18,29 +18,36 @@ class CLPBlock(nn.Module):
         kernel_size: int = 3,
         activation: nn.Module = nn.SiLU,
         double_conv: bool = False,
+        pointwise_conv: bool = False,
     ):
         super().__init__()
 
         # First convolution block
+        intermediate_dim = input_dim if double_conv else output_dim
         layers = [
-            GeoCyclicPadding(kernel_size // 2, input_dim),
-            nn.Conv2d(
-                input_dim,
-                input_dim if double_conv else output_dim,
-                kernel_size=kernel_size,
-            ),
-            nn.LayerNorm(
-                [input_dim if double_conv else output_dim, mesh_size[0], mesh_size[1]]
-            ),
+            GeoCyclicPadding(kernel_size // 2),
+            nn.Conv2d(input_dim, intermediate_dim, kernel_size=kernel_size),
+            nn.LayerNorm([intermediate_dim, mesh_size[0], mesh_size[1]]),
             activation(),
         ]
+
+        # Optional pointwise convolutions for additional channel mixing
+        if pointwise_conv:
+            expanded_dim = 2 * intermediate_dim
+            layers.extend(
+                [
+                    nn.Conv2d(intermediate_dim, expanded_dim, kernel_size=1),
+                    activation(),
+                    nn.Conv2d(expanded_dim, intermediate_dim, kernel_size=1),
+                ]
+            )
 
         # Optional second convolution block
         if double_conv:
             layers.extend(
                 [
-                    GeoCyclicPadding(kernel_size // 2, input_dim),
-                    nn.Conv2d(input_dim, output_dim, kernel_size=kernel_size),
+                    GeoCyclicPadding(kernel_size // 2),
+                    nn.Conv2d(intermediate_dim, output_dim, kernel_size=kernel_size),
                     activation(),
                 ]
             )
@@ -58,10 +65,17 @@ def CLP(
     mesh_size: tuple,
     kernel_size: int = 3,
     activation: nn.Module = nn.SiLU,
+    pointwise_conv: bool = False,
 ):
     """Create a double-convolution CLP block."""
     return CLPBlock(
-        dim_in, dim_out, mesh_size, kernel_size, activation, double_conv=True
+        dim_in,
+        dim_out,
+        mesh_size,
+        kernel_size,
+        activation,
+        double_conv=True,
+        pointwise_conv=True,
     )
 
 
@@ -113,7 +127,7 @@ class VariationalCLP(nn.Module):
         self.decoder = nn.Sequential(
             nn.Conv2d(latent_dim, dim_in, kernel_size=1),  # project up
             CLPBlock(dim_in, dim_in, mesh_size),
-            GeoCyclicPadding(kernel_size // 2, dim_in),
+            GeoCyclicPadding(kernel_size // 2),
             nn.Conv2d(dim_in, dim_out, kernel_size=kernel_size),
         )
 
@@ -154,7 +168,7 @@ class NeuralSemiLagrangian(nn.Module):
 
         # For cubic interpolation
         self.padding = 1
-        self.padding_interp = GeoCyclicPadding(self.padding, hidden_dim)
+        self.padding_interp = GeoCyclicPadding(self.padding)
         self.hidden_dim = hidden_dim
 
         # Flag for variational variant to be used in forward
@@ -218,11 +232,11 @@ class NeuralSemiLagrangian(nn.Module):
         # [batch, 2*hidden_dim, lat, lon] -> [batch, hidden_dim, 2, lat, lon]
         velocities = velocities.view(
             batch_size, 2, self.hidden_dim, *velocities.shape[-2:]
-        ).transpose(1, 2)
+        )
 
         # Extract u,v components
-        u = velocities[:, :, 0]  # [batch, hidden_dim, lat, lon]
-        v = velocities[:, :, 1]
+        u = velocities[:, 0]  # [batch, hidden_dim, lat, lon]
+        v = velocities[:, 1]
 
         # Compute departure points in a local rotated coordinate system in which the origin
         # of latitude and longitude is moved to the arrival point
@@ -234,25 +248,37 @@ class NeuralSemiLagrangian(nn.Module):
         lat_grid = lat_grid.unsqueeze(1).expand(-1, self.hidden_dim, -1, -1)
         lon_grid = lon_grid.unsqueeze(1).expand(-1, self.hidden_dim, -1, -1)
 
+        # Get the max and min values for normalization
+        min_lat = torch.min(lat_grid)
+        max_lat = torch.max(lat_grid)
+
+        min_lon = torch.min(lon_grid)
+        max_lon = torch.max(lon_grid)
+
         lat_dep, lon_dep = self._transform_to_latlon(
             lat_prime, lon_prime, lat_grid, lon_grid
         )
 
-        # Convert to normalized grid coordinates [-1, 1] adjusted for padding
-        grid_x = lon_dep / torch.pi  # [0, 2]
+        padded_width = hidden_features.size(-1) + 2 * self.padding
+        padded_height = hidden_features.size(-2) + 2 * self.padding
+
+        # Normalize grid to ensure consistency in interpolation
+        grid_x = (2 * (lon_dep - min_lon) / (max_lon - min_lon) - 1) * (
+            hidden_features.size(-1) / padded_width
+        )
+        grid_y = (2 * (lat_dep - min_lat) / (max_lat - min_lat) - 1) * (
+            hidden_features.size(-2) / padded_height
+        )
 
         # Apply periodicity for outside values along longitude set to [-1, 1]
-        grid_x = torch.remainder(grid_x, 2) - 1
-
-        # Lat_dep is in [-pi/2, pi/2] -> [-1, 1]
-        grid_y = 2 * lat_dep / torch.pi
+        grid_x = torch.remainder(grid_x + 1, 2) - 1
 
         # Mirror values outside of the range [-1, 1]
         grid_y = torch.where(grid_y < -1, -(2 + grid_y), grid_y)
         grid_y = torch.where(grid_y > 1, 2 - grid_y, grid_y)
 
         # Reshape grid coordinates for interpolation
-        # [batch, hidden_dim, lat, lon] -> [batch*hidden_dim, lat, lon]
+        # [batch, dynamic_channels, lat, lon] -> [batch*dynamic_channels, lat, lon]
         grid_x = grid_x.view(batch_size * self.hidden_dim, *grid_x.shape[-2:])
         grid_y = grid_y.view(batch_size * self.hidden_dim, *grid_y.shape[-2:])
 
@@ -261,7 +287,9 @@ class NeuralSemiLagrangian(nn.Module):
 
         # Apply padding and reshape hidden features
         dynamic_padded = self.padding_interp(hidden_features)
-        dynamic_padded = dynamic_padded.view(
+
+        # Apply padding and reshape features
+        dynamic_padded = dynamic_padded.reshape(
             batch_size * self.hidden_dim, 1, *dynamic_padded.shape[-2:]
         )
 
@@ -285,27 +313,6 @@ class NeuralSemiLagrangian(nn.Module):
         return interpolated
 
 
-class ForcingsIntegrator(nn.Module):
-    """Implements the time integration of the forcings along the Lagrangian trajectories."""
-
-    def __init__(self, hidden_dim: int, mesh_size: tuple):
-        super().__init__()
-
-        self.diffusion_reaction_net = CLP(hidden_dim, hidden_dim, mesh_size)
-
-    def forward(self, hidden_features: torch.Tensor, dt: float) -> torch.Tensor:
-        """Integrate over a time step of size dt."""
-        # RK4
-        k1 = self.diffusion_reaction_net(hidden_features)
-        k1y = hidden_features + dt/2 * k1
-        k2 = self.diffusion_reaction_net(k1y)
-        k2y =  hidden_features + dt/2 * k2 
-        k3 = self.diffusion_reaction_net(k2y)
-        k3y =  hidden_features + dt * k3
-        k4 = self.diffusion_reaction_net(k3y)
-        new_state = hidden_features + dt/6 *(k1 + 2*k2 + 2*k3 + k4) 
-
-        return new_state
 
 class Paradis(nn.Module):
     """Weather forecasting model main class."""
@@ -318,12 +325,9 @@ class Paradis(nn.Module):
 
         # Extract dimensions from config
         output_dim = datamodule.num_out_features
-
         mesh_size = [datamodule.lat_size, datamodule.lon_size]
-
         num_levels = len(cfg.features.pressure_levels)
-
-        # Flag for variational
+        self.num_common_features = datamodule.num_common_features
         self.variational = cfg.ensemble.enable
 
         # Get channel sizes
@@ -345,40 +349,61 @@ class Paradis(nn.Module):
         )
 
         # Rescale the time step to a fraction of a synoptic time scale
-        self.dt = cfg.model.base_dt / self.SYNOPTIC_TIME_SCALE
+        self.num_substeps = cfg.model.num_substeps
+        self.dt = cfg.model.base_dt / self.SYNOPTIC_TIME_SCALE / self.num_substeps
 
-        # Physics operators
+        # Advection layer
         self.advection = NeuralSemiLagrangian(hidden_dim, mesh_size, self.variational)
-        self.solve_along_trajectories = ForcingsIntegrator(hidden_dim, mesh_size)
+
+        # Diffusion-reaction layer
+        self.diffusion_reaction = CLP(
+            hidden_dim, hidden_dim, mesh_size, pointwise_conv=True
+        )
 
         # Output projection
         self.output_proj = nn.Sequential(
-            GeoCyclicPadding(1, hidden_dim),
+            GeoCyclicPadding(1),
             nn.Conv2d(hidden_dim, output_dim, kernel_size=3),
         )
 
+        # Integrator method 
+        self.integrator = cfg.compute.integrator 
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass through the model."""
 
         # Extract lat/lon from static features (last 2 channels)
         x_static = x[:, self.dynamic_channels :]
         lat_grid = x_static[:, -2, :, :]
         lon_grid = x_static[:, -1, :, :]
 
-        # Project combined features to latent space
+        # Project features to latent space
         z = self.input_proj(x)
-        # Apply the neural semi-Lagrangian operators
-        if self.variational:
-            # Propogates up the KL
-            z, kl_loss = self.advection(z, lat_grid, lon_grid, self.dt)
-        else:
-            z = self.advection(z, lat_grid, lon_grid, self.dt)
-        
-        z = self.solve_along_trajectories(z, self.dt)
 
-        # Project to output space
-        if self.variational:
-            # Propogates up the KL
-            return self.output_proj(z), kl_loss
+        # Keep a copy for the residual projection
+        z0 = z.clone()
 
-        return self.output_proj(z)
+        # Compute advection and diffusion-reaction
+        for i in range(self.num_substeps):
+            # Advect the features in latent space using a Semi-Lagrangian step
+            z_adv = self.advection(z, lat_grid, lon_grid, self.dt)
+
+            
+            if self.integrator == "fe":
+                # Compute the diffusion residual with FE
+                dz = self.diffusion_reaction(z_adv)
+            elif self.integrator == "rk4":
+                # Compute the diffusion residual with RK4
+                k1 = self.diffusion_reaction(z_adv)
+                k1y = z_adv + self.dt/2 * k1
+                k2 = self.diffusion_reaction(k1y)
+                k2y =  z_adv + self.dt/2 * k2
+                k3 = self.diffusion_reaction(k2y)
+                k3y =  z_adv + self.dt * k3
+                k4 = self.diffusion_reaction(k3y)
+                dz = 1./6. *(k1 + 2*k2 + 2*k3 + k4)
+           
+            # Update the latent space features
+            z += z_adv + self.dt * dz
+
+        # Return a scaled residual formulation
+        return x[:, : self.num_common_features] + self.output_proj(z - z0)

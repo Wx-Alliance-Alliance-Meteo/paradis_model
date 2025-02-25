@@ -10,8 +10,8 @@ base_path = "/home/cap003/hall6/weatherbench_raw/weatherbench_5.625deg_13level/"
 ds_paradis = xr.open_dataset(paradis_path, engine="zarr")
 ds_base = xr.open_mfdataset(base_path, engine="zarr")
 
-date = "2018-01-01"
-end_date = "2018-01-01"
+date = "2020-01-01"
+end_date = "2020-01-11"
 forecast_ind = 0
 
 ds_paradis = (

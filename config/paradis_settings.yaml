@@ -4,6 +4,7 @@ model:
   forecast_steps: 6                # Number of autoregressive steps for forecasting
   base_dt: 21600                   # 6 hours * 3600 seconds
   checkpoint_path: null            # Path to model checkpoint for loading pre-trained weights
+  num_substeps: 2                  # Number of time substeps
 
 # Input dataset
 dataset:
@@ -18,6 +19,7 @@ compute:
   batch_size: 64                   # Number of samples per batch
   num_workers: 8                   # Number of parallel processes for data preloading
   compile: true                    # Whether to compile the model
+  integrator: fe
 
 # Ensemble training/forecasting
 ensemble:
@@ -49,7 +51,7 @@ training:
     print_losses: true             # Manually print losses to screen (removes progress bar)
     log_every_n_steps: 50          # Write to log every n steps
     early_stopping:
-      enabled: false                # Whether to use early stopping
+      enabled: false               # Whether to use early stopping
       patience: 8                  # Number of epochs with no improvement after which training will stop
 
     loss_function:
@@ -58,7 +60,14 @@ training:
     # Scheduler configuration - Choose ONE of the following scheduler types by
     # commenting/uncommenting the appropriate section:
 
-    # 1. ReduceLROnPlateau
+    # 1. OneCycleLR
+    # scheduler:
+    #  type: "one_cycle"          # OneCycleLR scheduler
+    #  warmup_pct_start: 0.       # Percentage of training used for warmup phase
+    #  lr_div_factor: 1           # Initial learning rate = max_lr/lr_div_factor
+    #  lr_final_div: 100          # Final learning rate = initial_lr/lr_final_div_factor
+
+    # 2. ReduceLROnPlateau
     scheduler:
       type: "reduce_lr"            # ReduceLROnPlateau scheduler
       factor: 0.75                 # Factor by which to reduce learning rate
@@ -66,14 +75,8 @@ training:
       threshold: 1.e-4
       threshold_mode: "rel"
       min_lr: 1.e-7                # Lower bound on the learning rate
-
-    # 2. OneCycleLR
-    #    scheduler:
-    #  type: "one_cycle"          # OneCycleLR scheduler
-    #  warmup_pct_start: 0.       # Percentage of training used for warmup phase
-    #  lr_div_factor: 1           # Initial learning rate = max_lr/lr_div_factor
-    #  lr_final_div: 100          # Final learning rate = initial_lr/lr_final_div_factor
-
+  loss_function: "mse"            # mse or reversed_huber loss function
+  
   variable_loss_weights:
     atmospheric:
       wind_x: 1.0
@@ -83,13 +86,13 @@ training:
       specific_humidity: 1.0
       temperature: 1.0
     surface:
-      wind_x_10m: 0.1
-      wind_y_10m: 0.1
-      2m_temperature: 0.1
-      mean_sea_level_pressure: 0.1
-      surface_pressure: 0.1
-      total_column_water: 0.1
-      total_precipitation_6hr: 0.1
+      wind_x_10m: 1.0
+      wind_y_10m: 1.0
+      2m_temperature: 1.0
+      mean_sea_level_pressure: 1.0
+      surface_pressure: 1.0
+      total_column_water: 1.0
+      total_precipitation_6hr: 1.0
 
 features:
   pressure_levels:

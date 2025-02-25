@@ -70,6 +70,7 @@ class Era5DataModule(L.LightningDataModule):
                 self.lon = train_era5_dataset.lon
                 self.lat_size = train_era5_dataset.lat_size
                 self.lon_size = train_era5_dataset.lon_size
+                self.vel_ind = train_era5_dataset.vel_ind
 
             if stage == "predict":
                 pred_start_date = self.cfg.forecast.start_date
@@ -95,6 +96,7 @@ class Era5DataModule(L.LightningDataModule):
                 self.lon = self.dataset.lon
                 self.lat_size = self.dataset.lat_size
                 self.lon_size = self.dataset.lon_size
+                self.vel_ind = self.dataset.vel_ind
 
             logging.info(
                 "Dataset contains: %d input features, %d output features.",
@@ -130,9 +132,10 @@ class Era5DataModule(L.LightningDataModule):
 
     def predict_dataloader(self):
         """Return the forecasting dataloader (includes all data)."""
+        logging.info("Batch size set to 1 automatically for inference mode.")
         return DataLoader(
             self.dataset,
-            batch_size=self.batch_size,
+            batch_size=1,
             num_workers=self.num_workers,
             shuffle=False,
             pin_memory=True,

@@ -30,11 +30,13 @@ def main(cfg: DictConfig):
 
     # Initialize model
     litmodel = LitParadis(datamodule, cfg)
-    
-    
+
+    # Load the model weights if a checkpoint path is provided
     if cfg.model.checkpoint_path:
-        # Load the model weights if a checkpoint path is provided
-        checkpoint = torch.load(cfg.model.checkpoint_path, weights_only=True)
+        # Load into CPU, then Lightning will transfer to GPU
+        checkpoint = torch.load(
+            cfg.model.checkpoint_path, weights_only=True, map_location="cpu"
+        )
         litmodel.load_state_dict(checkpoint["state_dict"])
 
     # Define callbacks
@@ -89,7 +91,7 @@ def main(cfg: DictConfig):
         max_epochs=train_params.max_epochs,
         gradient_clip_val=train_params.gradient_clip_val,
         gradient_clip_algorithm="norm",
-        log_every_n_steps=20,
+        log_every_n_steps=cfg.training.parameters.log_every_n_steps,
         callbacks=callbacks,
         precision=precision,
         enable_progress_bar=not train_params.print_losses,

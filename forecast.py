@@ -33,9 +33,6 @@ def main(cfg: DictConfig):
     # Decide whether to save results to file
     save_results_to_file = True
 
-    # Use the following when weatherbench data is not available
-    save_observations_to_file = False
-
     # Initialize data module
     datamodule = Era5DataModule(cfg)
     datamodule.setup(stage="predict")
@@ -92,7 +89,7 @@ def main(cfg: DictConfig):
     # Run forecast
     logging.info("Generating forecast...")
     ind = 0
-    with torch.no_grad():
+    with torch.inference_mode(), torch.no_grad():
         time_start_ind = 0
         for input_data, ground_truth in tqdm(datamodule.predict_dataloader()):
             batch_size = input_data.shape[0] 
