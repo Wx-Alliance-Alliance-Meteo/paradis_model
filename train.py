@@ -34,7 +34,9 @@ def main(cfg: DictConfig):
     # Load the model weights if a checkpoint path is provided
     if cfg.model.checkpoint_path:
         # Load into CPU, then Lightning will transfer to GPU
-        checkpoint = torch.load(cfg.model.checkpoint_path, weights_only=True, map_location="cpu")
+        checkpoint = torch.load(
+            cfg.model.checkpoint_path, weights_only=True, map_location="cpu"
+        )
         litmodel.load_state_dict(checkpoint["state_dict"])
 
     # Define callbacks

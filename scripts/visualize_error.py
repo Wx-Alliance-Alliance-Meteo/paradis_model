@@ -3,7 +3,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Input the paths associated with the forecasts/reference datasets in weatherbench format
-paradis_path = "/home/cap003/hall6/paradis_model_5deg_tests/results/forecast_result.zarr"
+paradis_path = (
+    "/home/cap003/hall6/paradis_model_5deg_tests/results/forecast_result.zarr"
+)
 base_path = "/home/cap003/hall6/weatherbench_raw/weatherbench_5.625deg_13level/"
 
 # Generate plots with forecast data
@@ -53,4 +55,6 @@ ax[2].set_title("Error")
 
 plt.tight_layout()
 
-fig.savefig("2m_temperature.png", )
+fig.savefig(
+    "2m_temperature.png",
+)

@@ -17,38 +17,36 @@ class CLPBlock(nn.Module):
         kernel_size: int = 3,
         activation: nn.Module = nn.SiLU,
         double_conv: bool = False,
-        diffusion: bool = False,
+        pointwise_conv: bool = False,
     ):
         super().__init__()
 
         # First convolution block
+        intermediate_dim = input_dim if double_conv else output_dim
         layers = [
             GeoCyclicPadding(kernel_size // 2),
-            nn.Conv2d(
-                input_dim,
-                input_dim if double_conv else output_dim,
-                kernel_size=kernel_size,
-            ),
-            nn.LayerNorm(
-                [input_dim if double_conv else output_dim, mesh_size[0], mesh_size[1]]
-            ),
+            nn.Conv2d(input_dim, intermediate_dim, kernel_size=kernel_size),
+            nn.LayerNorm([intermediate_dim, mesh_size[0], mesh_size[1]]),
             activation(),
         ]
 
-        # 1x1 convolutions for additional channel mixing
-        if diffusion:
-            layers += [
-                nn.Conv2d(input_dim, 2 * input_dim, kernel_size=1),
-                activation(),
-                nn.Conv2d(2 * input_dim, input_dim, kernel_size=1),
-            ]
+        # Optional pointwise convolutions for additional channel mixing
+        if pointwise_conv:
+            expanded_dim = 2 * intermediate_dim
+            layers.extend(
+                [
+                    nn.Conv2d(intermediate_dim, expanded_dim, kernel_size=1),
+                    activation(),
+                    nn.Conv2d(expanded_dim, intermediate_dim, kernel_size=1),
+                ]
+            )
 
         # Optional second convolution block
         if double_conv:
             layers.extend(
                 [
                     GeoCyclicPadding(kernel_size // 2),
-                    nn.Conv2d(input_dim, output_dim, kernel_size=kernel_size),
+                    nn.Conv2d(intermediate_dim, output_dim, kernel_size=kernel_size),
                     activation(),
                 ]
             )
@@ -60,12 +58,13 @@ class CLPBlock(nn.Module):
 
 
 # Helper function
-def CLPDiffusion(
+def CLP(
     dim_in: int,
     dim_out: int,
     mesh_size: tuple,
     kernel_size: int = 3,
     activation: nn.Module = nn.SiLU,
+    pointwise_conv: bool = False,
 ):
     """Create a double-convolution CLP block."""
     return CLPBlock(
@@ -75,21 +74,7 @@ def CLPDiffusion(
         kernel_size,
         activation,
         double_conv=True,
-        diffusion=True,
-    )
-
-
-# Helper function
-def CLP(
-    dim_in: int,
-    dim_out: int,
-    mesh_size: tuple,
-    kernel_size: int = 3,
-    activation: nn.Module = nn.SiLU,
-):
-    """Create a double-convolution CLP block."""
-    return CLPBlock(
-        dim_in, dim_out, mesh_size, kernel_size, activation, double_conv=True
+        pointwise_conv=True,
     )
 
 
@@ -369,7 +354,9 @@ class Paradis(nn.Module):
         self.advection = NeuralSemiLagrangian(hidden_dim, mesh_size, self.variational)
 
         # Diffusion-reaction layer
-        self.diffusion_reaction = CLPDiffusion(hidden_dim, hidden_dim, mesh_size)
+        self.diffusion_reaction = CLP(
+            hidden_dim, hidden_dim, mesh_size, pointwise_conv=True
+        )
 
         # Output projection
         self.output_proj = nn.Sequential(
