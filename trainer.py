@@ -78,9 +78,8 @@ class LitParadis(L.LightningModule):
                 var_loss_weights_reordered[i] = var_name_to_weight[var_name]
 
         # Initialize loss function with delta schedule parameters
-        loss_cfg = cfg.training.parameters.loss_function
         self.loss_fn = ParadisLoss(
-            loss_function=cfg.training.loss_function,
+            loss_function=cfg.training.loss_function.type,
             lat_grid=datamodule.lat,
             pressure_levels=torch.tensor(
                 cfg.features.pressure_levels, dtype=torch.float32
@@ -89,12 +88,12 @@ class LitParadis(L.LightningModule):
             num_surface_vars=len(cfg.features.output.surface),
             var_loss_weights=var_loss_weights_reordered,
             output_name_order=datamodule.output_name_order,
-            delta_loss=loss_cfg.delta_loss,
+            delta_loss=cfg.training.loss_function.delta_loss,
         )
 
         self.forecast_steps = cfg.model.forecast_steps
         self.num_common_features = datamodule.num_common_features
-        self.print_losses = cfg.training.parameters.print_losses
+        self.print_losses = cfg.training.print_losses
 
         if cfg.compute.compile:
             self.model = torch.compile(
@@ -105,6 +104,14 @@ class LitParadis(L.LightningModule):
                 backend="inductor",
             )
 
+        # Load the model weights if a checkpoint path is provided
+        if cfg.model.checkpoint_path:
+            # Load into CPU, then Lightning will transfer to GPU
+            checkpoint = torch.load(
+                cfg.model.checkpoint_path, weights_only=True, map_location="cpu"
+            )
+            self.load_state_dict(checkpoint["state_dict"])
+
         self.epoch_start_time = None
 
     def forward(self, x):
@@ -113,24 +120,23 @@ class LitParadis(L.LightningModule):
 
     def configure_optimizers(self):
         """Configure optimizer and learning rate scheduler."""
-        train_cfg = self.cfg.training.parameters
+        cfg = self.cfg.training
 
         optimizer = torch.optim.AdamW(
             self.model.parameters(),
-            betas=[0.9, 0.999],
-            lr=train_cfg.lr,
-            weight_decay=train_cfg.weight_decay,
+            betas=[cfg.optimizer.beta1, cfg.optimizer.beta2],
+            lr=cfg.optimizer.lr,
+            weight_decay=cfg.optimizer.weight_decay,
         )
 
-        scheduler_cfg = train_cfg.scheduler
-        if scheduler_cfg.type == "one_cycle":
+        if cfg.scheduler.type == "one_cycle":
             scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 optimizer,
                 total_steps=self.trainer.estimated_stepping_batches,
-                max_lr=train_cfg.lr,
-                pct_start=scheduler_cfg.warmup_pct_start,
-                div_factor=scheduler_cfg.lr_div_factor,
-                final_div_factor=scheduler_cfg.lr_final_div,
+                max_lr=cfg.optimizer.lr,
+                pct_start=cfg.scheduler.warmup_pct_start,
+                div_factor=cfg.scheduler.lr_div_factor,
+                final_div_factor=cfg.scheduler.lr_final_div,
                 anneal_strategy="cos",
             )
             return {
@@ -138,15 +144,15 @@ class LitParadis(L.LightningModule):
                 "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
             }
 
-        elif scheduler_cfg.type == "reduce_lr":
+        elif cfg.scheduler.type == "reduce_lr":
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer,
                 mode="min",
-                factor=scheduler_cfg.factor,
-                patience=scheduler_cfg.patience,
-                threshold=scheduler_cfg.threshold,
-                threshold_mode=scheduler_cfg.threshold_mode,
-                min_lr=scheduler_cfg.min_lr,
+                factor=cfg.scheduler.factor,
+                patience=cfg.scheduler.patience,
+                threshold=cfg.scheculer.threshold,
+                threshold_mode=cfg.scheduler.threshold_mode,
+                min_lr=cfg.scheduler.min_lr,
             )
             return {
                 "optimizer": optimizer,
@@ -158,7 +164,7 @@ class LitParadis(L.LightningModule):
                 },
             }
         else:
-            raise ValueError(f"Unknown scheduler type: {scheduler_cfg.type}")
+            raise ValueError(f"Unknown scheduler type: {cfg.scheduler.type}")
 
     def on_train_epoch_start(self):
         """Record the start time of the epoch."""
@@ -217,10 +223,10 @@ class LitParadis(L.LightningModule):
             )
 
         # Clip gradients manually if gradient_clip_val is set
-        if self.cfg.training.parameters.gradient_clip_val > 0:
+        if self.cfg.training.gradient_clip_val > 0:
             self.clip_gradients(
                 self.optimizers(),
-                gradient_clip_val=self.cfg.training.parameters.gradient_clip_val,
+                gradient_clip_val=self.cfg.training.gradient_clip_val,
                 gradient_clip_algorithm="norm",
             )
 
