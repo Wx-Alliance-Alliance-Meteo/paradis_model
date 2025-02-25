@@ -1,7 +1,6 @@
 """Loss functions for the weather forecasting model."""
 
 import torch
-import re
 
 
 class ParadisLoss(torch.nn.Module):
