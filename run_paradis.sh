@@ -1,7 +1,7 @@
 #!/bin/bash -l
 
 #SBATCH --export=USER,LOGNAME,HOME,MAIL,PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-#SBATCH --job-name=test_rk4_train_1step_forcing_6hr_40yr
+#SBATCH --job-name=test_rk4_fe
 #SBATCH --output=./testoutput-vicky/%x-%j.out
 #SBATCH --error=./testoutput-vicky/%x-%j.err                       # jobname-jobid.err naming
 #SBATCH --account=eccc_mrd__gpu_a100
@@ -17,11 +17,11 @@ nvidia-smi
 # activate conda env
 conda activate /home/cap003/hall5/software/miniconda3/envs/gatmosphere
 
-start_date="1981-01-01" 
+start_date="2018-01-01" 
 end_date="2019-12-31" 
 val_start="1979-01-01"
 val_end="1980-12-31"
-max_epoch=500
+max_epoch=10
 forecast_steps=1
 initial_LR=1.0e-3
 scheduler="reduced_lr"
@@ -32,16 +32,17 @@ scheduler_threshold_mode="rel"
 scheduler_min_lr=1.e-7 
 num_workers=8
 num_gpu=2
-hidden_multiplier=8
-method=rk4
+hidden_multiplier=4
+integrtor=fe
 train_dt=21600
 compile=false
-batch_size=32
+batch_size=64
+num_substeps=1
 
 
 output_dir="./testoutput-vicky/compare_rk4_fe"
 mkdir -p $output_dir
-output_file=${method}_from_${start_date}_to_${end_date}_${num_workers}_num_worker_${forecast_steps}_forecast_step_traindt_${train_dt}_${num_gpu}_gpu_${hidden_multiplier}_hidden_multiplier_${max_epoch}_max_epoch_no_early_stopping.txt
+output_file=${integrator}_from_${start_date}_to_${end_date}_${num_workers}_num_worker_${forecast_steps}_forecast_step_traindt_${train_dt}_${num_gpu}_gpu_${hidden_multiplier}_hidden_multiplier_${max_epoch}_max_epoch_no_early_stopping.txt
 
 echo $output_file 
 echo "
@@ -61,10 +62,11 @@ scheduler_min_lr=$scheduler_min_lr
 num_workers=$num_workers
 num_gpu=$num_gpu
 hidden_multiplier=$hidden_multiplier
-method=$method
+integrator=$integrator
 train_dt=$train_dt
 compile=$compile
 batch_size=$batch_size
+num_substeps=$num_substeps
 "
 
 srun python train.py \
@@ -73,9 +75,11 @@ srun python train.py \
 	training.validation_dataset.start_date=$val_start \
 	training.validation_dataset.end_date=$val_end \
 	compute.num_workers=$num_workers \
+	compute.integrator=$integrator \
 	training.parameters.max_epochs=$max_epoch \
 	model.base_dt=$train_dt \
 	model.forecast_steps=$forecast_steps \
+	model.num_substeps=$num_substeps \
 	training.parameters.lr=$initial_LR \
     	training.parameters.scheduler.factor=$scheduler_factor \
     	training.parameters.scheduler.patience=$scheduler_patience \
