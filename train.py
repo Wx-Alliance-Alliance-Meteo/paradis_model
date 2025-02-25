@@ -37,7 +37,7 @@ def main(cfg: DictConfig):
         default_root_dir="logs/",
         accelerator=cfg.compute.accelerator,
         devices=cfg.compute.num_devices,
-        strategy="ddp",
+        strategy="auto" if cfg.compute.num_devices == 1 else "fsdp",
         max_epochs=cfg.training.max_epochs,
         gradient_clip_val=cfg.training.gradient_clip_val,
         gradient_clip_algorithm="norm",
