@@ -150,7 +150,7 @@ class LitParadis(L.LightningModule):
                 mode="min",
                 factor=cfg.scheduler.factor,
                 patience=cfg.scheduler.patience,
-                threshold=cfg.scheculer.threshold,
+                threshold=cfg.scheduler.threshold,
                 threshold_mode=cfg.scheduler.threshold_mode,
                 min_lr=cfg.scheduler.min_lr,
             )
