@@ -4,6 +4,7 @@ from torch import nn
 from model.padding import GeoCyclicPadding
 from model.clp_block import CLPBlock
 
+
 # CLP processor with structured latent
 class VariationalCLP(nn.Module):
     """Convolutional layer processor with variational latent space."""

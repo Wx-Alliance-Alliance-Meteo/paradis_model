@@ -1,6 +1,7 @@
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks import ModelCheckpoint
 
+
 def enable_callbacks(cfg):
     # Define callbacks
     callbacks = []

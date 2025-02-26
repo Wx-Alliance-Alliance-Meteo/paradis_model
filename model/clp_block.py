@@ -74,4 +74,3 @@ def CLP(
         double_conv=True,
         pointwise_conv=pointwise_conv,
     )
-
