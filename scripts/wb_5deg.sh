@@ -2,9 +2,20 @@
 
 set -e
 
-rm -fr logs
+if [ -z "$1" ]; then
+    echo "Error: Dataset directory path is required"
+    echo "Usage: $0 /path/to/dataset/"
+    exit 1
+fi
 
-root_dir=/path/to/dataset/
+root_dir=$1
+
+if [ ! -d "$root_dir" ]; then
+    echo "Error: Directory $root_dir does not exist"
+    exit 1
+fi
+
+rm -fr logs
 
 echo "Starting Phase 1: Training on 10 years"
 python3.12 train.py \
