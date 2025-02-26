@@ -63,7 +63,9 @@ def save_results_to_zarr(
 
         # Save to Zarr
         if ind == 0:
-            xarray.Dataset(data_vars=data_vars, coords=coords).to_zarr(
+            ds = xarray.Dataset(data_vars=data_vars, coords=coords)
+            ds["time"].encoding = {"dtype": "float64"}
+            ds.to_zarr(
                 filename,
                 consolidated=True,
             )
