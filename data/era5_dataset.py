@@ -12,6 +12,14 @@ import xarray
 
 
 from data.forcings import time_forcings, toa_radiation
+from utils.normalization import (
+    normalize_standard,
+    denormalize_standard,
+    normalize_humidity,
+    denormalize_humidity,
+    normalize_precipitation,
+    denormalize_precipitation,
+)
 
 
 class ERA5Dataset(torch.utils.data.Dataset):
@@ -361,29 +369,29 @@ class ERA5Dataset(torch.utils.data.Dataset):
     def _apply_normalization(self, input_data, output_data):
 
         # Apply custom normalizations to input
-        input_data[..., self.norm_precip_in] = self._normalize_precipitation(
+        input_data[..., self.norm_precip_in] = normalize_precipitation(
             input_data[..., self.norm_precip_in]
         )
-        input_data[..., self.norm_humidity_in] = self._normalize_humidity(
-            input_data[..., self.norm_humidity_in]
+        input_data[..., self.norm_humidity_in] = normalize_humidity(
+            input_data[..., self.norm_humidity_in], self.q_min, self.q_max, self.eps
         )
 
         # Apply custom normalizations to output
-        output_data[..., self.norm_precip_out] = self._normalize_precipitation(
+        output_data[..., self.norm_precip_out] = normalize_precipitation(
             output_data[..., self.norm_precip_out]
         )
-        output_data[..., self.norm_humidity_out] = self._normalize_humidity(
-            output_data[..., self.norm_humidity_out]
+        output_data[..., self.norm_humidity_out] = normalize_humidity(
+            output_data[..., self.norm_humidity_out], self.q_min, self.q_max, self.eps
         )
 
         # Apply standard normalizations to input and output
-        input_data[..., self.norm_zscore_in] = self._normalize_standard(
+        input_data[..., self.norm_zscore_in] = normalize_standard(
             input_data[..., self.norm_zscore_in],
             self.input_mean,
             self.input_std,
         )
 
-        output_data[..., self.norm_zscore_out] = self._normalize_standard(
+        output_data[..., self.norm_zscore_out] = normalize_standard(
             output_data[..., self.norm_zscore_out], self.output_mean, self.output_std
         )
 
@@ -417,70 +425,3 @@ class ERA5Dataset(torch.utils.data.Dataset):
         if len(forcings) > 0:
             return torch.cat(forcings, dim=-1)
         return
-
-    def _normalize_standard(self, input_data, mean, std):
-        return (input_data - mean) / std
-
-    def _denormalize_standard(self, norm_data, mean, std):
-        return norm_data * std + mean
-
-    def _normalize_humidity(self, data: torch.tensor) -> torch.tensor:
-        """Normalize specific humidity using physically-motivated logarithmic transform.
-
-        This normalization accounts for the exponential variation of specific humidity
-        with altitude, mapping values from ~10^-5 (upper atmosphere) to ~10^-2 (surface)
-        onto a normalized range while preserving relative variations at all scales.
-
-        Args:
-            data: Specific humidity data in kg/kg
-        Returns:
-            Normalized specific humidity data
-        """
-        # Apply normalization
-        q_norm = (
-            torch.log(torch.clip(data, 0, self.q_max) + self.eps)
-            - torch.log(self.q_min)
-        ) / (torch.log(self.q_max) - torch.log(self.q_min))
-
-        return q_norm
-
-    def _denormalize_humidity(self, data: torch.tensor) -> torch.tensor:
-        """Denormalize specific humidity data from normalized space back to kg/kg.
-
-        Args:
-            data: Normalized specific humidity data
-        Returns:
-            Specific humidity data in kg/kg
-        """
-
-        # Invert the normalization
-        q = (
-            torch.exp(
-                data * (torch.log(self.q_max) - torch.log(self.q_min))
-                + torch.log(self.q_min)
-            )
-            - self.eps
-        )
-        return torch.clip(q, 0, self.q_max)
-
-    def _normalize_precipitation(self, data: torch.tensor) -> torch.tensor:
-        """Normalize precipitation using logarithmic transform.
-
-        Args:
-            data: Precipitation data
-        Returns:
-            Normalized precipitation data
-        """
-        shift = 10
-        return torch.log(data + 1e-6) + shift
-
-    def _denormalize_precipitation(self, data: torch.tensor) -> torch.tensor:
-        """Denormalize precipitation data.
-
-        Args:
-            data: Normalized precipitation data
-        Returns:
-            Precipitation data in original scale
-        """
-        shift = 10
-        return torch.clip(torch.exp(data - shift) - 1e-6, min=0, max=None)
