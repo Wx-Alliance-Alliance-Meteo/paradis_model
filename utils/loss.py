@@ -57,9 +57,6 @@ class ParadisLoss(torch.nn.Module):
         self.var_loss_weights = var_loss_weights
         self.output_name_order = output_name_order
 
-        # Calculate combined latitude weights
-        self.lat_weights = self._compute_latitude_weights(torch.from_numpy(lat_grid))
-
         # Create combined feature weights
         self.feature_weights = self._compute_feature_weights()
 
@@ -67,67 +64,6 @@ class ParadisLoss(torch.nn.Module):
             self.loss_fn = torch.nn.MSELoss()
         elif loss_function == "reversed_huber":
             self.loss_fn = self._pseudo_reversed_huber_loss
-
-    def _check_uniform_spacing(self, grid: torch.Tensor) -> float:
-        """Check if grid has uniform spacing and return the delta.
-
-        Args:
-            grid: Input coordinate grid tensor
-
-        Returns:
-            Grid spacing delta
-
-        Raises:
-            ValueError: If grid spacing is not uniform
-        """
-        diff = torch.diff(grid)
-        if not torch.allclose(diff, diff[0]):
-            raise ValueError(f"Grid {grid} is not uniformly spaced")
-        return diff[0].item()
-
-    def _compute_latitude_weights(self, grid_lat: torch.Tensor) -> torch.Tensor:
-        """Compute latitude weights based on grid cell areas.
-
-        For a latitude grid, this handles two cases:
-        1. Grids without poles: Points represent slices between lat±Δλ/2
-           Weight proportional to cos(lat)
-        2. Grids with poles: Points at poles represent half-slices
-           For non-pole points: weight ∝ cos(λ)⋅sin(Δλ/2)
-           For pole points: weight ∝ sin(Δλ/4)²
-
-        Args:
-            grid_lat: Latitude coordinates in degrees
-
-        Returns:
-            Normalized weights with unit mean
-
-        Raises:
-            ValueError: If grid is not uniformly spaced or has invalid endpoints
-        """
-        # Validate uniform spacing
-        delta_lat = torch.abs(torch.tensor(self._check_uniform_spacing(grid_lat)))
-
-        # Check if grid includes poles
-        has_poles = torch.any(
-            torch.isclose(torch.abs(grid_lat), torch.tensor(90.0, dtype=grid_lat.dtype))
-        )
-
-        if has_poles:
-            raise ValueError("Grid must not contain poles!")
-        else:
-            # Validate grid endpoints
-            if not (
-                torch.isclose(
-                    torch.abs(grid_lat.max()),
-                    (90.0 - delta_lat / 2) * torch.ones_like(grid_lat.max()),
-                )
-            ):
-                raise ValueError("Grid without poles must end at ±(90° - Δλ/2)")
-
-            # Simple cosine weights for grids without poles
-            weights = torch.cos(torch.deg2rad(grid_lat))
-
-        return weights / weights.mean()
 
     def _compute_feature_weights(self) -> torch.Tensor:
         """Create weights for all features."""
@@ -181,14 +117,14 @@ class ParadisLoss(torch.nn.Module):
         Returns:
             Weighted loss value
         """
+
         # Prepare weights with correct shapes for broadcasting
-        lat_weights = self.lat_weights.view(1, 1, -1, 1).to(pred.device)
         feature_weights = self.feature_weights.view(1, -1, 1, 1).to(pred.device)
 
         # Get the loss using the appropriate function
         loss = self.loss_fn(pred, target)
 
         # Apply weights to loss components
-        weighted_loss = loss * feature_weights * lat_weights
+        weighted_loss = loss * feature_weights
 
         return weighted_loss.mean()

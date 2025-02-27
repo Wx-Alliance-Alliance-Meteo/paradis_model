@@ -147,6 +147,7 @@ features:
       - land_sea_mask
       - slope_of_sub_gridscale_orography
       - standard_deviation_of_orography
+      - lon_spacing
       - latitude
       - longitude
 

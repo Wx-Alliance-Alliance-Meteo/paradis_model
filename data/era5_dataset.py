@@ -14,11 +14,8 @@ import xarray
 from data.forcings import time_forcings, toa_radiation
 from utils.normalization import (
     normalize_standard,
-    denormalize_standard,
     normalize_humidity,
-    denormalize_humidity,
     normalize_precipitation,
-    denormalize_precipitation,
 )
 
 
@@ -35,6 +32,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         cfg: DictConfig = {},
     ) -> None:
 
+        self.cfg = cfg
         features_cfg = cfg.features
         self.eps = 1e-12
         self.root_dir = root_dir
@@ -97,10 +95,11 @@ class ERA5Dataset(torch.utils.data.Dataset):
         ds = ds.sel(time=slice(start_date, adjusted_end_date))
 
         # Extract latitude and longitude to build the graph
-        self.lat = ds.latitude.values
-        self.lon = ds.longitude.values
+        self.lat = torch.from_numpy(ds.latitude.values)
+        self.lon = torch.from_numpy(ds.longitude.values)
         self.lat_size = len(self.lat)
         self.lon_size = len(self.lon)
+        self.pressure_levels = features_cfg.pressure_levels
 
         # The number of time instances in the dataset represents its length
         self.time = ds.time.values
@@ -138,9 +137,11 @@ class ERA5Dataset(torch.utils.data.Dataset):
         )
 
         # Convert lat/lon to radians
-        lat_rad = torch.from_numpy(numpy.deg2rad(self.lat)).to(self.dtype)
-        lon_rad = torch.from_numpy(numpy.deg2rad(self.lon)).to(self.dtype)
-        lat_rad_grid, lon_rad_grid = torch.meshgrid(lat_rad, lon_rad, indexing="ij")
+        lat_rad = torch.deg2rad(self.lat).to(self.dtype)
+        lon_rad = torch.deg2rad(self.lon).to(self.dtype)
+        self.lat_rad_grid, self.lon_rad_grid = torch.meshgrid(
+            lat_rad, lon_rad, indexing="ij"
+        )
 
         # Use zscore to normalize the following variables
         normalize_const_vars = {
@@ -149,11 +150,9 @@ class ERA5Dataset(torch.utils.data.Dataset):
             "standard_deviation_of_orography",
         }
 
-        normalized_constants = []
+        # Extract pre-processed constants that require normalization
+        pre_constants = []
         for var in features_cfg.input.constants:
-            # Skip latitude and longitude, as they are always added in radians
-            if var == "latitude" or var == "longitude":
-                continue
 
             # Normalize constants and keep in memory
             if var in normalize_const_vars:
@@ -162,18 +161,29 @@ class ERA5Dataset(torch.utils.data.Dataset):
                     - ds_constants[var].attrs["mean"]
                 ) / ds_constants[var].attrs["std"]
 
-                normalized_constants.append(array)
+                pre_constants.append(array)
 
         # Get land-sea mask (no normalization needed)
-        land_sea_mask = torch.from_numpy(ds_constants["land_sea_mask"].data).to(
-            self.dtype
+        pre_constants.append(
+            torch.from_numpy(ds_constants["land_sea_mask"].data).to(self.dtype)
         )
+
+        # Include the distance variation of two longitude points along the latitude direction
+        self._compute_geometric_constants()
+
+        post_constants = []
+        for feature in ["lon_spacing", "latitude", "longitude"]:
+            if feature in features_cfg.input.constants:
+                if feature == "lon_spacing":
+                    post_constants.append(self.d_lon_inv)
+                if feature == "latitude":
+                    post_constants.append(self.lat_rad_grid)
+                if feature == "longitude":
+                    post_constants.append(self.lon_rad_grid)
 
         # Stack all constant features together
         self.constant_data = (
-            torch.stack(
-                [*normalized_constants, land_sea_mask, lat_rad_grid, lon_rad_grid]
-            )
+            torch.stack([*pre_constants, *post_constants])
             .permute(1, 2, 0)
             .reshape(self.lat_size, self.lon_size, -1)
             .unsqueeze(0)
@@ -236,6 +246,9 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
         self.vel_ind = torch.tensor(vel_ind)
 
+        # Ensure dataset configuration is well-aligned with requirements
+        self._run_dataset_checks()
+
     def __len__(self):
         # Do not yield a value for the last time in the dataset since there
         # is no future data
@@ -278,6 +291,25 @@ class ERA5Dataset(torch.utils.data.Dataset):
         y_grid = y.permute(0, 3, 1, 2)
 
         return x_grid, y_grid
+
+    def _run_dataset_checks(self):
+        # Check if grid includes poles
+        has_poles = torch.any(
+            torch.isclose(
+                torch.abs(self.lat_rad_grid),
+                torch.tensor(torch.pi, dtype=self.lat_rad_grid.dtype),
+            )
+        )
+        assert not has_poles, "Grid with poles unsupported!"
+
+        # Make sure latitude and longitude are in input file
+        assert (
+            self.cfg.features.input.constants[-2] == "latitude"
+        ), "Latitude must be the second-to-last feature in constants!"
+
+        assert (
+            self.cfg.features.input.constants[-1] == "longitude"
+        ), "Latitude must be the last feature in constants!"
 
     def _prepare_normalization(self, ds_input, ds_output):
         """
@@ -425,3 +457,21 @@ class ERA5Dataset(torch.utils.data.Dataset):
         if len(forcings) > 0:
             return torch.cat(forcings, dim=-1)
         return
+
+    def _compute_geometric_constants(self):
+        # Approximate distances using Haversine formula
+        # This can be later improved for better approximation close to the poles
+        R = 6371  # Average earth radius in km
+
+        # Compute distance between latitude points
+        dlon = torch.diff(self.lon)[0]
+        distance_lon_inv = 1.0 / (
+            2
+            * torch.arcsin(torch.cos(self.lat_rad_grid) ** 2 * torch.sin(dlon / 2))
+            * R
+        )
+
+        # Normalize using z-score
+        distance_lon_mean = torch.mean(distance_lon_inv)
+        distance_lon_std = torch.std(distance_lon_inv)
+        self.d_lon_inv = (distance_lon_inv - distance_lon_mean) / distance_lon_std
