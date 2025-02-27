@@ -1,7 +1,6 @@
 """Normalization and denormalization functions."""
 
 import torch
-import numpy
 
 
 def normalize_standard(data, mean, std):

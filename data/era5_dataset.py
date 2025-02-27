@@ -78,6 +78,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         # Get the number of additional time instances needed in data for autoregression
         hours = time_resolution * (self.forecast_steps)
         time_delta = timedelta(hours=hours)
+        time_delta = numpy.timedelta64(int(time_delta.total_seconds()), 's')
 
         # Convert end_date to a datetime object and adjust end date
         if end_date is not None:

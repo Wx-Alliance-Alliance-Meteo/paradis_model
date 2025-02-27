@@ -1,7 +1,6 @@
 import re
 
 import numpy
-import torch
 from utils.normalization import (
     denormalize_precipitation,
     denormalize_humidity,
