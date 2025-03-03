@@ -1,9 +1,9 @@
 #!/bin/bash -l
 
-#SBATCH --export=USER,LOGNAME,HOME,MAIL,PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-#SBATCH --job-name=test_rk4_fe
+#SBATCH --job-name=compare_rk4_fe
 #SBATCH --output=./testoutput-vicky/%x-%j.out
-#SBATCH --error=./testoutput-vicky/%x-%j.err                       # jobname-jobid.err naming
+#SBATCH --error=./testoutput-vicky/%x-%j.err
+#SBATCH --export=USER,LOGNAME,HOME,MAIL,PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 #SBATCH --account=eccc_mrd__gpu_a100
 #SBATCH --partition=gpu_a100                         # For A100 GPUs on GPSC7, use gpu_a100 partition name
 #SBATCH --time=0-20:00:00
@@ -17,11 +17,11 @@ nvidia-smi
 # activate conda env
 conda activate /home/cap003/hall5/software/miniconda3/envs/gatmosphere
 
-start_date="2018-01-01" 
+start_date="2010-01-01" 
 end_date="2019-12-31" 
 val_start="1979-01-01"
 val_end="1980-12-31"
-max_epoch=10
+max_epoch=500
 forecast_steps=1
 initial_LR=1.0e-3
 scheduler="reduced_lr"
@@ -33,16 +33,16 @@ scheduler_min_lr=1.e-7
 num_workers=8
 num_gpu=2
 hidden_multiplier=4
-integrtor=fe
+integrator="fe"
 train_dt=21600
 compile=false
 batch_size=64
-num_substeps=1
-
+num_substeps=6
+early_stop=false
 
 output_dir="./testoutput-vicky/compare_rk4_fe"
 mkdir -p $output_dir
-output_file=${integrator}_from_${start_date}_to_${end_date}_${num_workers}_num_worker_${forecast_steps}_forecast_step_traindt_${train_dt}_${num_gpu}_gpu_${hidden_multiplier}_hidden_multiplier_${max_epoch}_max_epoch_no_early_stopping.txt
+output_file=${integrator}_from_${start_date}_to_${end_date}_${num_workers}_num_worker_traindt_${train_dt}_with_${num_substeps}_substeps_${hidden_multiplier}_hidden_multiplier_${max_epoch}_max_epoch.txt
 
 echo $output_file 
 echo "
@@ -88,8 +88,7 @@ srun python train.py \
     	training.parameters.scheduler.min_lr=$scheduler_min_lr \
 	compute.num_devices=$num_gpu \
 	model.hidden_multiplier=$hidden_multiplier \
-	compute.batch_size=$batch_size
-	> ${output_dir}/${output_file}
+	compute.batch_size=$batch_size > ${output_dir}/${output_file}
 
 
 
