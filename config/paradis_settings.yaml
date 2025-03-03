@@ -19,7 +19,7 @@ compute:
   batch_size: 64                   # Number of samples per batch
   num_workers: 8                   # Number of parallel processes for data preloading
   compile: true                    # Whether to compile the model
-  integrator: fe
+  integrator: "fe"
 
 # Ensemble training/forecasting
 ensemble:

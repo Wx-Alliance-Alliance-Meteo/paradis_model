@@ -180,8 +180,8 @@ def plot_forecast_map(
         output_plot = output_plot / g
         true_plot = true_plot / g
         cmap = "viridis"
-        vmax = numpy.max([numpy.max(output_plot), numpy.max(true_plot)])
-        vmin = numpy.min([numpy.min(output_plot), numpy.min(true_plot)])
+        vmax = 5900 #numpy.max([numpy.max(output_plot), numpy.max(true_plot)])
+        vmin = 4900 #numpy.min([numpy.min(output_plot), numpy.min(true_plot)])
         levels = numpy.linspace(vmin, vmax, 50)
         clabel = "Geopotential Height [m]"
 

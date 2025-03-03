@@ -369,6 +369,45 @@ class Paradis(nn.Module):
         # Integrator method 
         self.integrator = cfg.compute.integrator 
 
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+
+        # Extract lat/lon from static features (last 2 channels)
+        x_static = x[:, self.dynamic_channels :]
+        lat_grid = x_static[:, -2, :, :]
+        lon_grid = x_static[:, -1, :, :]
+
+        # Project features to latent space
+        z = self.input_proj(x)
+
+        # Keep a copy for the residual projection
+        z0 = z.clone()
+
+        # Compute advection and diffusion-reaction
+        for i in range(self.num_substeps):
+            # Advect the features in latent space using a Semi-Lagrangian step
+            z_adv = self.advection(z, lat_grid, lon_grid, self.dt)
+            
+            if self.integrator == "fe": 
+            #    # Compute the diffusion residual
+                dz = self.diffusion_reaction(z_adv)
+            elif self.integrator == "rk4":
+                # Compute the diffusion residual with RK4
+                k1 = self.diffusion_reaction(z_adv)
+                k1y = z_adv + self.dt/2 * k1
+                k2 = self.diffusion_reaction(k1y)
+                k2y =  z_adv + self.dt/2 * k2
+                k3 = self.diffusion_reaction(k2y)
+                k3y =  z_adv + self.dt * k3
+                k4 = self.diffusion_reaction(k3y)
+                dz = 1./6. *(k1 + 2*k2 + 2*k3 + k4)
+
+            # Update the latent space features
+            z += z_adv + self.dt * dz
+
+        # Return a scaled residual formulation
+        return x[:, : self.num_common_features] + self.output_proj(z - z0)
+'''
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         # Extract lat/lon from static features (last 2 channels)
@@ -407,3 +446,4 @@ class Paradis(nn.Module):
 
         # Return a scaled residual formulation
         return x[:, : self.num_common_features] + self.output_proj(z - z0)
+    '''
