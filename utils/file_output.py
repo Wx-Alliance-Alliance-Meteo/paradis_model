@@ -40,7 +40,7 @@ def save_results_to_zarr(
     if ind == 0:
         # Prepare constant variables
         con_dims = ["latitude", "longitude"]
-        for i, feature in enumerate(constant_vars):
+        for i, feature in enumerate(dataset.ds_constants.data_vars):
             if feature in con_dims:
                 continue
             data_vars[feature] = (con_dims, dataset.ds_constants[feature].data)
