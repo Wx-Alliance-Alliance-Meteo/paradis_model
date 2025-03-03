@@ -32,13 +32,14 @@ forecast_inf=forecast_with_${method}_train_${train_dt}_forecast_${forecast_dt}s_
 echo $forecast_inf 
 
 python forecast.py \
-        model.checkpoint_path=/home/siw001/hall6/paradis_model_fe/logs/lightning_logs/version_fe_8yr_6hr_1step_500epoch/checkpoints/best.ckpt \
-        forecast.start_date=${forecast_start_date} \
-        model.forecast_steps=${forecast_steps} \
-        model.base_dt=${forecast_dt} \
-        forecast.output_frequency=${output_freq} \
-        dataset.time_resolution=${forecast_data_time_resol} \
+        model.checkpoint_path=/home/siw001/hall6/paradis_model_rk4/logs/lightning_logs/version_3745073/checkpoints/best.ckpt \
         --config-name=paradis_settings_forecast
+#        forecast.start_date=${forecast_start_date} \
+#        model.forecast_steps=${forecast_steps} \
+#        model.base_dt=${forecast_dt} \
+#        forecast.output_frequency=${output_freq} \
+#        dataset.time_resolution=${forecast_data_time_resol} \
+#        --config-name=paradis_settings_forecast
 
 #logs/lightning_logs/version_rk4_8yr_${train_dt}_1step_forcing_500epoch/checkpoints/best.ckpt 
 
