@@ -4,9 +4,160 @@ import torch
 import time
 from torch import nn
 
-from model.clp_block import CLP
-from model.clp_variational import VariationalCLP
 from model.padding import GeoCyclicPadding
+
+
+class CLPBlock(nn.Module):
+    """Convolutional Layer Processor block."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        mesh_size: tuple,
+        kernel_size: int = 3,
+        activation: nn.Module = nn.SiLU,
+        double_conv: bool = False,
+        pointwise_conv: bool = False,
+    ):
+        super().__init__()
+
+        # First convolution block
+        intermediate_dim = input_dim if double_conv else output_dim
+        layers = [
+            GeoCyclicPadding(kernel_size // 2),
+            nn.Conv2d(input_dim, intermediate_dim, kernel_size=kernel_size),
+            nn.LayerNorm([intermediate_dim, mesh_size[0], mesh_size[1]]),
+            activation(),
+        ]
+
+        # Optional pointwise convolutions for additional channel mixing
+        if pointwise_conv:
+            expanded_dim = 2 * intermediate_dim
+            layers.extend(
+                [
+                    nn.Conv2d(intermediate_dim, expanded_dim, kernel_size=1),
+                    activation(),
+                    nn.Conv2d(expanded_dim, intermediate_dim, kernel_size=1),
+                ]
+            )
+
+        # Optional second convolution block
+        if double_conv:
+            layers.extend(
+                [
+                    GeoCyclicPadding(kernel_size // 2),
+                    nn.Conv2d(intermediate_dim, output_dim, kernel_size=kernel_size),
+                    activation(),
+                ]
+            )
+
+        self.layers = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.layers(x)
+
+
+# Helper function
+def CLP(
+    dim_in: int,
+    dim_out: int,
+    mesh_size: tuple,
+    kernel_size: int = 3,
+    activation: nn.Module = nn.SiLU,
+    pointwise_conv: bool = False,
+):
+    """Create a double-convolution CLP block."""
+    return CLPBlock(
+        dim_in,
+        dim_out,
+        mesh_size,
+        kernel_size,
+        activation,
+        double_conv=True,
+        pointwise_conv=True,
+    )
+
+
+# CLP processor with structured latent
+class VariationalCLP(nn.Module):
+    """Convolutional layer processor with variational latent space."""
+
+    def __init__(
+        self,
+        dim_in,
+        dim_out,
+        mesh_size,
+        kernel_size=3,
+        latent_dim=8,
+        activation=nn.SiLU,
+        expansion_factor=8,
+    ):
+        super().__init__()
+
+        self.latent_dim = latent_dim
+        self.expansion_factor = expansion_factor
+
+        # Encoder that produces pre latent
+        self.encoder = nn.Sequential(
+            CLPBlock(dim_in, dim_in, mesh_size),
+            nn.Conv2d(dim_in, 2 * latent_dim, kernel_size=1),  # project down
+        )
+
+        # Small projection up and down in latent
+        self.mu = nn.Sequential(
+            nn.Conv2d(latent_dim, self.expansion_factor * latent_dim, kernel_size=1),
+            nn.LayerNorm(
+                [self.expansion_factor * latent_dim, mesh_size[0], mesh_size[1]]
+            ),
+            activation(),
+            nn.Conv2d(self.expansion_factor * latent_dim, latent_dim, kernel_size=1),
+        )
+
+        self.logvar = nn.Sequential(
+            nn.Conv2d(latent_dim, self.expansion_factor * latent_dim, kernel_size=1),
+            nn.LayerNorm(
+                [self.expansion_factor * latent_dim, mesh_size[0], mesh_size[1]]
+            ),
+            activation(),
+            nn.Conv2d(self.expansion_factor * latent_dim, latent_dim, kernel_size=1),
+        )
+
+        # Decoder that takes the concat of the logvar and mu
+        self.decoder = nn.Sequential(
+            nn.Conv2d(latent_dim, dim_in, kernel_size=1),  # project up
+            CLPBlock(dim_in, dim_in, mesh_size),
+            GeoCyclicPadding(kernel_size // 2),
+            nn.Conv2d(dim_in, dim_out, kernel_size=kernel_size),
+        )
+
+    def reparameterize(self, mean, log_var):
+        """Reparameterization trick to sample from N(mean, var) while remaining differentiable."""
+        std = torch.exp(0.5 * log_var)
+        eps = torch.randn_like(std)
+        return mean + eps * std
+
+    def forward(self, x, num_samples=1):
+        batch_size = x.shape[0]
+
+        pre_latent = self.encoder(x)
+
+        # Split into two groups for mu and logvar networks
+        pre_mu, pre_logvar = torch.chunk(pre_latent, 2, dim=1)
+
+        # Get distribution parameters from separate networks
+        mean = self.mu(pre_mu)
+        log_var = self.logvar(pre_logvar)
+
+        # Calculate KL divergence loss against normal
+        kl_loss = -0.5 * torch.sum(1 + log_var - mean.pow(2) - log_var.exp(), dim=1)
+        kl_loss = kl_loss.mean()  # Average over batch
+
+        # Sample from latent and decode to velocity
+        z = self.reparameterize(mean, log_var)
+        output = self.decoder(z)
+
+        return output, kl_loss
 
 
 class NeuralSemiLagrangian(nn.Module):
@@ -218,7 +369,6 @@ class Paradis(nn.Module):
         # Integrator method 
         self.integrator = cfg.compute.integrator 
 
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         # Extract lat/lon from static features (last 2 channels)
@@ -236,9 +386,10 @@ class Paradis(nn.Module):
         for i in range(self.num_substeps):
             # Advect the features in latent space using a Semi-Lagrangian step
             z_adv = self.advection(z, lat_grid, lon_grid, self.dt)
+
             
-            if self.integrator == "fe": 
-            #    # Compute the diffusion residual
+            if self.integrator == "fe":
+                # Compute the diffusion residual with FE
                 dz = self.diffusion_reaction(z_adv)
             elif self.integrator == "rk4":
                 # Compute the diffusion residual with RK4
@@ -250,7 +401,7 @@ class Paradis(nn.Module):
                 k3y =  z_adv + self.dt * k3
                 k4 = self.diffusion_reaction(k3y)
                 dz = 1./6. *(k1 + 2*k2 + 2*k3 + k4)
-
+           
             # Update the latent space features
             z += z_adv + self.dt * dz
 

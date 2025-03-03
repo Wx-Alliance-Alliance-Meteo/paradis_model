@@ -1,8 +1,8 @@
 # Model architecture
 model:
-  hidden_multiplier: 4             # Scale the hidden dimension with the number of input channels (hidden_dim = hidden_multiplier * num_input_channels)
-  forecast_steps: 6                # Number of autoregressive steps for forecasting
-  base_dt: 21600                   # 6 hours * 3600 seconds
+  hidden_multiplier: 4             # Scale the dynamic inputs in hidden dimension with the number of input channels
+  forecast_steps: 1                # Number of autoregressive steps
+  base_dt: 21600                   # Data time resolution in seconds (6 hours * 3600 seconds)
   checkpoint_path: null            # Path to model checkpoint for loading pre-trained weights
   num_substeps: 2                  # Number of time substeps
 
@@ -35,6 +35,11 @@ forecast:
 
 # Training parameters
 training:
+  max_epochs: 500                  # Maximum number of epochs the training is allowed
+  gradient_clip_val: -1            # Gradient clipping value, set to -1 to disable
+  print_losses: true               # Manually print losses to screen (removes progress bar)
+  log_every_n_steps: 50            # Write to log every n steps
+
   dataset:
     start_date: 2010-01-01         # Start date for the training dataset (YYYY-MM-DD)
     end_date: 2019-12-31           # End date for the training dataset (YYYY-MM-DD)
@@ -43,40 +48,42 @@ training:
     start_date: 2008-01-01         # Start date for the validation dataset (YYYY-MM-DD)
     end_date: 2009-12-31           # End date for the validation dataset (YYYY-MM-DD)
 
-  parameters:
+  optimizer:
     lr: 1.0e-3                     # Learning rate (LR) for the optimizer
     weight_decay: 1.e-5            # Weight decay coefficient for regularization
-    gradient_clip_val: -1          # Gradient clipping value, set to -1 to disable
-    max_epochs: 100                # Maximum number of epochs the training is allowed
-    print_losses: true             # Manually print losses to screen (removes progress bar)
-    log_every_n_steps: 50          # Write to log every n steps
-    early_stopping:
-      enabled: false               # Whether to use early stopping
-      patience: 8                  # Number of epochs with no improvement after which training will stop
+    beta1: 0.9                     # Exponential decay rate for the first moment (gradient) estimates
+    beta2: 0.95                    # Exponential decay rate for the second moment (squared gradient) estimates
 
-    loss_function:
-      delta_loss: 1                # Threshold parameter for loss
+  early_stopping:
+    enabled: false                 # Whether to use early stopping
+    patience: 8                    # Number of epochs with no improvement after which training will stop
 
-    # Scheduler configuration - Choose ONE of the following scheduler types by
-    # commenting/uncommenting the appropriate section:
+  loss_function:
+    type: "mse"                    # mse or reversed_huber loss function
+    delta_loss: 1.0                # Threshold parameter for huber loss
 
-    # 1. OneCycleLR
-    # scheduler:
-    #  type: "one_cycle"          # OneCycleLR scheduler
-    #  warmup_pct_start: 0.       # Percentage of training used for warmup phase
-    #  lr_div_factor: 1           # Initial learning rate = max_lr/lr_div_factor
-    #  lr_final_div: 100          # Final learning rate = initial_lr/lr_final_div_factor
+  checkpointing:
+    enabled: true                  # Enable checkpointing
 
-    # 2. ReduceLROnPlateau
-    scheduler:
-      type: "reduce_lr"            # ReduceLROnPlateau scheduler
-      factor: 0.75                 # Factor by which to reduce learning rate
-      patience: 3                  # Number of epochs with no improvement after which LR will be reduced
-      threshold: 1.e-4
-      threshold_mode: "rel"
-      min_lr: 1.e-7                # Lower bound on the learning rate
-  loss_function: "mse"            # mse or reversed_huber loss function
-  
+  # Scheduler configuration - Choose ONE of the following scheduler types by
+  # commenting/uncommenting the appropriate section:
+
+  # 1. OneCycleLR
+  scheduler:
+    type: "one_cycle"              # OneCycleLR scheduler
+    warmup_pct_start: 0.           # Percentage of training used for warmup phase
+    lr_div_factor: 1               # Initial learning rate = max_lr/lr_div_factor
+    lr_final_div: 100              # Final learning rate = initial_lr/lr_final_div_factor
+
+  # 2. ReduceLROnPlateau
+  # scheduler:
+  #   type: "reduce_lr"            # ReduceLROnPlateau scheduler
+  #   factor: 0.75                 # Factor by which to reduce learning rate
+  #   patience: 3                  # Number of epochs with no improvement after which LR will be reduced
+  #   threshold: 1.e-4
+  #   threshold_mode: "rel"
+  #   min_lr: 1.e-7                # Lower bound on the learning rate
+
   variable_loss_weights:
     atmospheric:
       wind_x: 1.0
@@ -142,6 +149,7 @@ features:
       - land_sea_mask
       - slope_of_sub_gridscale_orography
       - standard_deviation_of_orography
+      - lon_spacing
       - latitude
       - longitude
 

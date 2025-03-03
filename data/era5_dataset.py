@@ -12,6 +12,11 @@ import xarray
 
 
 from data.forcings import time_forcings, toa_radiation
+from utils.normalization import (
+    normalize_standard,
+    normalize_humidity,
+    normalize_precipitation,
+)
 
 
 class ERA5Dataset(torch.utils.data.Dataset):
@@ -27,6 +32,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         cfg: DictConfig = {},
     ) -> None:
 
+        self.cfg = cfg
         features_cfg = cfg.features
         self.eps = 1e-12
         self.root_dir = root_dir
@@ -72,7 +78,8 @@ class ERA5Dataset(torch.utils.data.Dataset):
         # Get the number of additional time instances needed in data for autoregression
         hours = time_resolution * (self.forecast_steps)
         time_delta = timedelta(hours=hours)
-        
+        time_delta = numpy.timedelta64(int(time_delta.total_seconds()), 's')
+
         # Convert end_date to a datetime object and adjust end date
         if end_date is not None:
 
@@ -93,10 +100,11 @@ class ERA5Dataset(torch.utils.data.Dataset):
         ds = ds.isel(time=slice(None, None, ds_time_skip))
 
         # Extract latitude and longitude to build the graph
-        self.lat = ds.latitude.values
-        self.lon = ds.longitude.values
+        self.lat = torch.from_numpy(ds.latitude.values)
+        self.lon = torch.from_numpy(ds.longitude.values)
         self.lat_size = len(self.lat)
         self.lon_size = len(self.lon)
+        self.pressure_levels = features_cfg.pressure_levels
 
         # The number of time instances in the dataset represents its length
         self.time = ds.time.values
@@ -134,9 +142,11 @@ class ERA5Dataset(torch.utils.data.Dataset):
         )
 
         # Convert lat/lon to radians
-        lat_rad = torch.from_numpy(numpy.deg2rad(self.lat)).to(self.dtype)
-        lon_rad = torch.from_numpy(numpy.deg2rad(self.lon)).to(self.dtype)
-        lat_rad_grid, lon_rad_grid = torch.meshgrid(lat_rad, lon_rad, indexing="ij")
+        lat_rad = torch.deg2rad(self.lat).to(self.dtype)
+        lon_rad = torch.deg2rad(self.lon).to(self.dtype)
+        self.lat_rad_grid, self.lon_rad_grid = torch.meshgrid(
+            lat_rad, lon_rad, indexing="ij"
+        )
 
         # Use zscore to normalize the following variables
         normalize_const_vars = {
@@ -145,11 +155,9 @@ class ERA5Dataset(torch.utils.data.Dataset):
             "standard_deviation_of_orography",
         }
 
-        normalized_constants = []
+        # Extract pre-processed constants that require normalization
+        pre_constants = []
         for var in features_cfg.input.constants:
-            # Skip latitude and longitude, as they are always added in radians
-            if var == "latitude" or var == "longitude":
-                continue
 
             # Normalize constants and keep in memory
             if var in normalize_const_vars:
@@ -158,18 +166,29 @@ class ERA5Dataset(torch.utils.data.Dataset):
                     - ds_constants[var].attrs["mean"]
                 ) / ds_constants[var].attrs["std"]
 
-                normalized_constants.append(array)
+                pre_constants.append(array)
 
         # Get land-sea mask (no normalization needed)
-        land_sea_mask = torch.from_numpy(ds_constants["land_sea_mask"].data).to(
-            self.dtype
+        pre_constants.append(
+            torch.from_numpy(ds_constants["land_sea_mask"].data).to(self.dtype)
         )
+
+        # Include the distance variation of two longitude points along the latitude direction
+        self._compute_geometric_constants()
+
+        post_constants = []
+        for feature in ["lon_spacing", "latitude", "longitude"]:
+            if feature in features_cfg.input.constants:
+                if feature == "lon_spacing":
+                    post_constants.append(self.d_lon_inv)
+                if feature == "latitude":
+                    post_constants.append(self.lat_rad_grid)
+                if feature == "longitude":
+                    post_constants.append(self.lon_rad_grid)
 
         # Stack all constant features together
         self.constant_data = (
-            torch.stack(
-                [*normalized_constants, land_sea_mask, lat_rad_grid, lon_rad_grid]
-            )
+            torch.stack([*pre_constants, *post_constants])
             .permute(1, 2, 0)
             .reshape(self.lat_size, self.lon_size, -1)
             .unsqueeze(0)
@@ -232,6 +251,9 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
         self.vel_ind = torch.tensor(vel_ind)
 
+        # Ensure dataset configuration is well-aligned with requirements
+        self._run_dataset_checks()
+
     def __len__(self):
         # Do not yield a value for the last time in the dataset since there
         # is no future data
@@ -274,6 +296,25 @@ class ERA5Dataset(torch.utils.data.Dataset):
         y_grid = y.permute(0, 3, 1, 2)
 
         return x_grid, y_grid
+
+    def _run_dataset_checks(self):
+        # Check if grid includes poles
+        has_poles = torch.any(
+            torch.isclose(
+                torch.abs(self.lat_rad_grid),
+                torch.tensor(torch.pi, dtype=self.lat_rad_grid.dtype),
+            )
+        )
+        assert not has_poles, "Grid with poles unsupported!"
+
+        # Make sure latitude and longitude are in input file
+        assert (
+            self.cfg.features.input.constants[-2] == "latitude"
+        ), "Latitude must be the second-to-last feature in constants!"
+
+        assert (
+            self.cfg.features.input.constants[-1] == "longitude"
+        ), "Latitude must be the last feature in constants!"
 
     def _prepare_normalization(self, ds_input, ds_output):
         """
@@ -365,29 +406,29 @@ class ERA5Dataset(torch.utils.data.Dataset):
     def _apply_normalization(self, input_data, output_data):
 
         # Apply custom normalizations to input
-        input_data[..., self.norm_precip_in] = self._normalize_precipitation(
+        input_data[..., self.norm_precip_in] = normalize_precipitation(
             input_data[..., self.norm_precip_in]
         )
-        input_data[..., self.norm_humidity_in] = self._normalize_humidity(
-            input_data[..., self.norm_humidity_in]
+        input_data[..., self.norm_humidity_in] = normalize_humidity(
+            input_data[..., self.norm_humidity_in], self.q_min, self.q_max, self.eps
         )
 
         # Apply custom normalizations to output
-        output_data[..., self.norm_precip_out] = self._normalize_precipitation(
+        output_data[..., self.norm_precip_out] = normalize_precipitation(
             output_data[..., self.norm_precip_out]
         )
-        output_data[..., self.norm_humidity_out] = self._normalize_humidity(
-            output_data[..., self.norm_humidity_out]
+        output_data[..., self.norm_humidity_out] = normalize_humidity(
+            output_data[..., self.norm_humidity_out], self.q_min, self.q_max, self.eps
         )
 
         # Apply standard normalizations to input and output
-        input_data[..., self.norm_zscore_in] = self._normalize_standard(
+        input_data[..., self.norm_zscore_in] = normalize_standard(
             input_data[..., self.norm_zscore_in],
             self.input_mean,
             self.input_std,
         )
 
-        output_data[..., self.norm_zscore_out] = self._normalize_standard(
+        output_data[..., self.norm_zscore_out] = normalize_standard(
             output_data[..., self.norm_zscore_out], self.output_mean, self.output_std
         )
 
@@ -422,69 +463,20 @@ class ERA5Dataset(torch.utils.data.Dataset):
             return torch.cat(forcings, dim=-1)
         return
 
-    def _normalize_standard(self, input_data, mean, std):
-        return (input_data - mean) / std
+    def _compute_geometric_constants(self):
+        # Approximate distances using Haversine formula
+        # This can be later improved for better approximation close to the poles
+        R = 6371  # Average earth radius in km
 
-    def _denormalize_standard(self, norm_data, mean, std):
-        return norm_data * std + mean
-
-    def _normalize_humidity(self, data: torch.tensor) -> torch.tensor:
-        """Normalize specific humidity using physically-motivated logarithmic transform.
-
-        This normalization accounts for the exponential variation of specific humidity
-        with altitude, mapping values from ~10^-5 (upper atmosphere) to ~10^-2 (surface)
-        onto a normalized range while preserving relative variations at all scales.
-
-        Args:
-            data: Specific humidity data in kg/kg
-        Returns:
-            Normalized specific humidity data
-        """
-        # Apply normalization
-        q_norm = (
-            torch.log(torch.clip(data, 0, self.q_max) + self.eps)
-            - torch.log(self.q_min)
-        ) / (torch.log(self.q_max) - torch.log(self.q_min))
-
-        return q_norm
-
-    def _denormalize_humidity(self, data: torch.tensor) -> torch.tensor:
-        """Denormalize specific humidity data from normalized space back to kg/kg.
-
-        Args:
-            data: Normalized specific humidity data
-        Returns:
-            Specific humidity data in kg/kg
-        """
-
-        # Invert the normalization
-        q = (
-            torch.exp(
-                data * (torch.log(self.q_max) - torch.log(self.q_min))
-                + torch.log(self.q_min)
-            )
-            - self.eps
+        # Compute distance between latitude points
+        dlon = torch.diff(self.lon)[0]
+        distance_lon_inv = 1.0 / (
+            2
+            * torch.arcsin(torch.cos(self.lat_rad_grid) ** 2 * torch.sin(dlon / 2))
+            * R
         )
-        return torch.clip(q, 0, self.q_max)
 
-    def _normalize_precipitation(self, data: torch.tensor) -> torch.tensor:
-        """Normalize precipitation using logarithmic transform.
-
-        Args:
-            data: Precipitation data
-        Returns:
-            Normalized precipitation data
-        """
-        shift = 10
-        return torch.log(data + 1e-6) + shift
-
-    def _denormalize_precipitation(self, data: torch.tensor) -> torch.tensor:
-        """Denormalize precipitation data.
-
-        Args:
-            data: Normalized precipitation data
-        Returns:
-            Precipitation data in original scale
-        """
-        shift = 10
-        return torch.clip(torch.exp(data - shift) - 1e-6, min=0, max=None)
+        # Normalize using z-score
+        distance_lon_mean = torch.mean(distance_lon_inv)
+        distance_lon_std = torch.std(distance_lon_inv)
+        self.d_lon_inv = (distance_lon_inv - distance_lon_mean) / distance_lon_std

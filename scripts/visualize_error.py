@@ -10,75 +10,52 @@ base_path = "/home/cap003/hall6/weatherbench_raw/weatherbench_5.625deg_13level/"
 ds_paradis = xr.open_dataset(paradis_path, engine="zarr")
 ds_base = xr.open_mfdataset(base_path, engine="zarr")
 
-date = "2020-01-01"
-end_date = "2020-01-11"
+date = "2020-01-01T00:00:00"
+end_date = "2020-01-02"
 forecast_ind = 0
 
-ds_paradis = (
-    ds_paradis.sel(time=date).isel(prediction_timedelta=forecast_ind).sel(level=1000)
-)
-ds_base = (
-    ds_base.sel(time=slice(date, end_date)).isel(time=forecast_ind + 1).sel(level=1000)
-)
+ds_base = ds_base.sel(time=slice(date, end_date)).isel(time=forecast_ind + 1)
+ds_paradis = ds_paradis.sel(time=date).isel(prediction_timedelta=forecast_ind)
 
 # Get the latitude and longitude grid
 longitude, latitude = np.meshgrid(ds_base.longitude.values, ds_base.latitude.values)
 
-# Extract the values to plot
-temp_paradis = ds_paradis["2m_temperature"].values
-temp_base = ds_base["2m_temperature"].values.transpose()
+g_base = ds_base.sel(level=500)["geopotential"].values.transpose()
+g_para = ds_paradis.sel(level=500)["geopotential"].values
 
-geop_paradis =  ds_paradis["geopotential"].values 
-geop_base = ds_base["geopotential"].values.transpose()
+# Get a simple pointwise error
+error_paradis = g_para - g_base
 
-# Compute the error
-temp_error_paradis = temp_paradis - temp_base
-geop_error_paradis = geop_paradis - geop_base
-
-print("2m_temperature_error", np.mean(temp_error_paradis**2))
-print("geopotenetial_error", np.mean(geop_error_paradis**2))
+# Reduce value using RMSE adn MAE
+rmse_paradis = np.sqrt(np.mean(((error_paradis) / 10) ** 2))
+mae_paradis = np.mean(np.abs((error_paradis) / 10))
 
 fig, ax = plt.subplots(ncols=3, figsize=(18, 5))
+figs = [plt.figure(figsize=(8, 4)) for i in range(3)]
+ax = [fig.add_subplot() for fig in figs]
 
-vmax = np.max(temp_base)
-vmin = np.min(temp_base)
+vmax = np.max(g_base)
+vmin = np.min(g_base)
 
-ax[0].contourf(
-    longitude, latitude, temp_base, 100, cmap="RdYlBu_r", vmax=vmax, vmin=vmin
-)
-ax[1].contourf(
-    longitude, latitude, temp_paradis, 100, cmap="RdYlBu_r", vmax=vmax, vmin=vmin
-)
-contours = ax[2].contourf(longitude, latitude, temp_error_paradis, 100, cmap="hot_r")
+# Plot base results
+ax[0].contourf(longitude, latitude, g_base, 100, cmap="RdYlBu_r", vmax=vmax, vmin=vmin)
+
+# Plot PARADIS results
+ax[1].contourf(longitude, latitude, g_para, 100, cmap="RdYlBu_r", vmax=vmax, vmin=vmin)
+
+# Generate a pointwise error contour
+contours = ax[2].imshow(error_paradis, cmap="hot_r")
 plt.colorbar(contours)
 
-ax[0].set_title("ERA5")
-ax[1].set_title("PARADIS")
-ax[2].set_title("Error")
+ax[0].set_title("GZ500 ERA5")
+ax[1].set_title("GZ500 PARADIS")
+ax[2].set_title(f"GZ500 error")
 
 plt.tight_layout()
 
-fig.savefig("../testoutput-vicky/forecast_error_plot/2m_temperature_"+date+"_ind_"+ str(forecast_ind) +".png")
+for i, fig in enumerate(figs):
+    fig.savefig(f"gz500_{i}.png")
 
-# plot geopotential error
-fig, ax = plt.subplots(ncols=3, figsize=(18, 5))
-
-vmax = np.max(geop_base)
-vmin = np.min(geop_base)
-
-ax[0].contourf(
-    longitude, latitude, geop_base, 100, cmap="RdYlBu_r", vmax=vmax, vmin=vmin
-)
-ax[1].contourf(
-    longitude, latitude, geop_paradis, 100, cmap="RdYlBu_r", vmax=vmax, vmin=vmin
-)
-contours = ax[2].contourf(longitude, latitude, geop_error_paradis, 100, cmap="hot_r")
-plt.colorbar(contours)
-
-ax[0].set_title("ERA5")
-ax[1].set_title("PARADIS")
-ax[2].set_title("Error")
-
-plt.tight_layout()
-
-fig.savefig("../testoutput-vicky/forecast_error_plot/geopotential_500hPa_"+date+"_ind_"+ str(forecast_ind) +".png")
+# Show result to screen
+print("GZ500-RMSE-PARADIS", f"{rmse_paradis:.2f}m")
+print("GZ500-MAE-PARADIS", f"{mae_paradis:.2f}m")
