@@ -1,3 +1,5 @@
+import lightning as L
+
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks import ModelCheckpoint
 
@@ -16,25 +18,27 @@ def enable_callbacks(cfg):
             )
         )
 
-    # Keep the last 10 checkpoints and the top "best" checkpoint
-
     if cfg.training.checkpointing.enabled:
+        # Keep the last 10 checkpoints
         callbacks.append(
             ModelCheckpoint(
-                filename="{epoch}",  # Filename format for the checkpoints
-                monitor="train_loss",
-                save_top_k=10,  # Keep the last 10 checkpoints
-                save_last=True,  # Always save the most recent checkpoint
-                every_n_epochs=1,  # Save at the end of every epoch
+                filename="{epoch:02d}",
+                monitor="step",
+                mode="max",
+                save_top_k=10,
+                save_last=True,
+                every_n_epochs=1,
+                save_on_train_epoch_end=True,
             )
         )
 
+        # Keep only the best checkpoint
         callbacks.append(
             ModelCheckpoint(
                 filename="best",
                 monitor="val_loss",
                 mode="min",
-                save_top_k=1,  # Keep only the best checkpoint
+                save_top_k=1,
             )
         )
     return callbacks
