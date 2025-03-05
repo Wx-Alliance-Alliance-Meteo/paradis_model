@@ -3,15 +3,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Input the paths associated with the forecasts/reference datasets in weatherbench format
-paradis_path = "/home/siw001/hall6/paradis_model_rk4/results/fe_t6hr_f6hr_2018_1_1/forecast_result.zarr"
+paradis_path = "/home/siw001/hall6/paradis_model_rk4/results/forecast_result.zarr"
 base_path = "/home/cap003/hall6/weatherbench_raw/weatherbench_5.625deg_13level/"
 
 # Generate plots with forecast data
 ds_paradis = xr.open_dataset(paradis_path, engine="zarr")
 ds_base = xr.open_mfdataset(base_path, engine="zarr")
 
-date = "2020-01-01T00:00:00"
-end_date = "2020-01-02"
+date = "2021-01-01T00:00:00"
+end_date = "2021-01-02"
 forecast_ind = 0
 
 ds_base = ds_base.sel(time=slice(date, end_date)).isel(time=forecast_ind + 1)

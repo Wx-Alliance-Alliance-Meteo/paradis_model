@@ -16,23 +16,15 @@ nvidia-smi
 # activate conda env
 conda activate /home/cap003/hall5/software/miniconda3/envs/gatmosphere
 
-forecast_start_date="2018-01-01" 
-forecast_steps=6
-output_freq=1
-forecast_dt=21600
-num_gpu=2
-hidden_multiplier=4
 method=rk4
-train_dt=6hr
-forcing="forcing" 
-forecast_data_time_resol=6h
-
-forecast_inf=forecast_with_${method}_train_${train_dt}_forecast_${forecast_dt}s_${forcing}
-
-echo $forecast_inf 
+forecast_path="version_rk4_10yr_2substep_reduce_lr_300epoch"
+substep=6
+ 
 
 python forecast.py \
-        model.checkpoint_path=/home/siw001/hall6/paradis_model_rk4/logs/lightning_logs/version_3745073/checkpoints/best.ckpt \
+        model.checkpoint_path=/home/siw001/hall6/paradis_model_rk4/logs/lightning_logs/${forecast_path}/checkpoints/best.ckpt \
+        compute.integrator=$method \
+        model.num_substeps=$substep \
         --config-name=paradis_settings_forecast
 #        forecast.start_date=${forecast_start_date} \
 #        model.forecast_steps=${forecast_steps} \
