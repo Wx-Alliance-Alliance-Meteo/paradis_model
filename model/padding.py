@@ -25,21 +25,22 @@ class GeoCyclicPadding(torch.nn.Module):
         batch_size, channels, height, width = x.shape
         assert width % 2 == 0, "Number of longitude points must be even"
 
+        # For latitude padding, we need to rotate by 180° and account for longitude padding
+        middle_index = width // 2
+
+        # Apply 180° shift
+        top_padding = torch.roll(
+            x[:, :, : self.pad_width, :], shifts=middle_index, dims=3
+        )
+        bottom_padding = torch.roll(
+            x[:, :, -self.pad_width :, :], shifts=middle_index, dims=3
+        )
+        x = torch.cat([top_padding.flip(2), x, bottom_padding.flip(2)], dim=2)
+
         # Longitude periodic padding
         x_padded = torch.cat(
             [x[:, :, :, -self.pad_width :], x, x[:, :, :, : self.pad_width]], dim=3
         )
 
-        # For latitude padding, we need to rotate by 180° and account for longitude padding
-        middle_index = width // 2 + self.pad_width
-
-        # Apply 180° shift
-        top_padding = torch.roll(
-            x_padded[:, :, : self.pad_width, :], shifts=middle_index, dims=3
-        )
-        bottom_padding = torch.roll(
-            x_padded[:, :, -self.pad_width :, :], shifts=middle_index, dims=3
-        )
-
         # Combine padded regions
-        return torch.cat([top_padding.flip(2), x_padded, bottom_padding.flip(2)], dim=2)
+        return x_padded
