@@ -1,5 +1,8 @@
+import os
+
 import torch
 import lightning as L
+from omegaconf import OmegaConf
 
 
 def setup_system(cfg):
@@ -12,3 +15,12 @@ def setup_system(cfg):
         torch.set_float32_matmul_precision("medium")
     else:
         torch.set_float32_matmul_precision("high")
+
+
+def save_train_config(log_dir, cfg):
+
+    config_save_path = os.path.join(log_dir, "config.yaml")
+    os.makedirs(os.path.dirname(config_save_path), exist_ok=True)
+
+    with open(config_save_path, "w") as f:
+        f.write(OmegaConf.to_yaml(cfg))

@@ -2,14 +2,13 @@
 
 import logging
 import hydra
-import torch
 import lightning as L
 from omegaconf import DictConfig
 
 from trainer import LitParadis
 from data.datamodule import Era5DataModule
 from utils.callbacks import enable_callbacks
-from utils.system import setup_system
+from utils.system import setup_system, save_train_config
 
 
 # pylint: disable=E1120
@@ -48,6 +47,9 @@ def main(cfg: DictConfig):
         enable_model_summary=True,
         logger=True,
     )
+
+    # Keep track of configuration parameters in logging directory
+    save_train_config(trainer.logger.log_dir, cfg)
 
     # Train model
     trainer.fit(litmodel, datamodule=datamodule)
