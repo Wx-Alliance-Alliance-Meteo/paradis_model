@@ -25,6 +25,7 @@ python3.12 train.py \
     training.dataset.start_date=2010-01-01 \
     training.dataset.end_date=2019-12-31 \
     training.optimizer.lr=1e-3 \
+    training.scheduler.wsd.enabled=true
 
 
 PREV_CHECKPOINT="logs/lightning_logs/version_0/checkpoints/best.ckpt"
@@ -38,6 +39,7 @@ python3.12 train.py \
     training.dataset.end_date=2019-12-31 \
     training.optimizer.lr=1e-4 \
     model.forecast_steps=2 \
-    model.checkpoint_path=$PREV_CHECKPOINT
+    model.checkpoint_path=$PREV_CHECKPOINT \
+    training.scheduler.wsd.enabled=true
 
 echo "Training completed successfully!"

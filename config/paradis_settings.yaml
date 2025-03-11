@@ -20,6 +20,7 @@ compute:
   num_workers: 8                   # Number of parallel processes for data preloading
   compile: false                    # Whether to compile the model
   integrator: "fe"
+  operator_splitting: "lie"        #OS method 
 
 # Ensemble training/forecasting
 ensemble:
@@ -30,7 +31,7 @@ ensemble:
 forecast:
   start_date: 2020-01-01           # Time to generate forecast from (YYYY-MM-DD) or (YYYY-MM-DDTHH:MM:SS)
   end_date: null                   # OPTIONAL, for validation purposes (YYYY-MM-DD) or null
-  output_frequency: 2              # Store to file every output_frequency steps
+  output_frequency: 1              # Store to file every output_frequency steps
   generate_plots: true             # Generate a plot for each time instance
 
 # Training parameters
@@ -67,22 +68,29 @@ training:
 
   # Scheduler configuration - Choose ONE of the following scheduler types by
   # commenting/uncommenting the appropriate section:
-
-  # 1. OneCycleLR
-  #scheduler:
-    #  type: "one_cycle"              # OneCycleLR scheduler
-    # warmup_pct_start: 0.           # Percentage of training used for warmup phase
-    #lr_div_factor: 1               # Initial learning rate = max_lr/lr_div_factor
-    #lr_final_div: 100              # Final learning rate = initial_lr/lr_final_div_factor
-
-  # 2. ReduceLROnPlateau
   scheduler:
-     type: "reduce_lr"            # ReduceLROnPlateau scheduler
-     factor: 0.75                 # Factor by which to reduce learning rate
-     patience: 3                  # Number of epochs with no improvement after which LR will be reduced
-     threshold: 1.e-4
-     threshold_mode: "rel"
-     min_lr: 1.e-7                # Lower bound on the learning rate
+
+    # 1. OneCycleLR
+    one_cycle:
+      enabled: false
+      warmup_pct_start: 0.           # Percentage of training used for warmup phase
+      lr_div_factor: 1               # Initial learning rate = max_lr/lr_div_factor
+      lr_final_div: 100              # Final learning rate = initial_lr/lr_final_div_factor
+
+    # 2. ReduceLROnPlateau
+    reduce_lr:
+      enabled: false
+      factor: 0.75                   # Factor by which to reduce learning rate
+      patience: 3                    # Number of epochs with no improvement after which LR will be reduced
+      threshold: 1.e-4
+      threshold_mode: "rel"
+      min_lr: 1.e-7                  # Lower bound on the learning rate
+
+    # 3. LambdaLR with initial warmup, steady learning rate and final cooldown
+    wsd:
+      enabled: false
+      warmup_pct: 0.01
+      decay_pct: 0.2
 
   variable_loss_weights:
     atmospheric:

@@ -217,7 +217,8 @@ class Paradis(nn.Module):
 
         # Integrator method 
         self.integrator = cfg.compute.integrator 
-
+        # Operator splitting 
+        self.os = cfg.compute.operator_splitting
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
@@ -234,25 +235,49 @@ class Paradis(nn.Module):
 
         # Compute advection and diffusion-reaction
         for i in range(self.num_substeps):
-            # Advect the features in latent space using a Semi-Lagrangian step
-            z_adv = self.advection(z, lat_grid, lon_grid, self.dt)
-            
-            if self.integrator == "fe": 
-            #    # Compute the diffusion residual
-                dz = self.diffusion_reaction(z_adv)
-            elif self.integrator == "rk4":
-                # Compute the diffusion residual with RK4
-                k1 = self.diffusion_reaction(z_adv)
-                k1y = z_adv + self.dt/2 * k1
-                k2 = self.diffusion_reaction(k1y)
-                k2y =  z_adv + self.dt/2 * k2
-                k3 = self.diffusion_reaction(k2y)
-                k3y =  z_adv + self.dt * k3
-                k4 = self.diffusion_reaction(k3y)
-                dz = 1./6. *(k1 + 2*k2 + 2*k3 + k4)
+            if self.os == "lie":  
+                # Advect the features in latent space using a Semi-Lagrangian step
+                z_adv = self.advection(z, lat_grid, lon_grid, self.dt)
+                
+                if self.integrator == "fe": 
+                #    # Compute the diffusion residual
+                    dz = self.diffusion_reaction(z_adv)
+                elif self.integrator == "rk4":
+                    # Compute the diffusion residual with RK4
+                    k1 = self.diffusion_reaction(z_adv)
+                    k1y = z_adv + self.dt/2 * k1
+                    k2 = self.diffusion_reaction(k1y)
+                    k2y =  z_adv + self.dt/2 * k2
+                    k3 = self.diffusion_reaction(k2y)
+                    k3y =  z_adv + self.dt * k3
+                    k4 = self.diffusion_reaction(k3y)
+                    dz = 1./6. *(k1 + 2*k2 + 2*k3 + k4)
 
-            # Update the latent space features
-            z += z_adv + self.dt * dz
+                # Update the latent space features
+                z += z_adv + self.dt * dz
+            elif self.os == "strang": 
+                # Advect the features in latent space using a Semi-Lagrangian step
+                z_adv = self.advection(z, lat_grid, lon_grid, self.dt/2.)
+
+                if self.integrator == "fe":
+                #    # Compute the diffusion residual
+                    dz = self.diffusion_reaction(z_adv)
+                elif self.integrator == "rk4":
+                    # Compute the diffusion residual with RK4
+                    k1 = self.diffusion_reaction(z_adv)
+                    k1y = z_adv + self.dt/2 * k1
+                    k2 = self.diffusion_reaction(k1y)
+                    k2y =  z_adv + self.dt/2 * k2
+                    k3 = self.diffusion_reaction(k2y)
+                    k3y =  z_adv + self.dt * k3
+                    k4 = self.diffusion_reaction(k3y)
+                    dz = 1./6. *(k1 + 2*k2 + 2*k3 + k4)
+                
+                z += z_adv + self.dt * dz
+                # Advect the features in latent space using a Semi-Lagrangian step
+                z_adv = self.advection(z, lat_grid, lon_grid, self.dt/2.)
+                z += z_adv
+
 
         # Return a scaled residual formulation
         return x[:, : self.num_common_features] + self.output_proj(z - z0)
