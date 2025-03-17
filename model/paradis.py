@@ -107,21 +107,20 @@ class NeuralSemiLagrangian(nn.Module):
             lat_prime, lon_prime, lat_grid, lon_grid
         )
 
-        padded_width = hidden_features.size(-1) + 2 * self.padding
-        padded_height = hidden_features.size(-2) + 2 * self.padding
-
-        # Normalize grid to ensure consistency in interpolation
-        grid_x = (2 * (lon_dep - min_lon) / (max_lon - min_lon) - 1) * (
-            hidden_features.size(-1) / padded_width
-        )
-        grid_y = (2 * (lat_dep - min_lat) / (max_lat - min_lat) - 1) * (
-            hidden_features.size(-2) / padded_height
-        )
+        grid_x = 2 * (lon_dep - min_lon) / (max_lon - min_lon) - 1
+        grid_y = 2 * (lat_dep - min_lat) / (max_lat - min_lat) - 1
 
         # Apply periodicity for outside values along longitude set to [-1, 1]
         grid_x = torch.remainder(grid_x + 1, 2) - 1
 
-        # Mirror values outside of the range [-1, 1]
+        # Apply geocyclic longitude roll for values beyond +/-90 degrees latitude
+        geo_mask_left = grid_x <= 0
+        geo_mask_right = grid_x > 0
+        lat_mask_outer = torch.abs(grid_y) > 1
+        grid_x = torch.where(lat_mask_outer & geo_mask_left, grid_x + 1, grid_x)
+        grid_x = torch.where(lat_mask_outer & geo_mask_right, grid_x - 1, grid_x)
+
+        # Mirror values outside of the range [-1, 1] along the latitude direction
         grid_y = torch.where(grid_y < -1, -(2 + grid_y), grid_y)
         grid_y = torch.where(grid_y > 1, 2 - grid_y, grid_y)
 
@@ -129,6 +128,13 @@ class NeuralSemiLagrangian(nn.Module):
         # [batch, dynamic_channels, lat, lon] -> [batch*dynamic_channels, lat, lon]
         grid_x = grid_x.view(batch_size * self.hidden_dim, *grid_x.shape[-2:])
         grid_y = grid_y.view(batch_size * self.hidden_dim, *grid_y.shape[-2:])
+
+        # Apply padding and reshape hidden features
+        dynamic_padded = self.padding_interp(hidden_features)
+
+        # Make sure interpolation remains in right range after padding
+        grid_x = grid_x * hidden_features.size(-1) / dynamic_padded.size(-1)
+        grid_y = grid_y * hidden_features.size(-2) / dynamic_padded.size(-2)
 
         # Create interpolation grid
         grid = torch.stack([grid_x, grid_y], dim=-1)
@@ -178,21 +184,14 @@ class Paradis(nn.Module):
         self.variational = cfg.ensemble.enable
 
         # Get channel sizes
-        self.dynamic_channels = len(
-            cfg.features.input.get("atmospheric", [])
-        ) * num_levels + len(cfg.features.input.get("surface", []))
+        self.num_dynamic_channels = len(datamodule.dataset.dyn_input_features)
+        self.num_static_channels = len(cfg.features.input.constants)
 
-        self.static_channels = len(cfg.features.input.get("constants", [])) + len(
-            cfg.features.input.get("forcings", [])
-        )
-
-        hidden_dim = (
-            cfg.model.hidden_multiplier * self.dynamic_channels
-        ) + self.static_channels
+        hidden_dim = cfg.model.hidden_multiplier * self.num_dynamic_channels
 
         # Input projection for combined dynamic and static features
         self.input_proj = CLP(
-            self.dynamic_channels + self.static_channels, hidden_dim, mesh_size
+            self.num_dynamic_channels + self.num_static_channels, hidden_dim, mesh_size
         )
 
         # Rescale the time step to a fraction of a synoptic time scale
@@ -216,7 +215,7 @@ class Paradis(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         # Extract lat/lon from static features (last 2 channels)
-        x_static = x[:, self.dynamic_channels :]
+        x_static = x[:, self.num_dynamic_channels :]
         lat_grid = x_static[:, -2, :, :]
         lon_grid = x_static[:, -1, :, :]
 
