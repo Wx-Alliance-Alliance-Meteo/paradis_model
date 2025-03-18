@@ -16,16 +16,22 @@ nvidia-smi
 # activate conda env
 conda activate /home/cap003/hall5/software/miniconda3/envs/gatmosphere
 
-method=rk4
-forecast_path="version_rk4_10yr_2substep_reduce_lr_300epoch"
-substep=6
- 
+method=fe
+os="lie"
+forecast_path="version_"${method}"_"${os}"_reduce_lr_10yr_300epoch"
+substep=1
+fstart_date=2022-01-01
+fend_date=2022-12-31
+forecast_steps=1 
 
 python forecast.py \
-        model.checkpoint_path=/home/siw001/hall6/paradis_model_rk4/logs/lightning_logs/${forecast_path}/checkpoints/best.ckpt \
+        model.checkpoint_path=/home/siw001/hall6/paradis_model_os/logs/lightning_logs/${forecast_path}/checkpoints/best.ckpt \
         compute.integrator=$method \
+        compute.operator_splitting=$os \
         model.num_substeps=$substep \
-        --config-name=paradis_settings_forecast
+        forecast.start_date=$fstart_date\
+        forecast.end_date=$fend_date \
+        model.forecast_steps=$forecast_steps
 #        forecast.start_date=${forecast_start_date} \
 #        model.forecast_steps=${forecast_steps} \
 #        model.base_dt=${forecast_dt} \
