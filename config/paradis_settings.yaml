@@ -5,6 +5,7 @@ model:
   base_dt: 21600                   # Data time resolution in seconds (6 hours * 3600 seconds)
   checkpoint_path: null            # Path to model checkpoint for loading pre-trained weights
   num_substeps: 2                  # Number of time substeps
+  concat: true
 
 # Input dataset
 dataset:
@@ -29,7 +30,7 @@ ensemble:
 forecast:
   start_date: 2019-12-31           # Time to generate forecast from (YYYY-MM-DD) or (YYYY-MM-DDTHH:MM:SS)
   end_date: null                   # OPTIONAL, for validation purposes (YYYY-MM-DD) or null
-  output_frequency: 2              # Store to file every output_frequency steps
+  output_frequency: 1              # Store to file every output_frequency steps
   generate_plots: true             # Generate a plot for each time instance
 
 # Training parameters
@@ -88,7 +89,7 @@ training:
     # 3. LambdaLR with initial warmup, steady learning rate and final cooldown
     wsd:
       enabled: false
-      warmup_pct: 0.01
+      warmup_pct: 0.02
       decay_pct: 0.2
 
   variable_loss_weights:
@@ -144,12 +145,12 @@ features:
   input:
     atmospheric: ${features.base.atmospheric}
     surface: ${features.base.surface}
-    forcings:
-      - toa_incident_solar_radiation
-      - sin_time_of_day
-      - cos_time_of_day
-      - sin_year_progress
-      - cos_year_progress
+    forcings: []
+      # - toa_incident_solar_radiation
+      # - sin_time_of_day
+      # - cos_time_of_day
+      # - sin_year_progress
+      # - cos_year_progress
     constants:
       - geopotential_at_surface
       - land_sea_mask
