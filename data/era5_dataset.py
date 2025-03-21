@@ -39,6 +39,8 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.forecast_steps = forecast_steps
         self.dtype = dtype
         self.forcing_inputs = features_cfg.input.forcings
+        self.concat_input = cfg.model.concat
+        self.concat_len = 1 if self.concat_input else 0
 
         # Lazy open this dataset
         ds = xarray.open_mfdataset(
@@ -81,8 +83,13 @@ class ERA5Dataset(torch.utils.data.Dataset):
         time_delta = numpy.timedelta64(int(time_delta.total_seconds()), 's')
 
         # Convert end_date to a datetime object and adjust end date
-        if end_date is not None:
+        if self.concat_input:
+            start_date_dt = numpy.datetime64(start_date)
+            adjusted_start_date = start_date_dt - time_delta
+        else:
+            adjusted_start_date = start_date
 
+        if end_date is not None:
             if "T" not in end_date:
                 end_date += "T23:59:59"
 
@@ -93,7 +100,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
             adjusted_end_date = start_date_dt + time_delta
 
         # Select the time range needed to process this dataset
-        ds = ds.sel(time=slice(start_date, adjusted_end_date))
+        ds = ds.sel(time=slice(adjusted_start_date, adjusted_end_date))
 
         # Extract latitude and longitude to build the graph
         self.lat = torch.from_numpy(ds.latitude.values)
@@ -207,6 +214,11 @@ class ERA5Dataset(torch.utils.data.Dataset):
         ds_input = ds.sel(features=self.dyn_input_features)
         ds_output = ds.sel(features=self.dyn_output_features)
 
+        self.num_dyn_features_single = len(self.dyn_input_features)
+
+        if self.concat_input:
+            self.dyn_input_features *= 2
+
         # Fetch data
         self.ds_input = ds_input["data"]
         self.ds_output = ds_output["data"]
@@ -218,7 +230,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.num_in_features = (
             len(self.dyn_input_features)
             + self.constant_data.shape[-1]
-            + len(self.forcing_inputs)
+            # + len(self.forcing_inputs)
         )
 
         self.num_out_features = len(self.dyn_output_features)
@@ -233,15 +245,15 @@ class ERA5Dataset(torch.utils.data.Dataset):
     def __len__(self):
         # Do not yield a value for the last time in the dataset since there
         # is no future data
-        return self.length - self.forecast_steps
+        return self.length - self.forecast_steps - self.concat_len
 
     def __getitem__(self, ind: int):
 
         # Extract values from the requested indices
-        input_data = self.ds_input.isel(time=slice(ind, ind + self.forecast_steps))
+        input_data = self.ds_input.isel(time=slice(ind, ind + self.forecast_steps + self.concat_input))
 
         true_data = self.ds_output.isel(
-            time=slice(ind + 1, ind + self.forecast_steps + 1)
+            time=slice(ind + 1 + self.concat_input, ind + self.forecast_steps + 1 + self.concat_input)
         )
 
         # Load arrays into CPU memory
@@ -253,16 +265,22 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
         # Convert to tensors - data comes in [time, lat, lon, features]
         x = torch.tensor(input_data.data, dtype=self.dtype)
+
+        # Concatenate two time instances
+        if self.concat_input:
+            x = torch.cat([x[:-1], x[1:]], dim=-1)
+
         y = torch.tensor(true_data.data, dtype=self.dtype)
 
         # Apply normalizations
         self._apply_normalization(x, y)
 
         # Compute forcings
-        forcings = self._compute_forcings(input_data)
+        # forcings = self._compute_forcings(input_data)
 
-        if forcings is not None:
-            x = torch.cat([x, forcings], dim=-1)
+        # if forcings is not None:
+        #     x = torch.cat([x, forcings], dim=-1)
+
 
         # Add constant data to input
         x = torch.cat([x, self.constant_data], dim=-1)
@@ -319,33 +337,33 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
         # Process dynamic input features
         for i, feature in enumerate(self.dyn_input_features):
-            feature_name = re.sub(
-                r"_h\d+$", "", feature
-            )  # Remove height suffix (e.g., "_h10")
-            if feature_name == "total_precipitation_6hr":
-                self.norm_precip_in.append(i)
-            elif feature_name == "specific_humidity":
-                self.norm_humidity_in.append(i)
-            else:
-                self.norm_zscore_in.append(i)
+            # feature_name = re.sub(
+            #     r"_h\d+$", "", feature
+            # )  # Remove height suffix (e.g., "_h10")
+            # if feature_name == "total_precipitation_6hr":
+            #     self.norm_precip_in.append(i)
+            # elif feature_name == "specific_humidity":
+            #     self.norm_humidity_in.append(i)
+            # else:
+            self.norm_zscore_in.append(i)
 
         # Process dynamic output features
         for i, feature in enumerate(self.dyn_output_features):
-            feature_name = re.sub(
-                r"_h\d+$", "", feature
-            )  # Remove height suffix (e.g., "_h10")
-            if feature_name == "total_precipitation_6hr":
-                self.norm_precip_out.append(i)
-            elif feature_name == "specific_humidity":
-                self.norm_humidity_out.append(i)
-            else:
-                self.norm_zscore_out.append(i)
+            # feature_name = re.sub(
+                # r"_h\d+$", "", feature
+            # )  # Remove height suffix (e.g., "_h10")
+            # if feature_name == "total_precipitation_6hr":
+                # self.norm_precip_out.append(i)
+            # elif feature_name == "specific_humidity":
+                # self.norm_humidity_out.append(i)
+            # else:
+            self.norm_zscore_out.append(i)
 
         # Convert lists of indices to PyTorch tensors for efficient indexing
-        self.norm_precip_in = torch.tensor(self.norm_precip_in, dtype=torch.long)
-        self.norm_precip_out = torch.tensor(self.norm_precip_out, dtype=torch.long)
-        self.norm_humidity_in = torch.tensor(self.norm_humidity_in, dtype=torch.long)
-        self.norm_humidity_out = torch.tensor(self.norm_humidity_out, dtype=torch.long)
+        # self.norm_precip_in = torch.tensor(self.norm_precip_in, dtype=torch.long)
+        # self.norm_precip_out = torch.tensor(self.norm_precip_out, dtype=torch.long)
+        # self.norm_humidity_in = torch.tensor(self.norm_humidity_in, dtype=torch.long)
+        # self.norm_humidity_out = torch.tensor(self.norm_humidity_out, dtype=torch.long)
         self.norm_zscore_in = torch.tensor(self.norm_zscore_in, dtype=torch.long)
         self.norm_zscore_out = torch.tensor(self.norm_zscore_out, dtype=torch.long)
 
@@ -360,20 +378,24 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.output_max = torch.tensor(ds_output["max"].data, dtype=self.dtype)
         self.output_min = torch.tensor(ds_output["min"].data, dtype=self.dtype)
 
+
         # Keep only statistics of variables that require standard normalization
-        self.input_mean = self.input_mean[self.norm_zscore_in]
-        self.input_std = self.input_std[self.norm_zscore_in]
+        self.input_mean = self.input_mean[(self.norm_zscore_in % self.num_dyn_features_single)]
+        self.input_std = self.input_std[(self.norm_zscore_in % self.num_dyn_features_single)]
         self.output_mean = self.output_mean[self.norm_zscore_out]
         self.output_std = self.output_std[self.norm_zscore_out]
 
         # Prepare variables required in custom normalization
 
-        # Maximum and minimum specific humidity in dataset
-        self.q_max = torch.max(self.input_max[self.norm_humidity_in]).detach()
-        self.q_min = torch.min(self.input_min[self.norm_humidity_in]).detach()
+        # # Maximum and minimum specific humidity in dataset
+        # self.q_max = torch.max(self.input_max[self.norm_humidity_in]).detach()
+        # self.q_min = torch.min(self.input_min[self.norm_humidity_in]).detach()
 
-        if self.q_min < self.eps:
-            self.q_min = torch.tensor(self.eps).detach()
+        # if self.q_min < self.eps:
+        #     self.q_min = torch.tensor(self.eps).detach()
+
+        # self.q_max = torch.tensor([0.0])
+        # self.q_min = torch.tensor([0.0])
 
         # Extract the toa_radiation mean and std
         self.toa_rad_std = ds_input.attrs["toa_radiation_std"]
@@ -381,21 +403,21 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
     def _apply_normalization(self, input_data, output_data):
 
-        # Apply custom normalizations to input
-        input_data[..., self.norm_precip_in] = normalize_precipitation(
-            input_data[..., self.norm_precip_in]
-        )
-        input_data[..., self.norm_humidity_in] = normalize_humidity(
-            input_data[..., self.norm_humidity_in], self.q_min, self.q_max, self.eps
-        )
+        # # Apply custom normalizations to input
+        # input_data[..., self.norm_precip_in] = normalize_precipitation(
+        #     input_data[..., self.norm_precip_in]
+        # )
+        # input_data[..., self.norm_humidity_in] = normalize_humidity(
+        #     input_data[..., self.norm_humidity_in], self.q_min, self.q_max, self.eps
+        # )
 
-        # Apply custom normalizations to output
-        output_data[..., self.norm_precip_out] = normalize_precipitation(
-            output_data[..., self.norm_precip_out]
-        )
-        output_data[..., self.norm_humidity_out] = normalize_humidity(
-            output_data[..., self.norm_humidity_out], self.q_min, self.q_max, self.eps
-        )
+        # # Apply custom normalizations to output
+        # output_data[..., self.norm_precip_out] = normalize_precipitation(
+        #     output_data[..., self.norm_precip_out]
+        # )
+        # output_data[..., self.norm_humidity_out] = normalize_humidity(
+        #     output_data[..., self.norm_humidity_out], self.q_min, self.q_max, self.eps
+        # )
 
         # Apply standard normalizations to input and output
         input_data[..., self.norm_zscore_in] = normalize_standard(

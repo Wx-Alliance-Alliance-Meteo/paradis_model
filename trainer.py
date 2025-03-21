@@ -7,7 +7,7 @@ import logging
 import torch
 import lightning as L
 
-from model.paradis import Paradis
+from model.paradis_multilayer import Paradis
 from utils.loss import ParadisLoss
 
 

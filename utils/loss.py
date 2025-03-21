@@ -62,7 +62,7 @@ class ParadisLoss(torch.nn.Module):
         self.flip_geopotential_weights = False
 
         # Whether to apply latitude weights in loss integration
-        self.apply_latitude_weights = True
+        self.apply_latitude_weights = False
         self.lat_weights = self._compute_latitude_weights(lat_grid)
 
         # Create combined feature weights
@@ -72,6 +72,8 @@ class ParadisLoss(torch.nn.Module):
             self.loss_fn = torch.nn.MSELoss(reduction='none')
         elif loss_function == "reversed_huber":
             self.loss_fn = self._pseudo_reversed_huber_loss
+        elif loss_function == "huber":
+            self.loss_fn = torch.nn.HuberLoss(reduction='none')
 
     def _check_uniform_spacing(self, grid: torch.Tensor) -> float:
         """Check if grid has uniform spacing and return the delta.
@@ -118,20 +120,20 @@ class ParadisLoss(torch.nn.Module):
             torch.isclose(torch.abs(grid_lat), torch.tensor(90.0, dtype=grid_lat.dtype))
         )
 
-        if has_poles:
-            raise ValueError("Grid must not contain poles!")
-        else:
-            # Validate grid endpoints
-            if not (
-                torch.isclose(
-                    torch.abs(grid_lat.max()),
-                    (90.0 - delta_lat / 2) * torch.ones_like(grid_lat.max()),
-                )
-            ):
-                raise ValueError("Grid without poles must end at ±(90° - Δλ/2)")
+        # if has_poles:
+        #     raise ValueError("Grid must not contain poles!")
+        # else:
+        #     # Validate grid endpoints
+        #     if not (
+        #         torch.isclose(
+        #             torch.abs(grid_lat.max()),
+        #             (90.0 - delta_lat / 2) * torch.ones_like(grid_lat.max()),
+        #         )
+        #     ):
+        #         raise ValueError("Grid without poles must end at ±(90° - Δλ/2)")
 
-            # Simple cosine weights for grids without poles
-            weights = torch.cos(torch.deg2rad(grid_lat))
+        # Simple cosine weights for grids without poles
+        weights = torch.cos(torch.deg2rad(grid_lat))
 
         return weights / weights.mean()
 

@@ -186,34 +186,34 @@ def denormalize_datasets(ground_truth, output_forecast, dataset):
 
 def _denormalize_ground_truth(ground_truth, dataset):
     """Denormalize the ground truth data."""
-    ground_truth[:, :, dataset.norm_precip_in] = denormalize_precipitation(
-        ground_truth[:, :, dataset.norm_precip_in]
-    )
+    # ground_truth[:, :, dataset.norm_precip_in] = denormalize_precipitation(
+    #     ground_truth[:, :, dataset.norm_precip_in]
+    # )
 
-    ground_truth[:, :, dataset.norm_humidity_in] = denormalize_humidity(
-        ground_truth[:, :, dataset.norm_humidity_in],
-        dataset.q_min,
-        dataset.q_max,
-    )
+    # ground_truth[:, :, dataset.norm_humidity_in] = denormalize_humidity(
+    #     ground_truth[:, :, dataset.norm_humidity_in],
+    #     dataset.q_min,
+    #     dataset.q_max,
+    # )
 
-    ground_truth[:, :, dataset.norm_zscore_in] = denormalize_standard(
-        ground_truth[:, :, dataset.norm_zscore_in],
-        dataset.input_mean.view(-1, 1, 1),
-        dataset.input_std.view(-1, 1, 1),
+    ground_truth[:, :, dataset.norm_zscore_out] = denormalize_standard(
+        ground_truth[:, :, dataset.norm_zscore_out],
+        dataset.output_mean.view(-1, 1, 1),
+        dataset.output_std.view(-1, 1, 1),
     )
 
 
 def _denormalize_forecast(output_forecast, dataset):
     """Denormalize the forecast data."""
-    output_forecast[:, :, dataset.norm_precip_out] = denormalize_precipitation(
-        output_forecast[:, :, dataset.norm_precip_out]
-    )
+    # output_forecast[:, :, dataset.norm_precip_out] = denormalize_precipitation(
+    #     output_forecast[:, :, dataset.norm_precip_out]
+    # )
 
-    output_forecast[:, :, dataset.norm_humidity_out] = denormalize_humidity(
-        output_forecast[:, :, dataset.norm_humidity_out],
-        dataset.q_min,
-        dataset.q_max,
-    )
+    # output_forecast[:, :, dataset.norm_humidity_out] = denormalize_humidity(
+    #     output_forecast[:, :, dataset.norm_humidity_out],
+    #     dataset.q_min,
+    #     dataset.q_max,
+    # )
 
     output_forecast[:, :, dataset.norm_zscore_out] = denormalize_standard(
         output_forecast[:, :, dataset.norm_zscore_out],
