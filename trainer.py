@@ -104,14 +104,6 @@ class LitParadis(L.LightningModule):
                 backend="inductor",
             )
 
-        # Load the model weights if a checkpoint path is provided
-        if cfg.model.checkpoint_path:
-            # Load into CPU, then Lightning will transfer to GPU
-            checkpoint = torch.load(
-                cfg.model.checkpoint_path, weights_only=True, map_location="cpu"
-            )
-            self.load_state_dict(checkpoint["state_dict"])
-
         self.epoch_start_time = None
 
         # Store the index of the GZ100 quantity to
@@ -184,8 +176,8 @@ class LitParadis(L.LightningModule):
         # Ensure only one is enabled
         if enabled_schedulers != 1:
             raise ValueError(
-                f'Invalid config: Exactly one scheduler must ' +
-                f'be enabled, but found {enabled_schedulers} enabled.'
+                f"Invalid config: Exactly one scheduler must "
+                + f"be enabled, but found {enabled_schedulers} enabled."
             )
 
         if cfg.scheduler.one_cycle.enabled:

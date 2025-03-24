@@ -52,7 +52,7 @@ def main(cfg: DictConfig):
     save_train_config(trainer.logger.log_dir, cfg)
 
     # Train model
-    trainer.fit(litmodel, datamodule=datamodule)
+    trainer.fit(litmodel, datamodule=datamodule, ckpt_path=cfg.model.checkpoint_path)
 
 
 if __name__ == "__main__":
