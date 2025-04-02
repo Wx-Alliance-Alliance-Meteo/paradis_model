@@ -186,12 +186,13 @@ class Paradis(nn.Module):
         # Get channel sizes
         self.num_dynamic_channels = len(datamodule.dataset.dyn_input_features)
         self.num_static_channels = len(cfg.features.input.constants)
+        self.num_input_channels = datamodule.dataset.num_in_features
 
         hidden_dim = cfg.model.hidden_multiplier * self.num_dynamic_channels
 
         # Input projection for combined dynamic and static features
         self.input_proj = CLP(
-            self.num_dynamic_channels + self.num_static_channels, hidden_dim, mesh_size
+            self.num_input_channels, hidden_dim, mesh_size
         )
 
         # Rescale the time step to a fraction of a synoptic time scale
