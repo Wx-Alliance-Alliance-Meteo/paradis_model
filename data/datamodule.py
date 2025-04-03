@@ -122,8 +122,9 @@ class Era5DataModule(L.LightningDataModule):
         return DataLoader(
             self.val_dataset,
             batch_size=self.batch_size,
-            num_workers=self.num_workers,
-            shuffle=False,
+            num_workers=1,  # self.num_workers,
+            # Shuffle if we're using less than all validation data
+            shuffle=self.cfg.training.validation_dataset.validation_batches is not None,
             pin_memory=True,
             drop_last=self.drop_last,
         )

@@ -291,7 +291,7 @@ class LitParadis(L.LightningModule):
             "train_loss",
             train_loss / self.forecast_steps,
             on_step=True,
-            on_epoch=True,
+            on_epoch=False,
             prog_bar=True,
             sync_dist=True,
         )
@@ -354,7 +354,7 @@ class LitParadis(L.LightningModule):
         self.log(
             "val_loss",
             val_loss / self.forecast_steps,
-            on_step=True,
+            on_step=False,
             on_epoch=True,
             prog_bar=True,
             sync_dist=True,
@@ -364,8 +364,8 @@ class LitParadis(L.LightningModule):
         self.log(
             "GZ500-RMSE",
             gz500_loss / self.forecast_steps,
-            on_step=True,
-            on_epoch=False,
+            on_step=False,
+            on_epoch=True,
             prog_bar=True,
             sync_dist=True,
         )
