@@ -95,8 +95,8 @@ training:
     # 3. LambdaLR with initial warmup, steady learning rate and final cooldown
     wsd:
       enabled: false
-      warmup_pct: 0.01
-      decay_pct: 0.2
+      warmup: 100                    # ≥1 : number of warmup steps, else fraction
+      decay: 0.2                     # ≥1 : number of decay steps, else fraction
 
   variable_loss_weights:
     atmospheric:
