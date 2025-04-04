@@ -225,10 +225,24 @@ class LitParadis(L.LightningModule):
         elif cfg.scheduler.wsd.enabled:
             total_steps = self.trainer.estimated_stepping_batches
 
-            assert (cfg.scheduler.wsd.warmup_pct + cfg.scheduler.wsd.decay_pct) <= 1.0
+            # Set warmup and decay periods
+            if cfg.scheduler.wsd.warmup >= 1:
+                # Value >= 1, so it's a number of steps
+                warmup_steps = cfg.scheduler.wsd.warmup
+            else:
+                warmup_steps = cfg.scheduler.wsd.warmup * total_steps
 
-            warmup_steps = int(cfg.scheduler.wsd.warmup_pct * total_steps)
-            decay_steps = int(cfg.scheduler.wsd.decay_pct * total_steps)
+            if cfg.scheduler.wsd.decay >= 1:
+                # Value >= 1, so it's a number of steps
+                decay_steps = cfg.scheduler.wsd.decay
+            else:
+                decay_steps = cfg.scheduler.wsd.decay * total_steps
+
+            # Sanity checks
+            assert warmup_steps >= 0
+            assert decay_steps >= 0
+            assert warmup_steps + decay_steps <= total_steps
+
             steady_steps = total_steps - (warmup_steps + decay_steps)
 
             def lr_lambda(step):
@@ -291,7 +305,7 @@ class LitParadis(L.LightningModule):
             "train_loss",
             train_loss / self.forecast_steps,
             on_step=True,
-            on_epoch=True,
+            on_epoch=False,
             prog_bar=True,
             sync_dist=True,
         )
@@ -354,7 +368,7 @@ class LitParadis(L.LightningModule):
         self.log(
             "val_loss",
             val_loss / self.forecast_steps,
-            on_step=True,
+            on_step=False,
             on_epoch=True,
             prog_bar=True,
             sync_dist=True,
@@ -364,8 +378,8 @@ class LitParadis(L.LightningModule):
         self.log(
             "GZ500-RMSE",
             gz500_loss / self.forecast_steps,
-            on_step=True,
-            on_epoch=False,
+            on_step=False,
+            on_epoch=True,
             prog_bar=True,
             sync_dist=True,
         )

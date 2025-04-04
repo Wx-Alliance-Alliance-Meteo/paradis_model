@@ -7,7 +7,10 @@ from omegaconf import OmegaConf
 
 def setup_system(cfg):
     # Set random seeds for reproducibility
-    seed = 42  # This model will answer the ultimate question about life, the universe, and everything
+    if "init" in cfg and "seed" in cfg["init"]:
+        seed = cfg["init"]["seed"]
+    else:
+        seed = 42  # This model will answer the ultimate question about life, the universe, and everything
     L.seed_everything(seed, workers=True)
 
     # Choose double (32-true) or mixed (16-mixed) precision via AMP
