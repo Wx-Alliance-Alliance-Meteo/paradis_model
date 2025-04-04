@@ -431,3 +431,25 @@ class LitParadis(L.LightningModule):
         )
 
         return super().on_before_optimizer_step(optimizer)
+
+    def on_train_batch_start(self, batch, batch_idx):
+        import datetime
+
+        # Record current time for time-per-step calculation
+        self.tic = datetime.datetime.now()
+
+        return super().on_train_batch_start(batch, batch_idx)
+
+    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure=None):
+        import datetime
+
+        super().optimizer_step(epoch, batch_idx, optimizer, optimizer_closure)
+        # optimizer.step(closure=optimizer_closure)
+
+        # After the optimzier step, comptue and log how long the step took
+        toc = datetime.datetime.now()
+        self.log(
+            "dt",
+            (toc - self.tic).total_seconds(),
+            on_step=True,
+        )
