@@ -47,10 +47,12 @@ training:
   dataset:
     start_date: 2010-01-01         # Start date for the training dataset (YYYY-MM-DD)
     end_date: 2019-12-31           # End date for the training dataset (YYYY-MM-DD)
+    preload: false                 # If true, load the full dataset from disk into memory to speed training
 
   validation_dataset:
     start_date: 2008-01-01         # Start date for the validation dataset (YYYY-MM-DD)
     end_date: 2009-12-31           # End date for the validation dataset (YYYY-MM-DD)
+    preload: false                 # If true, load the full dataset from disk into memory to speed validation
     validation_every_n_steps: null # Run validation every N steps (null once per epoch)
     validation_batches: null       # If non-null, use N batches rather than all for validation (0 disables val)
 

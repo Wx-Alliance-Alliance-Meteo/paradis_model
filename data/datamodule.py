@@ -41,6 +41,7 @@ class Era5DataModule(L.LightningDataModule):
                     start_date=train_start_date,
                     end_date=train_end_date,
                     forecast_steps=self.forecast_steps,
+                    preload=self.cfg.training.dataset.preload,
                     cfg=self.cfg,
                 )
 
@@ -57,6 +58,7 @@ class Era5DataModule(L.LightningDataModule):
                     start_date=val_start_date,
                     end_date=val_end_date,
                     forecast_steps=self.forecast_steps,
+                    preload=self.cfg.training.validation_dataset.preload,
                     cfg=self.cfg,
                 )
 
@@ -115,6 +117,7 @@ class Era5DataModule(L.LightningDataModule):
             shuffle=True,
             pin_memory=True,
             drop_last=self.drop_last,
+            persistent_workers=True,
         )
 
     def val_dataloader(self):
@@ -122,11 +125,12 @@ class Era5DataModule(L.LightningDataModule):
         return DataLoader(
             self.val_dataset,
             batch_size=self.batch_size,
-            num_workers=1,  # self.num_workers,
+            num_workers=self.num_workers,
             # Shuffle if we're using less than all validation data
             shuffle=self.cfg.training.validation_dataset.validation_batches is not None,
             pin_memory=True,
             drop_last=self.drop_last,
+            persistent_workers=True,
         )
 
     def predict_dataloader(self):
