@@ -255,9 +255,18 @@ class LitParadis(L.LightningModule):
                 "optimizer": optimizer,
                 "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
             }
-
         else:
-            raise ValueError(f"Unknown scheduler type: {cfg.scheduler.type}")
+            # No known scheduler was active
+            active_schedulers = [
+                k for (k, v) in cfg.scheduler.items() if "enabled" in v and v["enabled"]
+            ]
+            if len(active_schedulers) == 0:
+                # Should not happen if enabled_schedulers check above is still present
+                raise ValueError(f"No scheduler activated")
+            else:
+                raise ValueError(
+                    f'Unknown schedule activated: {", ".join(active_schedulers)}'
+                )
 
     def on_train_epoch_start(self):
         """Record the start time of the epoch."""
