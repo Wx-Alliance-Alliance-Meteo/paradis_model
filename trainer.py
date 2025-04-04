@@ -418,3 +418,16 @@ class LitParadis(L.LightningModule):
     def on_train_end(self):
         """Called when training ends."""
         logging.info(f"Training completed after {self.current_epoch + 1} epochs")
+
+    def on_before_optimizer_step(self, optimizer):
+        import torch
+
+        gradmag = sum(torch.sum(v.grad**2) for (k, v) in self.named_parameters()) ** 0.5
+
+        self.log(
+            "gradmag",
+            gradmag,
+            on_step=True,
+        )
+
+        return super().on_before_optimizer_step(optimizer)
