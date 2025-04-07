@@ -6,6 +6,10 @@ model:
   checkpoint_path: null            # Path to model checkpoint for loading pre-trained weights
   num_substeps: 2                  # Number of time substeps
 
+# Initialization settings (seeding)
+# init:
+  # seed: 42
+
 # Input dataset
 dataset:
   root_dir: /path/to/dataset/
@@ -34,7 +38,8 @@ forecast:
 
 # Training parameters
 training:
-  max_epochs: 500                  # Maximum number of epochs the training is allowed
+  max_epochs: -1                   # Maximum number of epochs the training is allowed (-1 to disable and use steps)
+  max_steps: 500                   # Maximum number of steps to use for training (-1 to disable and use epochs)
   gradient_clip_val: -1            # Gradient clipping value, set to -1 to disable
   print_losses: false              # Manually print losses to screen (removes progress bar)
   log_every_n_steps: 50            # Write to log every n steps
@@ -42,10 +47,14 @@ training:
   dataset:
     start_date: 2010-01-01         # Start date for the training dataset (YYYY-MM-DD)
     end_date: 2019-12-31           # End date for the training dataset (YYYY-MM-DD)
+    preload: false                 # If true, load the full dataset from disk into memory to speed training
 
   validation_dataset:
     start_date: 2008-01-01         # Start date for the validation dataset (YYYY-MM-DD)
     end_date: 2009-12-31           # End date for the validation dataset (YYYY-MM-DD)
+    preload: false                 # If true, load the full dataset from disk into memory to speed validation
+    validation_every_n_steps: null # Run validation every N steps (null once per epoch)
+    validation_batches: null       # If non-null, use N batches rather than all for validation (0 disables val)
 
   optimizer:
     lr: 1.0e-3                     # Learning rate (LR) for the optimizer
@@ -88,8 +97,8 @@ training:
     # 3. LambdaLR with initial warmup, steady learning rate and final cooldown
     wsd:
       enabled: false
-      warmup_pct: 0.01
-      decay_pct: 0.2
+      warmup: 100                    # ≥1 : number of warmup steps, else fraction
+      decay: 0.2                     # ≥1 : number of decay steps, else fraction
 
   variable_loss_weights:
     atmospheric:
