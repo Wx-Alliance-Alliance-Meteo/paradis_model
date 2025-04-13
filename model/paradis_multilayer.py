@@ -7,6 +7,10 @@ from model.clp_block import CLP
 from model.clp_variational import VariationalCLP
 from model.padding import GeoCyclicPadding
 
+from typing import Tuple, Union
+
+from model.simple_blocks import FullConv, CLinear
+
 
 class NeuralSemiLagrangian(nn.Module):
     """Implements the semi-Lagrangian advection."""
@@ -68,9 +72,10 @@ class NeuralSemiLagrangian(nn.Module):
         lat_grid: torch.Tensor,
         lon_grid: torch.Tensor,
         dt: float,
-    ) -> torch.Tensor:
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """Compute advection using rotated coordinate system."""
         batch_size = hidden_features.shape[0]
+        kl_loss = torch.tensor(0.0)
 
         # Get learned velocities for each channel
         if self.variational:
@@ -181,7 +186,7 @@ class Paradis(nn.Module):
 
         # Extract dimensions from config
         output_dim = datamodule.num_out_features
-        mesh_size = [datamodule.lat_size, datamodule.lon_size]
+        mesh_size = (datamodule.lat_size, datamodule.lon_size)
         num_levels = len(cfg.features.pressure_levels)
         self.num_common_features = datamodule.num_common_features
         self.variational = cfg.ensemble.enable
