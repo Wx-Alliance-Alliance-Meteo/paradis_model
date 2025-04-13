@@ -9,12 +9,19 @@ import lightning as L
 
 from model.paradis import Paradis
 from utils.loss import ParadisLoss
+from data.datamodule import Era5DataModule
+
+import omegaconf.dictconfig
 
 
 class LitParadis(L.LightningModule):
     """Lightning module for Paradis model training."""
 
-    def __init__(self, datamodule: L.LightningDataModule, cfg: dict) -> None:
+    model: torch.nn.Module
+
+    def __init__(
+        self, datamodule: Era5DataModule, cfg: omegaconf.dictconfig.DictConfig
+    ) -> None:
         """Initialize the training module.
 
         Args:
@@ -96,8 +103,7 @@ class LitParadis(L.LightningModule):
         self.print_losses = cfg.training.print_losses
 
         if cfg.compute.compile:
-            self.model = torch.compile(
-                self.model,
+            self.model.compile(  # compile model in place
                 mode="default",
                 fullgraph=True,
                 dynamic=False,
@@ -125,7 +131,9 @@ class LitParadis(L.LightningModule):
         return input_data
 
     def _get_persistence_loss(self, input_data, pred_data):
-        p_loss = 0.0
+        import torch
+
+        p_loss = torch.tensor(0.0)
         for step in range(self.forecast_steps):
             loss = self.loss_fn(
                 input_data[:, step, : self.num_common_features], pred_data[:, step]
@@ -154,13 +162,13 @@ class LitParadis(L.LightningModule):
         """Forward pass through the model."""
         return self.model(x)
 
-    def configure_optimizers(self):
+    def configure_optimizers(self):  # type: ignore
         """Configure optimizer and learning rate scheduler."""
         cfg = self.cfg.training
 
         optimizer = torch.optim.AdamW(
             self.model.parameters(),
-            betas=[cfg.optimizer.beta1, cfg.optimizer.beta2],
+            betas=(cfg.optimizer.beta1, cfg.optimizer.beta2),
             lr=cfg.optimizer.lr,
             weight_decay=cfg.optimizer.weight_decay,
         )
@@ -183,7 +191,7 @@ class LitParadis(L.LightningModule):
         if cfg.scheduler.one_cycle.enabled:
             scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 optimizer,
-                total_steps=self.trainer.estimated_stepping_batches,
+                total_steps=int(self.trainer.estimated_stepping_batches),
                 max_lr=cfg.optimizer.lr,
                 pct_start=cfg.scheduler.one_cycle.warmup_pct_start,
                 div_factor=cfg.scheduler.one_cycle.lr_div_factor,
@@ -241,7 +249,7 @@ class LitParadis(L.LightningModule):
                 if step < warmup_steps:
                     # Increasing learning rate phase
                     return (step + 1) / warmup_steps
-                elif step < warmup_steps + steady_steps:
+                elif step <= warmup_steps + steady_steps:
                     # Constant learning rate
                     return 1.0
                 else:
@@ -278,6 +286,7 @@ class LitParadis(L.LightningModule):
         input_data, true_data = batch
 
         train_loss = 0.0
+        kl_loss = 0.0
         input_data_step = input_data[:, 0]  # Start with first timestep
 
         for step in range(self.forecast_steps):
@@ -311,7 +320,7 @@ class LitParadis(L.LightningModule):
             sync_dist=True,
         )
 
-        self.log("lr", self.optimizers().param_groups[0]["lr"], prog_bar=True)
+        self.log("lr", self.trainer.optimizers[0].param_groups[0]["lr"], prog_bar=True)
 
         if self.variational:
             self.log(
@@ -326,12 +335,12 @@ class LitParadis(L.LightningModule):
         # Clip gradients manually if gradient_clip_val is set
         if self.cfg.training.gradient_clip_val > 0:
             self.clip_gradients(
-                self.optimizers(),
+                self.trainer.optimizers[0],
                 gradient_clip_val=self.cfg.training.gradient_clip_val,
                 gradient_clip_algorithm="norm",
             )
 
-        return loss
+        return train_loss / self.forecast_steps
 
     def validation_step(self, batch, batch_idx):
         """Validation step."""
@@ -340,6 +349,7 @@ class LitParadis(L.LightningModule):
 
         val_loss = 0.0
         gz500_loss = 0.0
+        kl_loss = 0.0
         input_data_step = input_data[:, 0]  # Start with first timestep
 
         for step in range(self.forecast_steps):
@@ -394,13 +404,13 @@ class LitParadis(L.LightningModule):
                 prog_bar=True,
                 sync_dist=True,
             )
-        return loss
+        return val_loss / self.forecast_steps
 
     def on_train_epoch_end(self):
         """Log epoch time and metrics if printing losses."""
         if self.print_losses and self.epoch_start_time is not None:
             elapsed_time = time.time() - self.epoch_start_time
-            current_lr = self.optimizers().param_groups[0]["lr"]
+            current_lr = self.trainer.optimizers[0].param_groups[0]["lr"]
 
             # Get the losses using the logged metrics
             train_loss = self.trainer.callback_metrics.get("train_loss")
@@ -422,7 +432,14 @@ class LitParadis(L.LightningModule):
     def on_before_optimizer_step(self, optimizer):
         import torch
 
-        gradmag = sum(torch.sum(v.grad**2) for (k, v) in self.named_parameters()) ** 0.5
+        gradmag = (
+            sum(
+                torch.sum(v.grad**2) if v.grad is not None else 0
+                for (k, v) in self.named_parameters()
+                if torch.is_tensor(v)
+            )
+            ** 0.5
+        )
 
         self.log(
             "gradmag",

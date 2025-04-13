@@ -53,7 +53,7 @@ def main(cfg: DictConfig):
     )
 
     # Keep track of configuration parameters in logging directory
-    save_train_config(trainer.logger.log_dir, cfg)
+    save_train_config(trainer.logger.log_dir, cfg)  # type: ignore
 
     # Train model
     trainer.fit(litmodel, datamodule=datamodule, ckpt_path=cfg.model.checkpoint_path)

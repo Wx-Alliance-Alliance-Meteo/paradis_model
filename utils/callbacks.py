@@ -12,14 +12,14 @@ class ModProgressBar(TQDMProgressBar):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.enable = True
+        self.enable()
 
     def disable(self):
-        self.enable = False
+        super().disable()
 
-    def get_metrics(self, trainer, model):
+    def get_metrics(self, trainer, pl_module):
         # don't show the version number
-        items = super().get_metrics(trainer, model)
+        items = super().get_metrics(trainer, pl_module)
         items.pop("v_num", None)
         return items
 
@@ -30,7 +30,7 @@ class ModProgressBar(TQDMProgressBar):
         # number of training steps
         total_batches = trainer.estimated_stepping_batches
         # Calculate max epochs
-        if trainer.max_epochs > 0:
+        if trainer.max_epochs is not None and trainer.max_epochs > 0:
             max_epochs = trainer.max_epochs
         else:
             max_epochs = 1 + (total_batches - 1) // trainer.num_training_batches
@@ -55,7 +55,7 @@ class ModProgressBar(TQDMProgressBar):
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         # Update the progress bar based on the total number of batches
-        n = batch_idx + trainer.current_epoch * trainer.num_training_batches + 1
+        n = int(batch_idx + trainer.current_epoch * trainer.num_training_batches + 1)
         if self._should_update(n, self.train_progress_bar.total):
             self.train_progress_bar.set_postfix(self.get_metrics(trainer, pl_module))
             if not (self.train_progress_bar.disable):

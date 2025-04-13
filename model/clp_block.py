@@ -3,6 +3,13 @@ from torch import nn
 
 from model.padding import GeoCyclicPadding
 
+from typing import Callable
+
+# For type hinting, define a type for Pytorch activation functions.  These
+# are classes that take an optional boolean (inplace, ignored) and return a
+# function/object that takes tensors and returns tensors
+ActivationType = Callable[[], Callable[[torch.Tensor], torch.Tensor]]
+
 
 class CLPBlock(nn.Module):
     """Convolutional Layer Processor block."""
@@ -13,7 +20,7 @@ class CLPBlock(nn.Module):
         output_dim: int,
         mesh_size: tuple,
         kernel_size: int = 3,
-        activation: nn.Module = nn.SiLU,
+        activation: ActivationType = nn.SiLU,
         double_conv: bool = False,
         pointwise_conv: bool = False,
     ):
@@ -61,7 +68,7 @@ def CLP(
     dim_out: int,
     mesh_size: tuple,
     kernel_size: int = 3,
-    activation: nn.Module = nn.SiLU,
+    activation: ActivationType = nn.SiLU,
     pointwise_conv: bool = False,
 ):
     """Create a double-convolution CLP block."""

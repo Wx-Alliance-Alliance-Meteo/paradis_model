@@ -5,10 +5,11 @@ import lightning as L
 from torch.utils.data import DataLoader
 
 from data.era5_dataset import ERA5Dataset
+from omegaconf import DictConfig
 
 
 class Era5DataModule(L.LightningDataModule):
-    def __init__(self, cfg: dict) -> None:
+    def __init__(self, cfg: DictConfig) -> None:
         super().__init__()
 
         # Extract configuration parameters for data
