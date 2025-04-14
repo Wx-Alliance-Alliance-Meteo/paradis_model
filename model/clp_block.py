@@ -3,12 +3,11 @@ from torch import nn
 
 from model.padding import GeoCyclicPadding
 
-from typing import Callable
+from typing import Type
 
-# For type hinting, define a type for Pytorch activation functions.  These
-# are classes that take an optional boolean (inplace, ignored) and return a
-# function/object that takes tensors and returns tensors
-ActivationType = Callable[[], Callable[[torch.Tensor], torch.Tensor]]
+# Type for the Activation functions.  These subclass nn.Module, and the class itself
+# is passed to CLPBlock
+ActivationType = Type[nn.Module]
 
 
 class CLPBlock(nn.Module):
