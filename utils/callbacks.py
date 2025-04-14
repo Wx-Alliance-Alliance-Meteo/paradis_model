@@ -71,9 +71,45 @@ class ModProgressBar(TQDMProgressBar):
     def on_train_end(self, *_):
         # Explicitly close the *container* of the progress bar, working around the
         # inexplicable littering of progress bars in Jupyter notebooks
-        if not self._leave and 'container' in self.train_progress_bar.__dict__:
+
+        # First, close validation progress bar if it's still open
+        if self._val_progress_bar is not None:
+            # print(f'val_progress_bar is {repr(self._val_progress_bar)}')
+            if "container" in self.val_progress_bar.__dict__:
+                self.val_progress_bar.container.close()
+            self.val_progress_bar.close()
+
+        if not self._leave and "container" in self.train_progress_bar.__dict__:
             self.train_progress_bar.container.close()
         return super().on_train_end(*_)
+
+    def on_validation_start(self, trainer, pl_module):
+        # Redefine on_validation_start to only create a progress bar if
+        # one does not exist
+        if not trainer.sanity_checking:
+            # print(f'val_progress_bar is {repr(self._val_progress_bar)}')
+            if self._val_progress_bar is None or self.val_progress_bar.disable:
+                self.val_progress_bar = self.init_validation_tqdm()
+            # else:
+            #     raise ValueError()
+
+    def on_validation_end(self, trainer, pl_module):
+        """
+        Replicate TQDMProgressBar.on_validation_end, except keep the validation progress bar open
+        if we're inside a Jupyter notebook.  Otherwise, repeated close/reopen of the progress bar
+        can confuse the notebook cell into thinking it's had too much output, blocking further
+        training/validation progress bar updates
+        """
+
+        if (
+            self._val_progress_bar is not None
+            and "container" not in self.val_progress_bar.__dict__
+        ):
+            self.val_progress_bar.close()
+
+        self.reset_dataloader_idx_tracker()
+        if self._train_progress_bar is not None and trainer.state.fn == "fit":
+            self.train_progress_bar.set_postfix(self.get_metrics(trainer, pl_module))
 
 
 def enable_callbacks(cfg):
