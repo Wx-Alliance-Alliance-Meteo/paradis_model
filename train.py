@@ -38,18 +38,22 @@ def main(cfg: DictConfig):
         devices=cfg.compute.num_devices,
         strategy="auto" if cfg.compute.num_devices == 1 else "ddp",
         max_epochs=cfg.training.max_epochs,
+        max_steps=cfg.training.max_steps,
         gradient_clip_val=cfg.training.gradient_clip_val,
         gradient_clip_algorithm="norm",
         log_every_n_steps=cfg.training.log_every_n_steps,
         callbacks=callbacks,
         precision="16-mixed" if cfg.compute.use_amp else "32-true",
-        enable_progress_bar=not cfg.training.print_losses,
+        enable_progress_bar=cfg.training.progress_bar and not cfg.training.print_losses,
         enable_model_summary=True,
         logger=True,
+        val_check_interval=cfg.training.validation_dataset.validation_every_n_steps,
+        limit_val_batches=cfg.training.validation_dataset.validation_batches,
+        enable_checkpointing=cfg.training.checkpointing.enabled,
     )
 
     # Keep track of configuration parameters in logging directory
-    save_train_config(trainer.logger.log_dir, cfg)
+    save_train_config(trainer.logger.log_dir, cfg)  # type: ignore
 
     # Train model
     trainer.fit(litmodel, datamodule=datamodule, ckpt_path=cfg.model.checkpoint_path)

@@ -29,11 +29,13 @@ class ERA5Dataset(torch.utils.data.Dataset):
         end_date: str,
         forecast_steps: int = 1,
         dtype=torch.float32,
-        cfg: DictConfig = {},
+        preload=False,  # Whether to preload the dataset
+        cfg: DictConfig = DictConfig({}),
     ) -> None:
 
         self.cfg = cfg
         features_cfg = cfg.features
+        self.preload = preload
         self.eps = 1e-12
         self.root_dir = root_dir
         self.forecast_steps = forecast_steps
@@ -80,7 +82,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         # Get the number of additional time instances needed in data for autoregression
         hours = time_resolution * (self.forecast_steps)
         time_delta = timedelta(hours=hours)
-        time_delta = numpy.timedelta64(int(time_delta.total_seconds()), 's')
+        time_delta = numpy.timedelta64(int(time_delta.total_seconds()), "s")
 
         # Convert end_date to a datetime object and adjust end date
         if self.concat_input:
@@ -142,7 +144,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         # Constant input variables
         ds_constants = xarray.open_dataset(
             os.path.join(root_dir, "constants"), engine="zarr"
-        )
+        ).compute()  # Definitely preload constants
 
         # Convert lat/lon to radians
         lat_rad = torch.deg2rad(self.lat).to(self.dtype)
@@ -219,6 +221,10 @@ class ERA5Dataset(torch.utils.data.Dataset):
         if self.concat_input:
             self.dyn_input_features *= 2
 
+        if self.preload:
+            ds_input = ds_input.compute()
+            ds_output = ds_output.compute()
+
         # Fetch data
         self.ds_input = ds_input["data"]
         self.ds_output = ds_output["data"]
@@ -257,7 +263,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         )
 
         # Load arrays into CPU memory
-        input_data, true_data = dask.compute(input_data, true_data)
+        input_data, true_data = dask.compute(input_data, true_data) # type: ignore -- dask.compute is really dask.base.compute
 
         # # Add checks for invalid values
         if numpy.isnan(input_data.data).any() or numpy.isnan(true_data.data).any():
@@ -438,7 +444,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         forcings = []
         for var in self.forcing_inputs:
             if var == "toa_incident_solar_radiation":
-                toa_rad = toa_radiation(input_data["time"].values, self.lat, self.lon)
+                toa_rad = toa_radiation(input_data["time"].values, self.lat.cpu().numpy(), self.lon.cpu().numpy())
 
                 toa_rad = torch.tensor(
                     (toa_rad - self.toa_rad_mean) / self.toa_rad_std,

@@ -7,6 +7,11 @@ from model.clp_block import CLP
 from model.clp_variational import VariationalCLP
 from model.padding import GeoCyclicPadding
 
+from typing import Tuple, Union
+
+from model.simple_blocks import FullConv, CLinear
+from model.gmblock import GMBlock
+
 
 class NeuralSemiLagrangian(nn.Module):
     """Implements the semi-Lagrangian advection."""
@@ -25,9 +30,15 @@ class NeuralSemiLagrangian(nn.Module):
         # Neural network that will learn an effective velocity along the trajectory
         # Output 2 channels per hidden dimension for u and v
         if not self.variational:
-            self.velocity_net = CLP(
-                hidden_dim, 2 * hidden_dim, mesh_size
-            )  # , depthwise_conv=True)
+            self.velocity_net = GMBlock(
+                input_dim=hidden_dim,
+                output_dim=2 * hidden_dim,
+                hidden_dim=hidden_dim,
+                kernel_size=3,
+                mesh_size=mesh_size,
+                layers=["NormedConv", "FullConv"],
+                activation=True,
+            )
         else:
             self.velocity_net = VariationalCLP(hidden_dim, 2 * hidden_dim, mesh_size)
 
@@ -68,9 +79,10 @@ class NeuralSemiLagrangian(nn.Module):
         lat_grid: torch.Tensor,
         lon_grid: torch.Tensor,
         dt: float,
-    ) -> torch.Tensor:
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """Compute advection using rotated coordinate system."""
         batch_size = hidden_features.shape[0]
+        kl_loss = torch.tensor(0.0)
 
         # Get learned velocities for each channel
         if self.variational:
@@ -113,8 +125,8 @@ class NeuralSemiLagrangian(nn.Module):
         lon_dep = lon_grid + lon_prime
 
         # Normalize grid to ensure consistency in interpolation
-        grid_x = (2 * (lon_dep - min_lon) / (max_lon - min_lon) - 1)
-        grid_y = (2 * (lat_dep - min_lat) / (max_lat - min_lat) - 1)
+        grid_x = 2 * (lon_dep - min_lon) / (max_lon - min_lon) - 1
+        grid_y = 2 * (lat_dep - min_lat) / (max_lat - min_lat) - 1
 
         # Apply periodicity for outside values along longitude set to [-1, 1]
         grid_x = torch.remainder(grid_x + 1, 2) - 1
@@ -181,7 +193,7 @@ class Paradis(nn.Module):
 
         # Extract dimensions from config
         output_dim = datamodule.num_out_features
-        mesh_size = [datamodule.lat_size, datamodule.lon_size]
+        mesh_size = (datamodule.lat_size, datamodule.lon_size)
         num_levels = len(cfg.features.pressure_levels)
         self.num_common_features = datamodule.num_common_features
         self.variational = cfg.ensemble.enable
@@ -195,18 +207,25 @@ class Paradis(nn.Module):
         ) + self.static_channels
 
         # Input projection for combined dynamic and static features
-        self.input_proj = CLP(
-            self.dynamic_channels + self.static_channels, hidden_dim, mesh_size
+        self.input_proj = GMBlock(
+            input_dim=self.dynamic_channels + self.static_channels,
+            hidden_dim=self.dynamic_channels + self.static_channels,
+            output_dim=hidden_dim,
+            layers=["NormedConv", "FullConv"],
+            mesh_size=mesh_size,
+            activation=True,
         )
 
         # Rescale the time step to a fraction of a synoptic time scale
         self.num_substeps = cfg.model.num_substeps
-        self.dt = cfg.model.base_dt / self.SYNOPTIC_TIME_SCALE / self.num_substeps
+        self.dt = (
+            cfg.model.base_dt / self.SYNOPTIC_TIME_SCALE / max(1, self.num_substeps)
+        )
 
         # Advection layer
         self.advection = nn.ModuleList(
             [
-                CLP(hidden_dim, hidden_dim, mesh_size, pointwise_conv=True)
+                NeuralSemiLagrangian(hidden_dim, mesh_size, False)
                 for i in range(self.num_substeps)
             ]
         )
@@ -214,15 +233,31 @@ class Paradis(nn.Module):
         # Diffusion-reaction layer
         self.diffusion_reaction = nn.ModuleList(
             [
-                CLP(hidden_dim, hidden_dim, mesh_size, pointwise_conv=True)
+                GMBlock(
+                    input_dim=hidden_dim,
+                    output_dim=hidden_dim,
+                    hidden_dim=(
+                        hidden_dim,
+                        2 * hidden_dim,
+                        hidden_dim,
+                    ),  # Replicate expansion for CLinear layers
+                    layers=["NormedConv", "CLinear", "CLinear", "FullConv"],
+                    mesh_size=mesh_size,
+                    activation=(True, True, False, True),
+                )
                 for i in range(self.num_substeps)
             ]
         )
 
         # Output projection
         self.output_proj = nn.Sequential(
-            GeoCyclicPadding(1),
-            nn.Conv2d(hidden_dim, output_dim, kernel_size=3),
+            GMBlock(
+                input_dim=hidden_dim,
+                output_dim=output_dim,
+                layers=["FullConv"],
+                mesh_size=mesh_size,
+                activation=False,
+            )
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -241,13 +276,13 @@ class Paradis(nn.Module):
         # Compute advection and diffusion-reaction
         for i in range(self.num_substeps):
             # Advect the features in latent space using a Semi-Lagrangian step
-            z_adv = self.advection[i](z)
+            # z_adv = self.advection[i](z)
+            z_adv = self.advection[i](z, lat_grid, lon_grid, self.dt)
 
             # Compute the diffusion residual
             dz = self.diffusion_reaction[i](z_adv)
 
             # Update the latent space features
-            z += z_adv + self.dt * dz
-
+            z = z + z_adv + self.dt * dz
         # Return a scaled residual formulation
         return x[:, : self.num_common_features] + self.output_proj(z - z0)
