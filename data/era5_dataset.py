@@ -30,7 +30,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         forecast_steps: int = 1,
         dtype=torch.float32,
         preload=False,  # Whether to preload the dataset
-        cfg: DictConfig = {},
+        cfg: DictConfig = DictConfig({}),
     ) -> None:
 
         self.cfg = cfg
@@ -251,7 +251,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         )
 
         # Load arrays into CPU memory
-        input_data, true_data = dask.compute(input_data, true_data)
+        input_data, true_data = dask.compute(input_data, true_data) # type: ignore -- dask.compute is really dask.base.compute
 
         # # Add checks for invalid values
         if numpy.isnan(input_data.data).any() or numpy.isnan(true_data.data).any():
@@ -422,7 +422,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         forcings = []
         for var in self.forcing_inputs:
             if var == "toa_incident_solar_radiation":
-                toa_rad = toa_radiation(input_data["time"].values, self.lat, self.lon)
+                toa_rad = toa_radiation(input_data["time"].values, self.lat.cpu().numpy(), self.lon.cpu().numpy())
 
                 toa_rad = torch.tensor(
                     (toa_rad - self.toa_rad_mean) / self.toa_rad_std,
