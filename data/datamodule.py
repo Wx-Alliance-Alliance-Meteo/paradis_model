@@ -5,10 +5,11 @@ import lightning as L
 from torch.utils.data import DataLoader
 
 from data.era5_dataset import ERA5Dataset
+from omegaconf import DictConfig
 
 
 class Era5DataModule(L.LightningDataModule):
-    def __init__(self, cfg: dict) -> None:
+    def __init__(self, cfg: DictConfig) -> None:
         super().__init__()
 
         # Extract configuration parameters for data
@@ -41,6 +42,7 @@ class Era5DataModule(L.LightningDataModule):
                     start_date=train_start_date,
                     end_date=train_end_date,
                     forecast_steps=self.forecast_steps,
+                    preload=self.cfg.training.dataset.preload,
                     cfg=self.cfg,
                 )
 
@@ -57,6 +59,7 @@ class Era5DataModule(L.LightningDataModule):
                     start_date=val_start_date,
                     end_date=val_end_date,
                     forecast_steps=self.forecast_steps,
+                    preload=self.cfg.training.validation_dataset.preload,
                     cfg=self.cfg,
                 )
 
@@ -115,6 +118,7 @@ class Era5DataModule(L.LightningDataModule):
             shuffle=True,
             pin_memory=True,
             drop_last=self.drop_last,
+            persistent_workers=True,
         )
 
     def val_dataloader(self):
@@ -123,9 +127,11 @@ class Era5DataModule(L.LightningDataModule):
             self.val_dataset,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
-            shuffle=False,
+            # Shuffle if we're using less than all validation data
+            shuffle=self.cfg.training.validation_dataset.validation_batches is not None,
             pin_memory=True,
             drop_last=self.drop_last,
+            persistent_workers=True,
         )
 
     def predict_dataloader(self):

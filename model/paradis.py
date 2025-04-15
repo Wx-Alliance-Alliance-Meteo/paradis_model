@@ -7,6 +7,8 @@ from model.clp_block import CLP
 from model.clp_variational import VariationalCLP
 from model.padding import GeoCyclicPadding
 
+from typing import Tuple, Union
+
 
 class NeuralSemiLagrangian(nn.Module):
     """Implements the semi-Lagrangian advection."""
@@ -66,9 +68,10 @@ class NeuralSemiLagrangian(nn.Module):
         lat_grid: torch.Tensor,
         lon_grid: torch.Tensor,
         dt: float,
-    ) -> torch.Tensor:
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor,torch.Tensor]]:
         """Compute advection using rotated coordinate system."""
         batch_size = hidden_features.shape[0]
+        kl_loss = torch.tensor(0.0)
 
         # Get learned velocities for each channel
         if self.variational:
@@ -178,21 +181,22 @@ class Paradis(nn.Module):
 
         # Extract dimensions from config
         output_dim = datamodule.num_out_features
-        mesh_size = [datamodule.lat_size, datamodule.lon_size]
+        mesh_size = (datamodule.lat_size, datamodule.lon_size)
         num_levels = len(cfg.features.pressure_levels)
         self.num_common_features = datamodule.num_common_features
         self.variational = cfg.ensemble.enable
 
         # Get channel sizes
-        self.num_dynamic_channels = len(datamodule.dataset.dyn_input_features)
+        self.num_dynamic_channels = len(datamodule.dataset.dyn_input_features) + len(
+            cfg.features.input.forcings
+        )
         self.num_static_channels = len(cfg.features.input.constants)
+        self.num_input_channels = datamodule.dataset.num_in_features
 
         hidden_dim = cfg.model.hidden_multiplier * self.num_dynamic_channels
 
         # Input projection for combined dynamic and static features
-        self.input_proj = CLP(
-            self.num_dynamic_channels + self.num_static_channels, hidden_dim, mesh_size
-        )
+        self.input_proj = CLP(self.num_input_channels, hidden_dim, mesh_size)
 
         # Rescale the time step to a fraction of a synoptic time scale
         self.num_substeps = cfg.model.num_substeps
