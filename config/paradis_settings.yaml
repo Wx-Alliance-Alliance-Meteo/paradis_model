@@ -9,7 +9,7 @@ model:
 
 # Input dataset
 dataset:
-  root_dir: /path/to/dataset/
+  root_dir: /home/cap003/hall6/weatherbench_paradis/era5_5.625deg_13level/
   time_resolution: 6h              # Time between two consecutive samples
 
 # Compute/hardware aspects
@@ -19,8 +19,10 @@ compute:
   use_amp: true                    # Enable AMP (Automatic Mixed Precision)
   batch_size: 64                   # Number of samples per batch
   num_workers: 8                   # Number of parallel processes for data preloading
-  compile: true                    # Whether to compile the model
-
+  compile: false                    # Whether to compile the model
+  integrator: "fe"
+  operator_splitting: "lie"        #OS method 
+  corrector: ""
 # Ensemble training/forecasting
 ensemble:
   enable: false                    # Enable ensemble forecasting (uses variational variant)
@@ -28,7 +30,7 @@ ensemble:
 
 # Forecast parameters
 forecast:
-  start_date: 2019-12-31           # Time to generate forecast from (YYYY-MM-DD) or (YYYY-MM-DDTHH:MM:SS)
+  start_date: 2020-01-01           # Time to generate forecast from (YYYY-MM-DD) or (YYYY-MM-DDTHH:MM:SS)
   end_date: null                   # OPTIONAL, for validation purposes (YYYY-MM-DD) or null
   output_frequency: 1              # Store to file every output_frequency steps
   generate_plots: true             # Generate a plot for each time instance
@@ -37,7 +39,7 @@ forecast:
 training:
   max_epochs: 500                  # Maximum number of epochs the training is allowed
   gradient_clip_val: -1            # Gradient clipping value, set to -1 to disable
-  print_losses: false              # Manually print losses to screen (removes progress bar)
+  print_losses: true               # Manually print losses to screen (removes progress bar)
   log_every_n_steps: 50            # Write to log every n steps
 
   dataset:
@@ -67,7 +69,6 @@ training:
 
   # Scheduler configuration - Choose ONE of the following scheduler types by
   # commenting/uncommenting the appropriate section:
-
   scheduler:
 
     # 1. OneCycleLR

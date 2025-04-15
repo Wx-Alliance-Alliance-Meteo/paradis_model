@@ -24,7 +24,7 @@ class CLPBlock(nn.Module):
         layers = [
             GeoCyclicPadding(kernel_size // 2),
             nn.Conv2d(input_dim, intermediate_dim, kernel_size=kernel_size),
-            nn.LayerNorm([intermediate_dim, mesh_size[0], mesh_size[1]]),
+            nn.LayerNorm([mesh_size[0], mesh_size[1]]),
             activation(),
         ]
 
@@ -34,6 +34,7 @@ class CLPBlock(nn.Module):
             layers.extend(
                 [
                     nn.Conv2d(intermediate_dim, expanded_dim, kernel_size=1),
+                    nn.LayerNorm([mesh_size[0], mesh_size[1]]),
                     activation(),
                     nn.Conv2d(expanded_dim, intermediate_dim, kernel_size=1),
                 ]
@@ -43,6 +44,7 @@ class CLPBlock(nn.Module):
         if double_conv:
             layers.extend(
                 [
+                    nn.LayerNorm([mesh_size[0], mesh_size[1]]),
                     GeoCyclicPadding(kernel_size // 2),
                     nn.Conv2d(intermediate_dim, output_dim, kernel_size=kernel_size),
                     activation(),
