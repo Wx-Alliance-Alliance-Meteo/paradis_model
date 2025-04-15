@@ -20,7 +20,7 @@ def setup_system(cfg):
         torch.set_float32_matmul_precision("high")
 
 
-def save_train_config(log_dir, cfg):
+def save_train_config(log_dir: str, cfg):
 
     config_save_path = os.path.join(log_dir, "config.yaml")
     os.makedirs(os.path.dirname(config_save_path), exist_ok=True)

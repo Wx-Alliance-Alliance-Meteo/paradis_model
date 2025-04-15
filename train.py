@@ -44,7 +44,7 @@ def main(cfg: DictConfig):
         log_every_n_steps=cfg.training.log_every_n_steps,
         callbacks=callbacks,
         precision="16-mixed" if cfg.compute.use_amp else "32-true",
-        enable_progress_bar=not cfg.training.print_losses,
+        enable_progress_bar=cfg.training.progress_bar and not cfg.training.print_losses,
         enable_model_summary=True,
         logger=True,
         val_check_interval=cfg.training.validation_dataset.validation_every_n_steps,
@@ -53,10 +53,10 @@ def main(cfg: DictConfig):
     )
 
     # Keep track of configuration parameters in logging directory
-    save_train_config(trainer.logger.log_dir, cfg)
+    save_train_config(trainer.logger.log_dir, cfg)  # type: ignore
 
     # Train model
-    trainer.fit(litmodel, datamodule=datamodule)
+    trainer.fit(litmodel, datamodule=datamodule, ckpt_path=cfg.model.checkpoint_path)
 
 
 if __name__ == "__main__":
