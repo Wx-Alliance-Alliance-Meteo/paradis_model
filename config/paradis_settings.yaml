@@ -40,6 +40,7 @@ forecast:
 training:
   max_epochs: -1                   # Maximum number of epochs the training is allowed (-1 to disable and use steps)
   max_steps: 500                   # Maximum number of steps to use for training (-1 to disable and use epochs)
+  progress_bar: true               # Enable progress bar
   gradient_clip_val: -1            # Gradient clipping value, set to -1 to disable
   print_losses: false              # Manually print losses to screen (removes progress bar)
   log_every_n_steps: 50            # Write to log every n steps
