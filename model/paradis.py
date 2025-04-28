@@ -3,17 +3,27 @@
 import torch
 from torch import nn
 
-from model.clp_block import CLP
 from model.clp_variational import VariationalCLP
 from model.padding import GeoCyclicPadding
 
 from typing import Tuple, Union
 
+from model.simple_blocks import FullConv, CLinear
+from model.gmblock import GMBlock
+
 
 class NeuralSemiLagrangian(nn.Module):
     """Implements the semi-Lagrangian advection."""
 
-    def __init__(self, hidden_dim: int, mesh_size: tuple, variational: bool):
+    def __init__(
+        self,
+        hidden_dim: int,
+        mesh_size: tuple,
+        variational: bool,
+        num_vels: int,
+        interpolation: str = "bicubic",
+        bias_channels=4,
+    ):
         super().__init__()
 
         # For cubic interpolation
@@ -24,10 +34,39 @@ class NeuralSemiLagrangian(nn.Module):
         # Flag for variational variant to be used in forward
         self.variational = variational
 
+        self.num_vels = num_vels
+        self.mesh_size = mesh_size
+
+        self.down_projection = GMBlock(
+            input_dim=hidden_dim,
+            output_dim=num_vels,
+            mesh_size=mesh_size,
+            layers=["CLinear"],
+        )
+
+        self.up_projection = GMBlock(
+            input_dim=num_vels,
+            output_dim=hidden_dim,
+            mesh_size=mesh_size,
+            layers=["CLinear"],
+        )
+
+        self.interpolation = interpolation
+
         # Neural network that will learn an effective velocity along the trajectory
         # Output 2 channels per hidden dimension for u and v
         if not self.variational:
-            self.velocity_net = CLP(hidden_dim, 2 * hidden_dim, mesh_size)
+            self.velocity_net = GMBlock(
+                input_dim=hidden_dim,
+                output_dim=2 * num_vels,
+                hidden_dim=hidden_dim,
+                kernel_size=3,
+                mesh_size=mesh_size,
+                layers=["SepConv"],
+                bias_channels=bias_channels,
+                activation=False,
+                pre_normalize=True,
+            )
         else:
             self.velocity_net = VariationalCLP(hidden_dim, 2 * hidden_dim, mesh_size)
 
@@ -68,7 +107,7 @@ class NeuralSemiLagrangian(nn.Module):
         lat_grid: torch.Tensor,
         lon_grid: torch.Tensor,
         dt: float,
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor,torch.Tensor]]:
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """Compute advection using rotated coordinate system."""
         batch_size = hidden_features.shape[0]
         kl_loss = torch.tensor(0.0)
@@ -81,13 +120,14 @@ class NeuralSemiLagrangian(nn.Module):
 
         # Reshape velocities to separate u,v components per channel
         # [batch, 2*hidden_dim, lat, lon] -> [batch, hidden_dim, 2, lat, lon]
-        velocities = velocities.view(
-            batch_size, 2, self.hidden_dim, *velocities.shape[-2:]
-        )
+        velocities = velocities.view(batch_size, 2, self.num_vels, *self.mesh_size)
 
-        # Extract u,v components
-        u = velocities[:, 0]  # [batch, hidden_dim, lat, lon]
+        # Extract u,v compone
+        # u = velocities[:, 0] # [batch, hidden_dim, lat*lon]
         v = velocities[:, 1]
+        u = velocities[:, 0] / torch.cos(
+            lat_grid[:, None, :, :]
+        )  # [batch, num_vels, lat*lon]
 
         # Compute departure points in a local rotated coordinate system in which the origin
         # of latitude and longitude is moved to the arrival point
@@ -96,8 +136,8 @@ class NeuralSemiLagrangian(nn.Module):
 
         # Transform from rotated coordinates back to standard coordinates
         # Expand lat/lon grid for broadcasting with per-channel coordinates
-        lat_grid = lat_grid.unsqueeze(1).expand(-1, self.hidden_dim, -1, -1)
-        lon_grid = lon_grid.unsqueeze(1).expand(-1, self.hidden_dim, -1, -1)
+        lat_grid = lat_grid.unsqueeze(1).expand(-1, self.num_vels, -1, -1)
+        lon_grid = lon_grid.unsqueeze(1).expand(-1, self.num_vels, -1, -1)
 
         # Get the max and min values for normalization
         min_lat = torch.min(lat_grid)
@@ -106,10 +146,14 @@ class NeuralSemiLagrangian(nn.Module):
         min_lon = torch.min(lon_grid)
         max_lon = torch.max(lon_grid)
 
-        lat_dep, lon_dep = self._transform_to_latlon(
-            lat_prime, lon_prime, lat_grid, lon_grid
-        )
+        # lat_dep, lon_dep = self._transform_to_latlon(
+        #     lat_prime, lon_prime, lat_grid, lon_grid
+        # )
 
+        lat_dep = lat_grid + lat_prime
+        lon_dep = lon_grid + lon_prime
+
+        # Normalize grid to ensure consistency in interpolation
         grid_x = 2 * (lon_dep - min_lon) / (max_lon - min_lon) - 1
         grid_y = 2 * (lat_dep - min_lat) / (max_lat - min_lat) - 1
 
@@ -123,17 +167,20 @@ class NeuralSemiLagrangian(nn.Module):
         grid_x = torch.where(lat_mask_outer & geo_mask_left, grid_x + 1, grid_x)
         grid_x = torch.where(lat_mask_outer & geo_mask_right, grid_x - 1, grid_x)
 
-        # Mirror values outside of the range [-1, 1] along the latitude direction
+        # Mirror values outside of the range [-1, 1] in the latitude direction
         grid_y = torch.where(grid_y < -1, -(2 + grid_y), grid_y)
         grid_y = torch.where(grid_y > 1, 2 - grid_y, grid_y)
 
         # Reshape grid coordinates for interpolation
         # [batch, dynamic_channels, lat, lon] -> [batch*dynamic_channels, lat, lon]
-        grid_x = grid_x.view(batch_size * self.hidden_dim, *grid_x.shape[-2:])
-        grid_y = grid_y.view(batch_size * self.hidden_dim, *grid_y.shape[-2:])
+        grid_x = grid_x.view(batch_size * self.num_vels, *grid_x.shape[-2:])
+        grid_y = grid_y.view(batch_size * self.num_vels, *grid_y.shape[-2:])
+
+        # Down-project to num_vel channels
+        projected_inputs = self.down_projection(hidden_features)
 
         # Apply padding and reshape hidden features
-        dynamic_padded = self.padding_interp(hidden_features)
+        dynamic_padded = self.padding_interp(projected_inputs)
 
         # Make sure interpolation remains in right range after padding
         grid_x = grid_x * hidden_features.size(-1) / dynamic_padded.size(-1)
@@ -142,12 +189,9 @@ class NeuralSemiLagrangian(nn.Module):
         # Create interpolation grid
         grid = torch.stack([grid_x, grid_y], dim=-1)
 
-        # Apply padding and reshape hidden features
-        dynamic_padded = self.padding_interp(hidden_features)
-
         # Apply padding and reshape features
         dynamic_padded = dynamic_padded.reshape(
-            batch_size * self.hidden_dim, 1, *dynamic_padded.shape[-2:]
+            batch_size * self.num_vels, 1, *dynamic_padded.shape[-2:]
         )
 
         # Interpolate
@@ -155,14 +199,15 @@ class NeuralSemiLagrangian(nn.Module):
             dynamic_padded,
             grid,
             align_corners=True,
-            mode="bicubic",
+            mode=self.interpolation,
             padding_mode="border",
         )
 
         # Reshape back to original dimensions
-        interpolated = interpolated.view(
-            batch_size, self.hidden_dim, *interpolated.shape[-2:]
-        )
+        interpolated = interpolated.view(batch_size, self.num_vels, *self.mesh_size)
+
+        # Project back up to latent space
+        interpolated = self.up_projection(interpolated)
 
         if self.variational:
             return interpolated, kl_loss
@@ -182,63 +227,105 @@ class Paradis(nn.Module):
         # Extract dimensions from config
         output_dim = datamodule.num_out_features
         mesh_size = (datamodule.lat_size, datamodule.lon_size)
-        num_levels = len(cfg.features.pressure_levels)
+
         self.num_common_features = datamodule.num_common_features
         self.variational = cfg.ensemble.enable
 
         # Get channel sizes
-        self.num_dynamic_channels = len(datamodule.dataset.dyn_input_features) + len(
-            cfg.features.input.forcings
-        )
-        self.num_static_channels = len(cfg.features.input.constants)
-        self.num_input_channels = datamodule.dataset.num_in_features
+        self.dynamic_channels = len(datamodule.dataset.dyn_input_features) + len(datamodule.dataset.forcing_inputs)
+        self.static_channels = len(cfg.features.input.constants)
 
-        hidden_dim = cfg.model.hidden_multiplier * self.num_dynamic_channels
+        hidden_dim = cfg.model.latent_size
+        num_vels = cfg.model.velocity_vectors
+        adv_interpolation = cfg.model.adv_interpolation
+        bias_channels = cfg.model.get("bias_channels", 4)
 
         # Input projection for combined dynamic and static features
-        self.input_proj = CLP(self.num_input_channels, hidden_dim, mesh_size)
+        self.input_proj = GMBlock(
+            input_dim=self.dynamic_channels + self.static_channels,
+            hidden_dim=hidden_dim,
+            output_dim=hidden_dim,
+            layers=["SepConv", "SepConv"],
+            bias_channels=bias_channels,
+            mesh_size=mesh_size,
+            activation=False,
+        )
 
         # Rescale the time step to a fraction of a synoptic time scale
-        self.num_substeps = cfg.model.num_substeps
-        self.dt = cfg.model.base_dt / self.SYNOPTIC_TIME_SCALE / self.num_substeps
+        self.num_layers = cfg.model.num_layers
+        self.dt = (
+            cfg.model.base_dt / self.SYNOPTIC_TIME_SCALE  # / max(1, self.num_layers)
+        )
 
         # Advection layer
-        self.advection = NeuralSemiLagrangian(hidden_dim, mesh_size, self.variational)
+        self.advection = nn.ModuleList(
+            [
+                NeuralSemiLagrangian(
+                    hidden_dim,
+                    mesh_size,
+                    variational=False,
+                    num_vels=num_vels,
+                    interpolation=adv_interpolation,
+                    bias_channels=bias_channels,
+                )
+                for i in range(self.num_layers)
+            ]
+        )
 
         # Diffusion-reaction layer
-        self.diffusion_reaction = CLP(
-            hidden_dim, hidden_dim, mesh_size, pointwise_conv=True
+        self.diffusion_reaction = nn.ModuleList(
+            [
+                GMBlock(
+                    input_dim=hidden_dim,
+                    output_dim=hidden_dim,
+                    hidden_dim=hidden_dim,
+                    layers=["SepConv", "CLinear", "SepConv"],
+                    mesh_size=mesh_size,
+                    activation=False,
+                    pre_normalize=True,
+                    bias_channels=bias_channels,
+                )
+                for i in range(self.num_layers)
+            ]
         )
 
         # Output projection
-        self.output_proj = nn.Sequential(
-            GeoCyclicPadding(1),
-            nn.Conv2d(hidden_dim, output_dim, kernel_size=3),
+        self.output_proj = GMBlock(
+            input_dim=hidden_dim,
+            output_dim=output_dim,
+            hidden_dim=hidden_dim,
+            layers=["SepConv", "CLinear"],
+            mesh_size=mesh_size,
+            activation=False,
+            bias_channels=bias_channels,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
+        # No gradients on lat/lon, ever
+        x_static = x[
+            :, self.dynamic_channels :
+        ].detach()
+
         # Extract lat/lon from static features (last 2 channels)
-        x_static = x[:, self.num_dynamic_channels :]
         lat_grid = x_static[:, -2, :, :]
         lon_grid = x_static[:, -1, :, :]
 
         # Project features to latent space
         z = self.input_proj(x)
 
-        # Keep a copy for the residual projection
-        z0 = z.clone()
-
         # Compute advection and diffusion-reaction
-        for i in range(self.num_substeps):
+        for i in range(self.num_layers):
             # Advect the features in latent space using a Semi-Lagrangian step
-            z_adv = self.advection(z, lat_grid, lon_grid, self.dt)
+            z_adv = self.advection[i](z, lat_grid, lon_grid, self.dt)
+
+            z = z + z_adv
 
             # Compute the diffusion residual
-            dz = self.diffusion_reaction(z_adv)
+            dz = self.diffusion_reaction[i](z)
 
             # Update the latent space features
-            z += z_adv + self.dt * dz
+            z = z + dz
 
         # Return a scaled residual formulation
-        return x[:, : self.num_common_features] + self.output_proj(z - z0)
+        return x[:, : self.num_common_features] + self.output_proj(z)
