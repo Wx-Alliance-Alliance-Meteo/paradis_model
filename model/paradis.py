@@ -232,11 +232,24 @@ class Paradis(nn.Module):
         self.variational = cfg.ensemble.enable
 
         # Get channel sizes
-        self.dynamic_channels = len(datamodule.dataset.dyn_input_features) + len(datamodule.dataset.forcing_inputs)
+        self.dynamic_channels = len(datamodule.dataset.dyn_input_features) + len(
+            datamodule.dataset.forcing_inputs
+        )
         self.static_channels = len(cfg.features.input.constants)
 
-        hidden_dim = cfg.model.latent_size
-        num_vels = cfg.model.velocity_vectors
+        # Specify hidden dimension based on multiplier or fixed size,
+        # following configuration file
+        if cfg.model.latent_multiplier > 0:
+            hidden_dim = (
+                cfg.model.latent_multiplier * self.num_dynamic_channels
+                + self.static_channels
+            )
+            num_vels = hidden_dim
+        else:
+            hidden_dim = cfg.model.latent_size
+            num_vels = cfg.model.velocity_vectors
+
+        # Get the interpolation type
         adv_interpolation = cfg.model.adv_interpolation
         bias_channels = cfg.model.get("bias_channels", 4)
 
@@ -303,9 +316,7 @@ class Paradis(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         # No gradients on lat/lon, ever
-        x_static = x[
-            :, self.dynamic_channels :
-        ].detach()
+        x_static = x[:, self.dynamic_channels :].detach()
 
         # Extract lat/lon from static features (last 2 channels)
         lat_grid = x_static[:, -2, :, :]

@@ -1,14 +1,18 @@
 # Model architecture
 model:
-  hidden_multiplier: 4             # Scale the dynamic inputs in hidden dimension with the number of input channels
+  latent_multiplier: -1            # Scale the dynamic inputs in hidden dimension with the number of input channels
+  latent_size: 672                 # Set a fixed size of the latent space (if latent_multiplier is -1)
   forecast_steps: 1                # Number of autoregressive steps
   base_dt: 21600                   # Data time resolution in seconds (6 hours * 3600 seconds)
   checkpoint_path: null            # Path to model checkpoint for loading pre-trained weights
-  num_substeps: 2                  # Number of time substeps
+  num_layers: 2                    # Model depth
+  bias_channels: 4                 # Number of bias channels
+  velocity_vectors: 168            # Number of velocity layers (if latent_multiplier is -1)
+  adv_interpolation: bicubic       # Choose between bilinear or bicubic
 
 # Initialization settings (seeding)
-# init:
-  # seed: 42
+init:
+  seed: 42                         # If not provided, a seed will not be used
 
 # Input dataset
 dataset:
@@ -39,7 +43,7 @@ forecast:
 # Training parameters
 training:
   max_epochs: -1                   # Maximum number of epochs the training is allowed (-1 to disable and use steps)
-  max_steps: 500                   # Maximum number of steps to use for training (-1 to disable and use epochs)
+  max_steps: -1                    # Maximum number of steps to use for training (-1 to disable and use epochs)
   progress_bar: true               # Enable progress bar
   gradient_clip_val: -1            # Gradient clipping value, set to -1 to disable
   print_losses: false              # Manually print losses to screen (removes progress bar)
