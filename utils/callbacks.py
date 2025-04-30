@@ -3,6 +3,7 @@ import lightning as L
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.callbacks import TQDMProgressBar
+from lightning.pytorch.utilities import rank_zero_only
 
 
 class ModProgressBar(TQDMProgressBar):
@@ -23,6 +24,7 @@ class ModProgressBar(TQDMProgressBar):
         items.pop("v_num", None)
         return items
 
+    @rank_zero_only
     def on_train_epoch_start(self, trainer, *_):
         # Default: replaces the training progress bar with one
         # for the current epoch.  Modified: *don't* replace
@@ -53,6 +55,7 @@ class ModProgressBar(TQDMProgressBar):
         )
         self.train_progress_bar.refresh()
 
+    @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         # Update the progress bar based on the total number of batches
         n = int(batch_idx + trainer.current_epoch * trainer.num_training_batches + 1)
@@ -62,19 +65,20 @@ class ModProgressBar(TQDMProgressBar):
                 self.train_progress_bar.n = n
                 self.train_progress_bar.refresh()
 
+    @rank_zero_only
     def on_train_epoch_end(self, trainer, pl_module):
         # Override default behaviour to not close the progress
         # bar at epoch-end, regardless of 'leave' parameter (the bar isn't done)
         if not self.train_progress_bar.disable:
             self.train_progress_bar.set_postfix(self.get_metrics(trainer, pl_module))
 
+    @rank_zero_only
     def on_train_end(self, *_):
         # Explicitly close the *container* of the progress bar, working around the
         # inexplicable littering of progress bars in Jupyter notebooks
 
         # First, close validation progress bar if it's still open
         if self._val_progress_bar is not None:
-            # print(f'val_progress_bar is {repr(self._val_progress_bar)}')
             if "container" in self.val_progress_bar.__dict__:
                 self.val_progress_bar.container.close()
             self.val_progress_bar.close()
@@ -83,6 +87,7 @@ class ModProgressBar(TQDMProgressBar):
             self.train_progress_bar.container.close()
         return super().on_train_end(*_)
 
+    @rank_zero_only
     def on_validation_start(self, trainer, pl_module):
         # Redefine on_validation_start to only create a progress bar if
         # one does not exist
@@ -93,6 +98,7 @@ class ModProgressBar(TQDMProgressBar):
             # else:
             #     raise ValueError()
 
+    @rank_zero_only
     def on_validation_end(self, trainer, pl_module):
         """
         Replicate TQDMProgressBar.on_validation_end, except keep the validation progress bar open

@@ -416,7 +416,11 @@ class LitParadis(L.LightningModule):
             train_loss = self.trainer.callback_metrics.get("train_loss")
             val_loss = self.trainer.callback_metrics.get("val_loss")
 
-            if train_loss is not None and val_loss is not None:
+            if (
+                self.trainer.is_global_zero
+                and train_loss is not None
+                and val_loss is not None
+            ):
                 print(
                     f"Epoch {self.current_epoch:4d} | "
                     f"Train Loss: {train_loss.item():.6f} | "
