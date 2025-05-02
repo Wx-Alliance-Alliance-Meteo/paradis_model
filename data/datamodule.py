@@ -21,7 +21,6 @@ def sync_forecast_steps(shared_config, device):
     )
     dist.broadcast(tensor, src=0)
     shared_config.forecast_steps = int(tensor.cpu().item())
-    print("updated and synced to", shared_config.forecast_steps)
 
 
 def truncate_collate_fn(batch):
@@ -44,6 +43,9 @@ class Era5DataModule(L.LightningDataModule):
     def __init__(self, cfg: DictConfig) -> None:
         super().__init__()
         self.manager = Manager()
+
+        # This configuration is shared in the pool of workers associated with a gpu
+        # Hence, an update to its attributes will be visible to all
         self.shared_config = self.manager.Namespace()
 
         # Extract configuration parameters for data
