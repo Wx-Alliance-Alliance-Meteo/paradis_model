@@ -35,6 +35,7 @@ ensemble:
 
 # Forecast parameters
 forecast:
+  enable: false                    # Set model to forecast mode
   start_date: 2019-12-31           # Time to generate forecast from (YYYY-MM-DD) or (YYYY-MM-DDTHH:MM:SS)
   end_date: null                   # OPTIONAL, for validation purposes (YYYY-MM-DD) or null
   output_frequency: 2              # Store to file every output_frequency steps
@@ -48,6 +49,11 @@ training:
   gradient_clip_val: -1            # Gradient clipping value, set to -1 to disable
   print_losses: false              # Manually print losses to screen (removes progress bar)
   log_every_n_steps: 50            # Write to log every n steps
+
+  autoregression:
+    init_steps: 1                  # Number of forecast steps to start training with
+    increase_interval: -1          # Number of approximate steps between step increases (-1 to disable increasing)
+    increase_factor: 2             # Increase autoregressive steps by this number every increase_every_n_steps
 
   dataset:
     start_date: 2010-01-01         # Start date for the training dataset (YYYY-MM-DD)

@@ -27,10 +27,11 @@ class ERA5Dataset(torch.utils.data.Dataset):
         root_dir: str,
         start_date: str,
         end_date: str,
-        forecast_steps: int = 1,
+        max_forecast_steps: int = 1,
         dtype=torch.float32,
         preload=False,  # Whether to preload the dataset
         cfg: DictConfig = DictConfig({}),
+        shared_config=None,
     ) -> None:
 
         self.cfg = cfg
@@ -38,14 +39,15 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.preload = preload
         self.eps = 1e-12
         self.root_dir = root_dir
-        self.forecast_steps = forecast_steps
+        self.max_forecast_steps = max_forecast_steps
         self.dtype = dtype
         self.forcing_inputs = features_cfg.input.forcings
+        self.shared_config = shared_config
 
         # Lazy open this dataset
         ds = xarray.open_mfdataset(
             os.path.join(root_dir, "*"),
-            chunks={"time": self.forecast_steps + 1},
+            chunks={"time": self.max_forecast_steps + 1},
             engine="zarr",
         )
 
@@ -78,7 +80,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         time_resolution = int(cfg.dataset.time_resolution[:-1])
 
         # Get the number of additional time instances needed in data for autoregression
-        hours = time_resolution * (self.forecast_steps)
+        hours = time_resolution * (self.max_forecast_steps)
         time_delta = timedelta(hours=hours)
         time_delta = numpy.timedelta64(int(time_delta.total_seconds()), "s")
 
@@ -190,7 +192,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
             .permute(1, 2, 0)
             .reshape(self.lat_size, self.lon_size, -1)
             .unsqueeze(0)
-            .expand(self.forecast_steps, -1, -1, -1)
+            .expand(self.max_forecast_steps, -1, -1, -1)
         )
 
         # Store these for access in forecaster
@@ -239,19 +241,19 @@ class ERA5Dataset(torch.utils.data.Dataset):
     def __len__(self):
         # Do not yield a value for the last time in the dataset since there
         # is no future data
-        return self.length - self.forecast_steps
+        return self.length - self.max_forecast_steps
 
     def __getitem__(self, ind: int):
+        # Retrieve the current value of forecast steps
+        steps = self.shared_config.forecast_steps
 
         # Extract values from the requested indices
-        input_data = self.ds_input.isel(time=slice(ind, ind + self.forecast_steps))
+        input_data = self.ds_input.isel(time=slice(ind, ind + steps))
 
-        true_data = self.ds_output.isel(
-            time=slice(ind + 1, ind + self.forecast_steps + 1)
-        )
+        true_data = self.ds_output.isel(time=slice(ind + 1, ind + steps + 1))
 
         # Load arrays into CPU memory
-        input_data, true_data = dask.compute(input_data, true_data) # type: ignore -- dask.compute is really dask.base.compute
+        input_data, true_data = dask.compute(input_data, true_data)  # type: ignore -- dask.compute is really dask.base.compute
 
         # # Add checks for invalid values
         if numpy.isnan(input_data.data).any() or numpy.isnan(true_data.data).any():
@@ -265,13 +267,13 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self._apply_normalization(x, y)
 
         # Compute forcings
-        forcings = self._compute_forcings(input_data)
+        forcings = self._compute_forcings(input_data, steps)
 
         if forcings is not None:
             x = torch.cat([x, forcings], dim=-1)
 
         # Add constant data to input
-        x = torch.cat([x, self.constant_data], dim=-1)
+        x = torch.cat([x, self.constant_data[:steps]], dim=-1)
 
         # Permute to [time, channels, latitude, longitude] format
         x_grid = x.permute(0, 3, 1, 2)
@@ -414,7 +416,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
             output_data[..., self.norm_zscore_out], self.output_mean, self.output_std
         )
 
-    def _compute_forcings(self, input_data):
+    def _compute_forcings(self, input_data, steps):
         """Computes forcing paramters based in input_data array"""
 
         forcings_time_ds = time_forcings(input_data["time"].values)
@@ -422,7 +424,11 @@ class ERA5Dataset(torch.utils.data.Dataset):
         forcings = []
         for var in self.forcing_inputs:
             if var == "toa_incident_solar_radiation":
-                toa_rad = toa_radiation(input_data["time"].values, self.lat.cpu().numpy(), self.lon.cpu().numpy())
+                toa_rad = toa_radiation(
+                    input_data["time"].values,
+                    self.lat.cpu().numpy(),
+                    self.lon.cpu().numpy(),
+                )
 
                 toa_rad = torch.tensor(
                     (toa_rad - self.toa_rad_mean) / self.toa_rad_std,
@@ -437,7 +443,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
                     value = (
                         torch.tensor(var_ds.data, dtype=self.dtype)
                         .view(-1, 1, 1, 1)
-                        .expand(self.forecast_steps, self.lat_size, self.lon_size, 1)
+                        .expand(steps, self.lat_size, self.lon_size, 1)
                     )
                     forcings.append(value)
 

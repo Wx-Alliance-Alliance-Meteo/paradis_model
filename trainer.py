@@ -1,5 +1,6 @@
 """Model training implementation."""
 
+import datetime
 import time
 import re
 import logging
@@ -9,7 +10,7 @@ import lightning as L
 
 from model.paradis import Paradis
 from utils.loss import ParadisLoss
-from data.datamodule import Era5DataModule
+from data.datamodule import Era5DataModule, sync_forecast_steps
 
 import omegaconf.dictconfig
 
@@ -31,6 +32,7 @@ class LitParadis(L.LightningModule):
         super().__init__()
 
         # Instantiate the model
+        self.datamodule = datamodule
         self.model = Paradis(datamodule, cfg)
         self.cfg = cfg
         self.variational = cfg.ensemble.enable
@@ -98,12 +100,23 @@ class LitParadis(L.LightningModule):
             delta_loss=cfg.training.loss_function.delta_loss,
         )
 
+        # Set up autoregression routine if needed
         self.forecast_steps = cfg.model.forecast_steps
+
+        self.forecast_inc_factor = 0
+        self.forecast_inc_interval = -1
+        if not cfg.forecast.enable:
+            self.forecast_inc_factor = cfg.training.autoregression.increase_factor
+            self.forecast_inc_interval = cfg.training.autoregression.increase_interval
+            self.max_forecast_steps = datamodule.max_forecast_steps
+        self.increase_forecast_steps_in_val = False
+
         self.num_common_features = datamodule.num_common_features
         self.print_losses = cfg.training.print_losses
 
+        # Compile model in place
         if cfg.compute.compile:
-            self.model.compile(  # compile model in place
+            self.model.compile(
                 mode="default",
                 fullgraph=True,
                 dynamic=False,
@@ -134,7 +147,8 @@ class LitParadis(L.LightningModule):
         import torch
 
         p_loss = torch.tensor(0.0)
-        for step in range(self.forecast_steps):
+        num_steps = input_data.size(1)
+        for step in range(num_steps):
             loss = self.loss_fn(
                 input_data[:, step, : self.num_common_features], pred_data[:, step]
             )
@@ -282,14 +296,14 @@ class LitParadis(L.LightningModule):
             self.epoch_start_time = time.time()
 
     def training_step(self, batch, batch_idx):
-
         input_data, true_data = batch
 
         train_loss = 0.0
         kl_loss = 0.0
         input_data_step = input_data[:, 0]  # Start with first timestep
 
-        for step in range(self.forecast_steps):
+        num_steps = input_data.size(1)
+        for step in range(num_steps):
             # Forward pass
             if self.variational:
                 output_data, kl_loss = self(input_data_step)
@@ -305,7 +319,7 @@ class LitParadis(L.LightningModule):
             train_loss += loss
 
             # Prepare next step input
-            if step + 1 < self.forecast_steps:
+            if step + 1 < num_steps:
                 input_data_step = self._autoregression_input_from_output(
                     input_data[:, step + 1], output_data
                 )
@@ -313,7 +327,7 @@ class LitParadis(L.LightningModule):
         # Log metrics
         self.log(
             "train_loss",
-            train_loss / self.forecast_steps,
+            train_loss / num_steps,
             on_step=True,
             on_epoch=False,
             prog_bar=True,
@@ -340,7 +354,16 @@ class LitParadis(L.LightningModule):
                 gradient_clip_algorithm="norm",
             )
 
-        return train_loss / self.forecast_steps
+        self.log(
+            "forecast_steps",
+            num_steps,
+            on_step=True,
+            on_epoch=False,
+            prog_bar=True,
+            sync_dist=True,
+        )
+
+        return train_loss / num_steps
 
     def validation_step(self, batch, batch_idx):
         """Validation step."""
@@ -351,8 +374,9 @@ class LitParadis(L.LightningModule):
         gz500_loss = 0.0
         kl_loss = 0.0
         input_data_step = input_data[:, 0]  # Start with first timestep
+        num_steps = input_data.size(1)
 
-        for step in range(self.forecast_steps):
+        for step in range(num_steps):
             # Forward pass
             if self.variational:
                 output_data, kl_loss = self(input_data_step)
@@ -371,14 +395,14 @@ class LitParadis(L.LightningModule):
             val_loss += loss
 
             # Prepare next step input
-            if step + 1 < self.forecast_steps:
+            if step + 1 < num_steps:
                 input_data_step = self._autoregression_input_from_output(
                     input_data[:, step + 1], output_data
                 )
 
         self.log(
             "val_loss",
-            val_loss / self.forecast_steps,
+            val_loss / num_steps,
             on_step=False,
             on_epoch=True,
             prog_bar=True,
@@ -388,7 +412,7 @@ class LitParadis(L.LightningModule):
         # Log GZ500 RMSE
         self.log(
             "GZ500-RMSE",
-            gz500_loss / self.forecast_steps,
+            gz500_loss / num_steps,
             on_step=False,
             on_epoch=True,
             prog_bar=True,
@@ -404,7 +428,7 @@ class LitParadis(L.LightningModule):
                 prog_bar=True,
                 sync_dist=True,
             )
-        return val_loss / self.forecast_steps
+        return val_loss / num_steps
 
     def on_train_epoch_end(self):
         """Log epoch time and metrics if printing losses."""
@@ -454,18 +478,41 @@ class LitParadis(L.LightningModule):
         return super().on_before_optimizer_step(optimizer)
 
     def on_train_batch_start(self, batch, batch_idx):
-        import datetime
-
         # Record current time for time-per-step calculation
         self.tic = datetime.datetime.now()
+
+        if self.forecast_inc_interval < 0:
+            return super().on_train_batch_start(batch, batch_idx)
+
+        # Get the number of prefetch samples per worker
+        num_samples_prefetched = self.datamodule.prefetch_factor
+
+        # Increase the forecast steps for autoregression training
+        # Note that this will increase after some samples have already been pre-fetched
+        # This means that the actual increase step is only approximate, as the trainer
+        # will maintain the lower number forecast steps until a full set of samples
+        # in a batch have been fetched with the right shape
+
+        self.forecast_steps = self.datamodule.shared_config.forecast_steps
+
+        if (
+            self.global_step > 0
+            and (self.global_step + num_samples_prefetched)
+            % self.forecast_inc_interval
+            == 0
+        ):
+            new_forecast_steps = self.forecast_steps + self.forecast_inc_factor
+            if new_forecast_steps > self.max_forecast_steps:
+                return super().on_train_batch_start(batch, batch_idx)
+
+            self.forecast_steps += self.forecast_inc_factor
+            self.datamodule.shared_config.forecast_steps = self.forecast_steps
+            sync_forecast_steps(self.datamodule.shared_config, self.device)
 
         return super().on_train_batch_start(batch, batch_idx)
 
     def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure=None):
-        import datetime
-
         super().optimizer_step(epoch, batch_idx, optimizer, optimizer_closure)
-        # optimizer.step(closure=optimizer_closure)
 
         # After the optimzier step, comptue and log how long the step took
         toc = datetime.datetime.now()
