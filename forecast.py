@@ -58,8 +58,8 @@ def main(cfg: DictConfig):
 
     # Load model
     litmodel = LitParadis(datamodule, cfg)
-    if cfg.model.checkpoint_path:
-        checkpoint = torch.load(cfg.model.checkpoint_path, weights_only=True)
+    if cfg.init.checkpoint_path:
+        checkpoint = torch.load(cfg.init.checkpoint_path, weights_only=True)
         litmodel.load_state_dict(checkpoint["state_dict"])
     else:
         raise ValueError(

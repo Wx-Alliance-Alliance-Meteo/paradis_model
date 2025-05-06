@@ -10,7 +10,7 @@ import lightning as L
 
 from model.paradis import Paradis
 from utils.loss import ParadisLoss
-from data.datamodule import Era5DataModule, sync_forecast_steps
+from data.datamodule import Era5DataModule
 
 import omegaconf.dictconfig
 
@@ -103,14 +103,6 @@ class LitParadis(L.LightningModule):
         # Set up autoregression routine if needed
         self.forecast_steps = cfg.model.forecast_steps
 
-        self.forecast_inc_factor = 0
-        self.forecast_inc_interval = -1
-        if not cfg.forecast.enable:
-            self.forecast_inc_factor = cfg.training.autoregression.increase_factor
-            self.forecast_inc_interval = cfg.training.autoregression.increase_interval
-            self.max_forecast_steps = datamodule.max_forecast_steps
-        self.increase_forecast_steps_in_val = False
-
         self.num_common_features = datamodule.num_common_features
         self.print_losses = cfg.training.print_losses
 
@@ -122,6 +114,14 @@ class LitParadis(L.LightningModule):
                 dynamic=False,
                 backend="inductor",
             )
+
+        # Load weights only but reset lightning configuration
+        if cfg.init.checkpoint_path and not cfg.init.restart:
+            # Load into CPU, then Lightning will transfer to GPU
+            checkpoint = torch.load(
+                cfg.init.checkpoint_path, weights_only=True, map_location="cpu"
+            )
+            self.load_state_dict(checkpoint["state_dict"])
 
         self.epoch_start_time = None
 
@@ -480,34 +480,6 @@ class LitParadis(L.LightningModule):
     def on_train_batch_start(self, batch, batch_idx):
         # Record current time for time-per-step calculation
         self.tic = datetime.datetime.now()
-
-        if self.forecast_inc_interval < 0:
-            return super().on_train_batch_start(batch, batch_idx)
-
-        # Get the number of prefetch samples per worker
-        num_samples_prefetched = self.datamodule.prefetch_factor
-
-        # Increase the forecast steps for autoregression training
-        # Note that this will increase after some samples have already been pre-fetched
-        # This means that the actual increase step is only approximate, as the trainer
-        # will maintain the lower number forecast steps until a full set of samples
-        # in a batch have been fetched with the right shape
-
-        self.forecast_steps = self.datamodule.shared_config.forecast_steps
-
-        if (
-            self.global_step > 0
-            and (self.global_step + num_samples_prefetched)
-            % self.forecast_inc_interval
-            == 0
-        ):
-            new_forecast_steps = self.forecast_steps + self.forecast_inc_factor
-            if new_forecast_steps > self.max_forecast_steps:
-                return super().on_train_batch_start(batch, batch_idx)
-
-            self.forecast_steps += self.forecast_inc_factor
-            self.datamodule.shared_config.forecast_steps = self.forecast_steps
-            sync_forecast_steps(self.datamodule.shared_config, self.device)
 
         return super().on_train_batch_start(batch, batch_idx)
 

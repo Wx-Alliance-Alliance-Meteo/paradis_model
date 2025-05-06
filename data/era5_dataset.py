@@ -27,11 +27,10 @@ class ERA5Dataset(torch.utils.data.Dataset):
         root_dir: str,
         start_date: str,
         end_date: str,
-        max_forecast_steps: int = 1,
+        forecast_steps: int,
         dtype=torch.float32,
         preload=False,  # Whether to preload the dataset
         cfg: DictConfig = DictConfig({}),
-        shared_config=None,
     ) -> None:
 
         self.cfg = cfg
@@ -39,15 +38,14 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.preload = preload
         self.eps = 1e-12
         self.root_dir = root_dir
-        self.max_forecast_steps = max_forecast_steps
+        self.forecast_steps = forecast_steps
         self.dtype = dtype
         self.forcing_inputs = features_cfg.input.forcings
-        self.shared_config = shared_config
 
         # Lazy open this dataset
         ds = xarray.open_mfdataset(
             os.path.join(root_dir, "*"),
-            chunks={"time": self.max_forecast_steps + 1},
+            chunks={"time": self.forecast_steps + 1},
             engine="zarr",
         )
 
@@ -80,7 +78,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         time_resolution = int(cfg.dataset.time_resolution[:-1])
 
         # Get the number of additional time instances needed in data for autoregression
-        hours = time_resolution * (self.max_forecast_steps)
+        hours = time_resolution * (self.forecast_steps)
         time_delta = timedelta(hours=hours)
         time_delta = numpy.timedelta64(int(time_delta.total_seconds()), "s")
 
@@ -192,7 +190,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
             .permute(1, 2, 0)
             .reshape(self.lat_size, self.lon_size, -1)
             .unsqueeze(0)
-            .expand(self.max_forecast_steps, -1, -1, -1)
+            .expand(self.forecast_steps, -1, -1, -1)
         )
 
         # Store these for access in forecaster
@@ -241,11 +239,11 @@ class ERA5Dataset(torch.utils.data.Dataset):
     def __len__(self):
         # Do not yield a value for the last time in the dataset since there
         # is no future data
-        return self.length - self.max_forecast_steps
+        return self.length - self.forecast_steps
 
     def __getitem__(self, ind: int):
         # Retrieve the current value of forecast steps
-        steps = self.shared_config.forecast_steps
+        steps = self.forecast_steps
 
         # Extract values from the requested indices
         input_data = self.ds_input.isel(time=slice(ind, ind + steps))

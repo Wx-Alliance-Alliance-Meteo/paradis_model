@@ -4,7 +4,6 @@ model:
   latent_size: 672                 # Set a fixed size of the latent space (if latent_multiplier is -1)
   forecast_steps: 1                # Number of autoregressive steps
   base_dt: 21600                   # Data time resolution in seconds (6 hours * 3600 seconds)
-  checkpoint_path: null            # Path to model checkpoint for loading pre-trained weights
   num_layers: 2                    # Model depth
   bias_channels: 4                 # Number of bias channels
   velocity_vectors: 168            # Number of velocity layers (if latent_multiplier is -1)
@@ -13,6 +12,8 @@ model:
 # Initialization settings (seeding)
 init:
   seed: 42                         # If not provided, a seed will not be used
+  checkpoint_path: null            # Path to model checkpoint for loading pre-trained weights
+  restart: false                   # Whether to restart from checkpoint (true) or only load pre-trained weights (false)
 
 # Input dataset
 dataset:
@@ -51,9 +52,9 @@ training:
   log_every_n_steps: 50            # Write to log every n steps
 
   autoregression:
+    enable: false                  # Whether to enable autoregressive training
     init_steps: 1                  # Number of forecast steps to start training with
-    increase_interval: -1          # Number of approximate steps between step increases (-1 to disable increasing)
-    increase_factor: 2             # Increase autoregressive steps by this number every increase_every_n_steps
+    increase_factor: 1             # Increase autoregressive steps by this number every increase_every_n_steps
 
   dataset:
     start_date: 2010-01-01         # Start date for the training dataset (YYYY-MM-DD)
