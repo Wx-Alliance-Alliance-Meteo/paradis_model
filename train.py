@@ -19,78 +19,48 @@ from utils.system import setup_system, save_train_config
 def main(cfg: DictConfig):
     """Train the model on ERA5 dataset."""
 
-    # Determine the number of training launches
-    num_launches = 1
-    if cfg.training.autoregression.enable:
-        num_launches = (
-            cfg.model.forecast_steps - cfg.training.autoregression.init_steps + 1
-        ) // cfg.training.autoregression.increase_factor
+    # Initiate seed for reproducibility and set torch precision
+    setup_system(cfg)
 
-        # Initialzie with init_steps forecast steps
-        cfg.model.forecast_steps = cfg.training.autoregression.init_steps
+    # Instantiate data module
+    datamodule = Era5DataModule(cfg)
 
-        # Ensure every run resets the parameters
-        # This is necessary to enable wsd training at every forecast_step increase
-        cfg.init.restart = False
+    # Early setup call for datamodule attribute access
+    datamodule.setup(stage="fit")
 
-    for i in range(num_launches):
+    # Initialize model
+    litmodel = LitParadis(datamodule, cfg)
 
-        # Initiate seed for reproducibility and set torch precision
-        setup_system(cfg)
+    # Prepare callbacks
+    callbacks = enable_callbacks(cfg)
 
-        # Instantiate data module
-        datamodule = Era5DataModule(cfg)
+    # Instantiate lightning trainer with options
+    trainer = L.Trainer(
+        default_root_dir="logs/",
+        accelerator=cfg.compute.accelerator,
+        devices=cfg.compute.num_devices,
+        strategy="auto" if cfg.compute.num_devices == 1 else "ddp",
+        max_epochs=cfg.training.max_epochs,
+        max_steps=cfg.training.max_steps,
+        gradient_clip_val=cfg.training.gradient_clip_val,
+        gradient_clip_algorithm="norm",
+        log_every_n_steps=cfg.training.log_every_n_steps,
+        callbacks=callbacks,
+        precision="16-mixed" if cfg.compute.use_amp else "32-true",
+        enable_progress_bar=cfg.training.progress_bar and not cfg.training.print_losses,
+        enable_model_summary=True,
+        logger=True,
+        val_check_interval=cfg.training.validation_dataset.validation_every_n_steps,
+        limit_val_batches=cfg.training.validation_dataset.validation_batches,
+        enable_checkpointing=cfg.training.checkpointing.enabled,
+    )
 
-        # Early setup call for datamodule attribute access
-        datamodule.setup(stage="fit")
+    # Keep track of configuration parameters in logging directory
+    save_train_config(trainer.logger.log_dir, cfg)  # type: ignore
 
-        # Initialize model
-        litmodel = LitParadis(datamodule, cfg)
-
-        # Prepare callbacks
-        callbacks = enable_callbacks(cfg)
-
-        # Instantiate lightning trainer with options
-        trainer = L.Trainer(
-            default_root_dir="logs/",
-            accelerator=cfg.compute.accelerator,
-            devices=cfg.compute.num_devices,
-            strategy="auto" if cfg.compute.num_devices == 1 else "ddp",
-            max_epochs=cfg.training.max_epochs,
-            max_steps=cfg.training.max_steps,
-            gradient_clip_val=cfg.training.gradient_clip_val,
-            gradient_clip_algorithm="norm",
-            log_every_n_steps=cfg.training.log_every_n_steps,
-            callbacks=callbacks,
-            precision="16-mixed" if cfg.compute.use_amp else "32-true",
-            enable_progress_bar=cfg.training.progress_bar
-            and not cfg.training.print_losses,
-            enable_model_summary=True,
-            logger=True,
-            val_check_interval=cfg.training.validation_dataset.validation_every_n_steps,
-            limit_val_batches=cfg.training.validation_dataset.validation_batches,
-            enable_checkpointing=cfg.training.checkpointing.enabled,
-        )
-
-        # Keep track of configuration parameters in logging directory
-        save_train_config(trainer.logger.log_dir, cfg)  # type: ignore
-
-        # Train model
-        checkpoint_path = cfg.init.checkpoint_path if cfg.init.restart else None
-        trainer.fit(litmodel, datamodule=datamodule, ckpt_path=checkpoint_path)
-
-        if num_launches > 1:
-            # Increase the number of forecast steps for the next portion of the run
-            cfg.model.forecast_steps += cfg.training.autoregression.increase_factor
-
-            # Store the checkpoint path for the next run
-            cfg.init.checkpoint_path = trainer.checkpoint_callback.best_model_path
-
-            # Free objects
-            del trainer, litmodel, datamodule
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
-            gc.collect()
+    # Train model
+    checkpoint_path = cfg.init.checkpoint_path if cfg.init.restart else None
+    trainer.fit(litmodel, datamodule=datamodule, ckpt_path=checkpoint_path)
 
 
 if __name__ == "__main__":
