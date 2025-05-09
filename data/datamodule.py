@@ -47,6 +47,7 @@ class Era5DataModule(L.LightningDataModule):
                     forecast_steps=self.forecast_steps,
                     preload=self.cfg.training.dataset.preload,
                     cfg=self.cfg,
+                    time_interval=self.cfg.dataset.time_resolution,
                 )
 
                 # Generate validation dataset
@@ -64,6 +65,7 @@ class Era5DataModule(L.LightningDataModule):
                     forecast_steps=self.forecast_steps,
                     preload=self.cfg.training.validation_dataset.preload,
                     cfg=self.cfg,
+                    time_interval=self.cfg.dataset.time_resolution,
                 )
 
                 # Make certain attributes available at the datamodule level
@@ -91,6 +93,7 @@ class Era5DataModule(L.LightningDataModule):
                     end_date=pred_end_date,
                     forecast_steps=self.forecast_steps,
                     cfg=self.cfg,
+                    time_interval=self.cfg.forecast.time_interval,
                 )
 
                 self.num_common_features = self.dataset.num_common_features
@@ -147,5 +150,4 @@ class Era5DataModule(L.LightningDataModule):
             shuffle=False,
             pin_memory=True,
             drop_last=False,
-            prefetch_factor=self.prefetch_factor,
         )

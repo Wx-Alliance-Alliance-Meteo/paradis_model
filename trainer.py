@@ -100,7 +100,6 @@ class LitParadis(L.LightningModule):
             delta_loss=cfg.training.loss_function.delta_loss,
         )
 
-        # Set up autoregression routine if needed
         self.forecast_steps = cfg.model.forecast_steps
 
         self.num_common_features = datamodule.num_common_features

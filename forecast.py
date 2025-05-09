@@ -30,9 +30,6 @@ def main(cfg: DictConfig):
         else "cpu"
     )
 
-    # Decide whether to save results to file
-    save_results_to_file = True
-
     # Initialize data module
     datamodule = Era5DataModule(cfg)
     datamodule.setup(stage="predict")
@@ -92,6 +89,7 @@ def main(cfg: DictConfig):
     with torch.inference_mode(), torch.no_grad():
         time_start_ind = 0
         for input_data, ground_truth in tqdm(datamodule.predict_dataloader()):
+
             batch_size = input_data.shape[0]
 
             output_forecast = torch.empty(
@@ -136,7 +134,7 @@ def main(cfg: DictConfig):
             )
 
             # Save results
-            if save_results_to_file:
+            if cfg.forecast.output_file is not None:
                 save_results_to_zarr(
                     output_forecast,
                     atmospheric_vars,
@@ -144,7 +142,7 @@ def main(cfg: DictConfig):
                     constant_vars,
                     dataset,
                     pressure_levels,
-                    "results/forecast_result.zarr",
+                    cfg.forecast.output_file,
                     ind,
                     time_start_ind,
                     time_start_ind + batch_size,

@@ -31,6 +31,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         dtype=torch.float32,
         preload=False,  # Whether to preload the dataset
         cfg: DictConfig = DictConfig({}),
+        time_interval: str = None,
     ) -> None:
 
         self.cfg = cfg
@@ -77,8 +78,16 @@ class ERA5Dataset(torch.utils.data.Dataset):
         # Add the number of forecast steps to the range of dates
         time_resolution = int(cfg.dataset.time_resolution[:-1])
 
+        # Apply an initialization time interval if necessary
+        if time_interval is None:
+            time_interval = time_resolution
+        else:
+            time_interval = int(time_interval[:-1])
+
+        interval_steps = time_interval // time_resolution
+
         # Get the number of additional time instances needed in data for autoregression
-        hours = time_resolution * (self.forecast_steps)
+        hours = time_resolution * self.forecast_steps
         time_delta = timedelta(hours=hours)
         time_delta = numpy.timedelta64(int(time_delta.total_seconds()), "s")
 
@@ -89,13 +98,16 @@ class ERA5Dataset(torch.utils.data.Dataset):
                 end_date += "T23:59:59"
 
             end_date_dt = numpy.datetime64(end_date)
-            adjusted_end_date = end_date_dt + time_delta
+            adjusted_end_date = end_date_dt + time_delta * interval_steps
         else:
             start_date_dt = numpy.datetime64(start_date)
-            adjusted_end_date = start_date_dt + time_delta
+            adjusted_end_date = start_date_dt + time_delta * interval_steps
 
         # Select the time range needed to process this dataset
         ds = ds.sel(time=slice(start_date, adjusted_end_date))
+
+        if interval_steps > 1:
+            ds = ds.isel(time=slice(0, None, interval_steps))
 
         # Extract latitude and longitude to build the graph
         self.lat = torch.from_numpy(ds.latitude.values)

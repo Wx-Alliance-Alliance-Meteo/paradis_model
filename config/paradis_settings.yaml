@@ -40,7 +40,9 @@ forecast:
   start_date: 2019-12-31           # Time to generate forecast from (YYYY-MM-DD) or (YYYY-MM-DDTHH:MM:SS)
   end_date: null                   # OPTIONAL, for validation purposes (YYYY-MM-DD) or null
   output_frequency: 2              # Store to file every output_frequency steps
-  generate_plots: true             # Generate a plot for each time instance
+  generate_plots: false            # Generate a plot for each time instance
+  output_file: null                # Name of output forecast file
+  time_interval: 36h               # Generate forecast initialized at this interval
 
 # Training parameters
 training:
