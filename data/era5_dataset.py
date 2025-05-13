@@ -269,7 +269,6 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.gz500_mean = ds_output.sel(features="geopotential_h500")["mean"].values
         self.gz500_std = ds_output.sel(features="geopotential_h500")["std"].values
 
-
     def __len__(self):
         # Do not yield a value for the last time in the dataset since there
         # is no future data
@@ -302,13 +301,10 @@ class ERA5Dataset(torch.utils.data.Dataset):
         if self.concat_input:
             x = torch.stack(
                 [
-                    torch.cat(
-                        [x[j] for j in range(i, i + self.n_time_inputs)], dim=-1
-                    )
+                    torch.cat([x[j] for j in range(i, i + self.n_time_inputs)], dim=-1)
                     for i in range(steps)
                 ]
             )
-
 
         y = torch.tensor(true_data.data, dtype=self.dtype)
 
@@ -323,8 +319,6 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
         # Add constant data to input
         x = torch.cat([x, self.constant_data[:steps]], dim=-1)
-
-
 
         # Permute to [time, channels, latitude, longitude] format
         x_grid = x.permute(0, 3, 1, 2)
@@ -420,16 +414,24 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.output_min = torch.tensor(ds_output["min"].data, dtype=self.dtype)
 
         # Keep only statistics of variables that require standard normalization
-        self.input_mean = self.input_mean[self.norm_zscore_in % self.num_dyn_inputs_single]
-        self.input_std = self.input_std[self.norm_zscore_in % self.num_dyn_inputs_single]
+        self.input_mean = self.input_mean[
+            self.norm_zscore_in % self.num_dyn_inputs_single
+        ]
+        self.input_std = self.input_std[
+            self.norm_zscore_in % self.num_dyn_inputs_single
+        ]
         self.output_mean = self.output_mean[self.norm_zscore_out]
         self.output_std = self.output_std[self.norm_zscore_out]
 
         # Prepare variables required in custom normalization
 
         # Maximum and minimum specific humidity in dataset
-        self.q_max = torch.max(self.input_max[self.norm_humidity_in % self.num_dyn_inputs_single]).detach()
-        self.q_min = torch.min(self.input_min[self.norm_humidity_in % self.num_dyn_inputs_single]).detach()
+        self.q_max = torch.max(
+            self.input_max[self.norm_humidity_in % self.num_dyn_inputs_single]
+        ).detach()
+        self.q_min = torch.min(
+            self.input_min[self.norm_humidity_in % self.num_dyn_inputs_single]
+        ).detach()
 
         if self.q_min < self.eps:
             self.q_min = torch.tensor(self.eps).detach()
@@ -437,7 +439,6 @@ class ERA5Dataset(torch.utils.data.Dataset):
         # Extract the toa_radiation mean and std
         self.toa_rad_std = ds_input.attrs["toa_radiation_std"]
         self.toa_rad_mean = ds_input.attrs["toa_radiation_mean"]
-
 
     def _apply_normalization(self, input_data, output_data):
 
