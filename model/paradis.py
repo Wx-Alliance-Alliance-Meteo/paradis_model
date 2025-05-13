@@ -235,6 +235,9 @@ class Paradis(nn.Module):
         self.dynamic_channels = datamodule.dataset.num_in_dyn_features
         self.static_channels = datamodule.dataset.num_in_static_features
 
+        # Get the number of time inputs
+        self.n_inputs = datamodule.dataset.n_time_inputs
+
         # Specify hidden dimension based on multiplier or fixed size,
         # following configuration file
         if cfg.model.latent_multiplier > 0:
@@ -337,4 +340,9 @@ class Paradis(nn.Module):
             z = z + dz
 
         # Return a scaled residual formulation
-        return x[:, : self.num_common_features] + self.output_proj(z)
+        return x[
+            :,
+            (self.n_inputs - 1)
+            * self.num_common_features : self.n_inputs
+            * self.num_common_features,
+        ] + self.output_proj(z)

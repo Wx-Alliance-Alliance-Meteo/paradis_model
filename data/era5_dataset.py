@@ -28,8 +28,8 @@ class ERA5Dataset(torch.utils.data.Dataset):
         start_date: str,
         end_date: str,
         forecast_steps: int,
-        dtype=torch.float32,
-        preload=False,  # Whether to preload the dataset
+        dtype: torch.dtype = torch.float32,
+        preload: bool =False,  # Whether to preload the dataset
         cfg: DictConfig = DictConfig({}),
         time_interval: str = None,
     ) -> None:
