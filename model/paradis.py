@@ -232,10 +232,8 @@ class Paradis(nn.Module):
         self.variational = cfg.ensemble.enable
 
         # Get channel sizes
-        self.dynamic_channels = len(datamodule.dataset.dyn_input_features) + len(
-            datamodule.dataset.forcing_inputs
-        )
-        self.static_channels = len(cfg.features.input.constants)
+        self.dynamic_channels = datamodule.dataset.num_in_dyn_features
+        self.static_channels = datamodule.dataset.num_in_static_features
 
         # Specify hidden dimension based on multiplier or fixed size,
         # following configuration file

@@ -19,6 +19,7 @@ init:
 dataset:
   root_dir: /path/to/dataset/
   time_resolution: 6h              # Time between two consecutive samples
+  n_time_inputs: 1
 
 # Compute/hardware aspects
 compute:
@@ -39,10 +40,10 @@ forecast:
   enable: false                    # Set model to forecast mode
   start_date: 2019-12-31           # Time to generate forecast from (YYYY-MM-DD) or (YYYY-MM-DDTHH:MM:SS)
   end_date: null                   # OPTIONAL, for validation purposes (YYYY-MM-DD) or null
-  output_frequency: 2              # Store to file every output_frequency steps
+  output_frequency: 1              # Store to file every output_frequency steps
   generate_plots: false            # Generate a plot for each time instance
   output_file: null                # Name of output forecast file
-  time_interval: 36h               # Generate forecast initialized at this interval
+  time_interval: 6h               # Generate forecast initialized at this interval
 
 # Training parameters
 training:

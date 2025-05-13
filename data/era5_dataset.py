@@ -42,6 +42,8 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.forecast_steps = forecast_steps
         self.dtype = dtype
         self.forcing_inputs = features_cfg.input.forcings
+        self.concat_input = cfg.dataset.n_time_inputs > 1
+        self.n_time_inputs = cfg.dataset.n_time_inputs if self.concat_input else 1
 
         # Lazy open this dataset
         ds = xarray.open_mfdataset(
@@ -91,6 +93,12 @@ class ERA5Dataset(torch.utils.data.Dataset):
         time_delta = timedelta(hours=hours)
         time_delta = numpy.timedelta64(int(time_delta.total_seconds()), "s")
 
+        start_date_dt = numpy.datetime64(start_date)
+        time_delta_start = timedelta(hours=time_resolution)
+        adjusted_start_date = (
+            start_date_dt - (self.n_time_inputs - 1) * time_delta_start
+        )
+
         # Convert end_date to a datetime object and adjust end date
         if end_date is not None:
 
@@ -104,7 +112,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
             adjusted_end_date = start_date_dt + time_delta * interval_steps
 
         # Select the time range needed to process this dataset
-        ds = ds.sel(time=slice(start_date, adjusted_end_date))
+        ds = ds.sel(time=slice(adjusted_start_date, adjusted_end_date))
 
         if interval_steps > 1:
             ds = ds.isel(time=slice(0, None, interval_steps))
@@ -217,13 +225,20 @@ class ERA5Dataset(torch.utils.data.Dataset):
             set(output_atmospheric) - set(input_atmospheric)
         )
 
-        # Pre-select the features in the right order
+        # Store the number of dynamic features without concatenation
+        self.num_dyn_inputs_single = len(self.dyn_input_features)
+
         ds_input = ds.sel(features=self.dyn_input_features)
         ds_output = ds.sel(features=self.dyn_output_features)
 
+        # Pre-select the features in the right order
         if self.preload:
             ds_input = ds_input.compute()
             ds_output = ds_output.compute()
+
+        # Concatenate dynamic input features as many times as needed
+        if self.concat_input:
+            self.dyn_input_features *= self.n_time_inputs
 
         # Fetch data
         self.ds_input = ds_input["data"]
@@ -233,44 +248,68 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self._prepare_normalization(ds_input, ds_output)
 
         # Calculate the final number of input and output features after preparation
-        self.num_in_features = (
-            len(self.dyn_input_features)
-            + self.constant_data.shape[-1]
-            + len(self.forcing_inputs)
+        # Number of dynamic inputs
+        self.num_in_dyn_features = (
+            len(self.dyn_input_features) + len(self.forcing_inputs) * self.n_time_inputs
         )
 
+        # Number of static features
+        self.num_in_static_features = self.constant_data.shape[-1]
+
+        # Number of total inputs
+        self.num_in_features = self.num_in_dyn_features + self.num_in_static_features
+
+        # Number of total outputs
         self.num_out_features = len(self.dyn_output_features)
 
         # Ensure dataset configuration is well-aligned with requirements
         self._run_dataset_checks()
 
         # Keep the data associated with GZ500 available to visualize training behavior
-        self.gz500_mean = ds_input.sel(features="geopotential_h500")["mean"].values
-        self.gz500_std = ds_input.sel(features="geopotential_h500")["std"].values
+        self.gz500_mean = ds_output.sel(features="geopotential_h500")["mean"].values
+        self.gz500_std = ds_output.sel(features="geopotential_h500")["std"].values
+
 
     def __len__(self):
         # Do not yield a value for the last time in the dataset since there
         # is no future data
-        return self.length - self.forecast_steps
+        return self.length - self.forecast_steps - (self.n_time_inputs - 1)
 
     def __getitem__(self, ind: int):
         # Retrieve the current value of forecast steps
         steps = self.forecast_steps
 
         # Extract values from the requested indices
-        input_data = self.ds_input.isel(time=slice(ind, ind + steps))
+        input_ini = ind
+        input_end = input_ini + steps + self.n_time_inputs - 1
+        input_data = self.ds_input.isel(time=slice(input_ini, input_end))
 
-        true_data = self.ds_output.isel(time=slice(ind + 1, ind + steps + 1))
+        output_ini = input_ini + self.n_time_inputs
+        output_end = ind + steps + self.n_time_inputs
+        true_data = self.ds_output.isel(time=slice(output_ini, output_end))
 
         # Load arrays into CPU memory
         input_data, true_data = dask.compute(input_data, true_data)  # type: ignore -- dask.compute is really dask.base.compute
 
-        # # Add checks for invalid values
+        # Add checks for invalid values
         if numpy.isnan(input_data.data).any() or numpy.isnan(true_data.data).any():
             raise ValueError("NaN values detected in input/output data")
 
         # Convert to tensors - data comes in [time, lat, lon, features]
         x = torch.tensor(input_data.data, dtype=self.dtype)
+
+        # Concatenate n_time_inputs if requested
+        if self.concat_input:
+            x = torch.stack(
+                [
+                    torch.cat(
+                        [x[j] for j in range(i, i + self.n_time_inputs)], dim=-1
+                    )
+                    for i in range(steps)
+                ]
+            )
+
+
         y = torch.tensor(true_data.data, dtype=self.dtype)
 
         # Apply normalizations
@@ -284,6 +323,8 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
         # Add constant data to input
         x = torch.cat([x, self.constant_data[:steps]], dim=-1)
+
+
 
         # Permute to [time, channels, latitude, longitude] format
         x_grid = x.permute(0, 3, 1, 2)
@@ -379,16 +420,16 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.output_min = torch.tensor(ds_output["min"].data, dtype=self.dtype)
 
         # Keep only statistics of variables that require standard normalization
-        self.input_mean = self.input_mean[self.norm_zscore_in]
-        self.input_std = self.input_std[self.norm_zscore_in]
+        self.input_mean = self.input_mean[self.norm_zscore_in % self.num_dyn_inputs_single]
+        self.input_std = self.input_std[self.norm_zscore_in % self.num_dyn_inputs_single]
         self.output_mean = self.output_mean[self.norm_zscore_out]
         self.output_std = self.output_std[self.norm_zscore_out]
 
         # Prepare variables required in custom normalization
 
         # Maximum and minimum specific humidity in dataset
-        self.q_max = torch.max(self.input_max[self.norm_humidity_in]).detach()
-        self.q_min = torch.min(self.input_min[self.norm_humidity_in]).detach()
+        self.q_max = torch.max(self.input_max[self.norm_humidity_in % self.num_dyn_inputs_single]).detach()
+        self.q_min = torch.min(self.input_min[self.norm_humidity_in % self.num_dyn_inputs_single]).detach()
 
         if self.q_min < self.eps:
             self.q_min = torch.tensor(self.eps).detach()
@@ -396,6 +437,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         # Extract the toa_radiation mean and std
         self.toa_rad_std = ds_input.attrs["toa_radiation_std"]
         self.toa_rad_mean = ds_input.attrs["toa_radiation_mean"]
+
 
     def _apply_normalization(self, input_data, output_data):
 
@@ -443,19 +485,22 @@ class ERA5Dataset(torch.utils.data.Dataset):
                 toa_rad = torch.tensor(
                     (toa_rad - self.toa_rad_mean) / self.toa_rad_std,
                     dtype=self.dtype,
-                ).unsqueeze(-1)
+                )
+                toa_rad = toa_rad.unfold(0, self.n_time_inputs, 1)
 
                 forcings.append(toa_rad)
             else:
                 # Get the time forcings
                 if var in forcings_time_ds:
                     var_ds = forcings_time_ds[var]
-                    value = (
-                        torch.tensor(var_ds.data, dtype=self.dtype)
-                        .view(-1, 1, 1, 1)
-                        .expand(steps, self.lat_size, self.lon_size, 1)
+                    var_forcing = torch.tensor(var_ds.data, dtype=self.dtype)
+                    var_forcing = (
+                        var_forcing.unfold(0, self.n_time_inputs, 1)
+                        .view(steps, 1, 1, self.n_time_inputs)
+                        .expand(steps, self.lat_size, self.lon_size, self.n_time_inputs)
                     )
-                    forcings.append(value)
+
+                    forcings.append(var_forcing)
 
         if len(forcings) > 0:
             return torch.cat(forcings, dim=-1)
