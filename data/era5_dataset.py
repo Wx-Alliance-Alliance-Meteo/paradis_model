@@ -29,7 +29,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         end_date: str,
         forecast_steps: int,
         dtype: torch.dtype = torch.float32,
-        preload: bool =False,  # Whether to preload the dataset
+        preload: bool = False,  # Whether to preload the dataset
         cfg: DictConfig = DictConfig({}),
         time_interval: str = None,
     ) -> None:
@@ -44,6 +44,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.forcing_inputs = features_cfg.input.forcings
         self.concat_input = cfg.dataset.n_time_inputs > 1
         self.n_time_inputs = cfg.dataset.n_time_inputs if self.concat_input else 1
+        self.custom_normalization = not cfg.normalization.standard
 
         # Lazy open this dataset
         ds = xarray.open_mfdataset(
@@ -375,9 +376,9 @@ class ERA5Dataset(torch.utils.data.Dataset):
             feature_name = re.sub(
                 r"_h\d+$", "", feature
             )  # Remove height suffix (e.g., "_h10")
-            if feature_name == "total_precipitation_6hr":
+            if feature_name == "total_precipitation_6hr" and self.custom_normalization:
                 self.norm_precip_in.append(i)
-            elif feature_name == "specific_humidity":
+            elif feature_name == "specific_humidity" and self.custom_normalization:
                 self.norm_humidity_in.append(i)
             else:
                 self.norm_zscore_in.append(i)
@@ -387,18 +388,23 @@ class ERA5Dataset(torch.utils.data.Dataset):
             feature_name = re.sub(
                 r"_h\d+$", "", feature
             )  # Remove height suffix (e.g., "_h10")
-            if feature_name == "total_precipitation_6hr":
+            if feature_name == "total_precipitation_6hr" and self.custom_normalization:
                 self.norm_precip_out.append(i)
-            elif feature_name == "specific_humidity":
+            elif feature_name == "specific_humidity" and self.custom_normalization:
                 self.norm_humidity_out.append(i)
             else:
                 self.norm_zscore_out.append(i)
 
         # Convert lists of indices to PyTorch tensors for efficient indexing
-        self.norm_precip_in = torch.tensor(self.norm_precip_in, dtype=torch.long)
-        self.norm_precip_out = torch.tensor(self.norm_precip_out, dtype=torch.long)
-        self.norm_humidity_in = torch.tensor(self.norm_humidity_in, dtype=torch.long)
-        self.norm_humidity_out = torch.tensor(self.norm_humidity_out, dtype=torch.long)
+        if self.custom_normalization:
+            self.norm_precip_in = torch.tensor(self.norm_precip_in, dtype=torch.long)
+            self.norm_precip_out = torch.tensor(self.norm_precip_out, dtype=torch.long)
+            self.norm_humidity_in = torch.tensor(
+                self.norm_humidity_in, dtype=torch.long
+            )
+            self.norm_humidity_out = torch.tensor(
+                self.norm_humidity_out, dtype=torch.long
+            )
         self.norm_zscore_in = torch.tensor(self.norm_zscore_in, dtype=torch.long)
         self.norm_zscore_out = torch.tensor(self.norm_zscore_out, dtype=torch.long)
 
@@ -424,17 +430,17 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.output_std = self.output_std[self.norm_zscore_out]
 
         # Prepare variables required in custom normalization
+        if self.custom_normalization:
+            # Maximum and minimum specific humidity in dataset
+            self.q_max = torch.max(
+                self.input_max[self.norm_humidity_in % self.num_dyn_inputs_single]
+            ).detach()
+            self.q_min = torch.min(
+                self.input_min[self.norm_humidity_in % self.num_dyn_inputs_single]
+            ).detach()
 
-        # Maximum and minimum specific humidity in dataset
-        self.q_max = torch.max(
-            self.input_max[self.norm_humidity_in % self.num_dyn_inputs_single]
-        ).detach()
-        self.q_min = torch.min(
-            self.input_min[self.norm_humidity_in % self.num_dyn_inputs_single]
-        ).detach()
-
-        if self.q_min < self.eps:
-            self.q_min = torch.tensor(self.eps).detach()
+            if self.q_min < self.eps:
+                self.q_min = torch.tensor(self.eps).detach()
 
         # Extract the toa_radiation mean and std
         self.toa_rad_std = ds_input.attrs["toa_radiation_std"]
@@ -443,20 +449,24 @@ class ERA5Dataset(torch.utils.data.Dataset):
     def _apply_normalization(self, input_data, output_data):
 
         # Apply custom normalizations to input
-        input_data[..., self.norm_precip_in] = normalize_precipitation(
-            input_data[..., self.norm_precip_in]
-        )
-        input_data[..., self.norm_humidity_in] = normalize_humidity(
-            input_data[..., self.norm_humidity_in], self.q_min, self.q_max, self.eps
-        )
+        if self.custom_normalization:
+            input_data[..., self.norm_precip_in] = normalize_precipitation(
+                input_data[..., self.norm_precip_in]
+            )
+            input_data[..., self.norm_humidity_in] = normalize_humidity(
+                input_data[..., self.norm_humidity_in], self.q_min, self.q_max, self.eps
+            )
 
-        # Apply custom normalizations to output
-        output_data[..., self.norm_precip_out] = normalize_precipitation(
-            output_data[..., self.norm_precip_out]
-        )
-        output_data[..., self.norm_humidity_out] = normalize_humidity(
-            output_data[..., self.norm_humidity_out], self.q_min, self.q_max, self.eps
-        )
+            # Apply custom normalizations to output
+            output_data[..., self.norm_precip_out] = normalize_precipitation(
+                output_data[..., self.norm_precip_out]
+            )
+            output_data[..., self.norm_humidity_out] = normalize_humidity(
+                output_data[..., self.norm_humidity_out],
+                self.q_min,
+                self.q_max,
+                self.eps,
+            )
 
         # Apply standard normalizations to input and output
         input_data[..., self.norm_zscore_in] = normalize_standard(
