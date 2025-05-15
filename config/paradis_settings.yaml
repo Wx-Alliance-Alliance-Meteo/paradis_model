@@ -19,7 +19,11 @@ init:
 dataset:
   root_dir: /path/to/dataset/
   time_resolution: 6h              # Time between two consecutive samples
-  n_time_inputs: 1
+  n_time_inputs: 1                 # Number inputs (For example, n_time_inputs: 2 feeds [tn-1, tn])
+  interval: 6h
+
+normalization:
+  standard: False                  # (True = z-score normalization to all variables, False = custom norms)
 
 # Compute/hardware aspects
 compute:
