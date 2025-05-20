@@ -187,20 +187,20 @@ def denormalize_datasets(ground_truth, output_forecast, dataset):
 def _denormalize_ground_truth(ground_truth, dataset):
     """Denormalize the ground truth data."""
     if dataset.custom_normalization:
-        ground_truth[:, :, dataset.norm_precip_in] = denormalize_precipitation(
-            ground_truth[:, :, dataset.norm_precip_in]
+        ground_truth[:, :, dataset.norm_precip_out] = denormalize_precipitation(
+            ground_truth[:, :, dataset.norm_precip_out]
         )
 
-        ground_truth[:, :, dataset.norm_humidity_in] = denormalize_humidity(
-            ground_truth[:, :, dataset.norm_humidity_in],
+        ground_truth[:, :, dataset.norm_humidity_out] = denormalize_humidity(
+            ground_truth[:, :, dataset.norm_humidity_out],
             dataset.q_min,
             dataset.q_max,
         )
 
-    ground_truth[:, :, dataset.norm_zscore_in] = denormalize_standard(
-        ground_truth[:, :, dataset.norm_zscore_in],
-        dataset.input_mean.view(-1, 1, 1),
-        dataset.input_std.view(-1, 1, 1),
+    ground_truth[:, :, dataset.norm_zscore_out] = denormalize_standard(
+        ground_truth[:, :, dataset.norm_zscore_out],
+        dataset.output_mean.view(-1, 1, 1),
+        dataset.output_std.view(-1, 1, 1),
     )
 
 

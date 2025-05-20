@@ -126,7 +126,7 @@ class LitParadis(L.LightningModule):
         self.epoch_start_time = None
 
         # Store the index and stats of the report quantities
-        if cfg.training.reports.enable:
+        if not cfg.forecast.enable and cfg.training.reports.enable:
             self.report_features = cfg.training.reports.features
             self.report_ind = [
                 datamodule.dataset.dyn_input_features.index(feature)

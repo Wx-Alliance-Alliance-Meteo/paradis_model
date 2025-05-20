@@ -87,7 +87,7 @@ def main(cfg: DictConfig):
     logging.info("Generating forecast...")
     ind = 0
     with torch.inference_mode(), torch.no_grad():
-        time_start_ind = 0
+        time_start_ind = cfg.dataset.n_time_inputs - 1
         for input_data, ground_truth in tqdm(datamodule.predict_dataloader()):
 
             batch_size = input_data.shape[0]
