@@ -1,6 +1,6 @@
 """ERA5 dataset handling"""
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 import os
 import re
 
@@ -266,9 +266,13 @@ class ERA5Dataset(torch.utils.data.Dataset):
         # Ensure dataset configuration is well-aligned with requirements
         self._run_dataset_checks()
 
-        # Keep the data associated with GZ500 available to visualize training behavior
-        self.gz500_mean = ds_output.sel(features="geopotential_h500")["mean"].values
-        self.gz500_std = ds_output.sel(features="geopotential_h500")["std"].values
+        # Store the mean and standard deviation of quantities to be reported
+        if not cfg.forecast.enable and cfg.training.reports.enable:
+            report_features = ds_output.sel(features=cfg.training.reports.features)
+            self.report_stats = {
+                "mean": report_features["mean"].values,
+                "std": report_features["std"].values,
+            }
 
     def __len__(self):
         # Do not yield a value for the last time in the dataset since there
@@ -346,7 +350,9 @@ class ERA5Dataset(torch.utils.data.Dataset):
             self.cfg.features.input.constants[-1] == "longitude"
         ), "Latitude must be the last feature in constants!"
 
-    def _prepare_normalization(self, ds_input, ds_output):
+    def _prepare_normalization(
+        self, ds_input: xarray.Dataset, ds_output: xarray.Dataset
+    ) -> None:
         """
         Prepare indices and statistics for normalization in a vectorized fashion.
 
@@ -446,7 +452,9 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.toa_rad_std = ds_input.attrs["toa_radiation_std"]
         self.toa_rad_mean = ds_input.attrs["toa_radiation_mean"]
 
-    def _apply_normalization(self, input_data, output_data):
+    def _apply_normalization(
+        self, input_data: torch.Tensor, output_data: torch.Tensor
+    ) -> None:
 
         # Apply custom normalizations to input
         if self.custom_normalization:
@@ -479,7 +487,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
             output_data[..., self.norm_zscore_out], self.output_mean, self.output_std
         )
 
-    def _compute_forcings(self, input_data, steps):
+    def _compute_forcings(self, input_data: xarray.Dataset, steps: int) -> torch.Tensor:
         """Computes forcing paramters based in input_data array"""
 
         forcings_time_ds = time_forcings(input_data["time"].values)

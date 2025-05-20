@@ -6,7 +6,6 @@ import lightning as L
 from omegaconf import DictConfig
 import torch
 from torch.utils.data import DataLoader
-import torch.distributed as dist
 
 from data.era5_dataset import ERA5Dataset
 

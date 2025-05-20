@@ -131,6 +131,11 @@ training:
       total_column_water: 1.0
       total_precipitation_6hr: 1.0
 
+  reports:
+    enable: true
+    features:
+      - geopotential_h500
+
 features:
   pressure_levels:
     - 50

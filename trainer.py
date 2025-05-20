@@ -10,6 +10,7 @@ import lightning as L
 
 from model.paradis import Paradis
 from utils.loss import ParadisLoss
+from utils.normalization import denormalize_humidity, denormalize_precipitation
 from data.datamodule import Era5DataModule
 
 import omegaconf.dictconfig
@@ -124,14 +125,22 @@ class LitParadis(L.LightningModule):
 
         self.epoch_start_time = None
 
-        # Store the index of the GZ100 quantity to
-        self.gz500_ind = datamodule.dataset.dyn_input_features.index(
-            "geopotential_h500"
-        )
-        self.gz500_mean = torch.from_numpy(datamodule.dataset.gz500_mean)
-        self.gz500_std = torch.from_numpy(datamodule.dataset.gz500_std)
+        # Store the index and stats of the report quantities
+        if cfg.training.reports.enable:
+            self.report_features = cfg.training.reports.features
+            self.report_ind = [
+                datamodule.dataset.dyn_input_features.index(feature)
+                for feature in cfg.training.reports.features
+            ]
+            self.report_ind = torch.tensor(self.report_ind, dtype=torch.long)
+            self.report_mean = torch.from_numpy(datamodule.dataset.report_stats["mean"])
+            self.report_std = torch.from_numpy(datamodule.dataset.report_stats["std"])
 
-    def _autoregression_input_from_output(self, input_data, output_data):
+            self.custom_norms = not cfg.normalization.standard
+
+    def _autoregression_input_from_output(
+        self, input_data: torch.Tensor, output_data: torch.Tensor
+    ) -> torch.Tensor:
         """Process the next input in autoregression."""
         # Add features needed from the output.
         # Common features have been previously sorted to ensure they are first
@@ -142,7 +151,9 @@ class LitParadis(L.LightningModule):
         ]
         return input_data
 
-    def _get_persistence_loss(self, input_data, pred_data):
+    def _get_persistence_loss(
+        self, input_data: torch.Tensor, pred_data: torch.Tensor
+    ) -> torch.Tensor:
         import torch
 
         p_loss = torch.tensor(0.0)
@@ -154,24 +165,35 @@ class LitParadis(L.LightningModule):
             p_loss += loss
         return p_loss.detach()
 
-    def _get_gz500_rmse(self, output_data, pred_data):
+    def _get_report_rmse(self, output_data, pred_data):
 
         lat_weights = self.loss_fn.lat_weights.view(1, 1, -1, 1).to(output_data.device)
 
         # Compute the batch error
-        error = torch.mean(
-            (
-                (output_data[:, self.gz500_ind] - pred_data[:, self.gz500_ind])
-                / 10
-                * self.gz500_std
-            )
-            ** 2
-            * lat_weights
+        errors = torch.empty(
+            len(self.report_ind), dtype=output_data.dtype, device=output_data.device
         )
+        for i, ind in enumerate(self.report_ind):
+            if self.custom_norms and "specific_humidity" in self.report_features[i]:
+                q_min = self.datamodule.dataset.q_min
+                q_max = self.datamodule.dataset.q_max
+                o_data = denormalize_humidity(output_data[:, ind], q_min, q_max)
+                p_data = denormalize_humidity(pred_data[:, ind], q_min, q_max)
+                errors[i] = torch.mean((o_data - p_data) ** 2 * lat_weights)
+            elif self.custom_norms and "precipitation" in self.report_features[i]:
+                o_data = denormalize_precipitation(output_data[:, ind])
+                p_data = denormalize_precipitation(pred_data[:, ind])
+                errors[i] = torch.mean((o_data - p_data) ** 2 * lat_weights)
+            else:
+                errors[i] = torch.mean(
+                    ((output_data[:, ind] - pred_data[:, ind]) * self.report_std[i])
+                    ** 2
+                    * lat_weights
+                )
 
-        return torch.sqrt(error).detach()
+        return torch.sqrt(errors).detach()
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through the model."""
         return self.model(x)
 
@@ -370,7 +392,7 @@ class LitParadis(L.LightningModule):
         input_data, true_data = batch
 
         val_loss = 0.0
-        gz500_loss = 0.0
+        report_loss = 0.0
         kl_loss = 0.0
         input_data_step = input_data[:, 0]  # Start with first timestep
         num_steps = input_data.size(1)
@@ -384,8 +406,8 @@ class LitParadis(L.LightningModule):
 
             loss = self.loss_fn(output_data, true_data[:, step])
 
-            # Log additional GZ500 loss for validation
-            gz500_loss += self._get_gz500_rmse(output_data, true_data[:, step])
+            # Log requested scaled RMSE losses for validation
+            report_loss += self._get_report_rmse(output_data, true_data[:, step])
 
             if self.variational:
                 loss += self.beta * kl_loss
@@ -408,15 +430,16 @@ class LitParadis(L.LightningModule):
             sync_dist=True,
         )
 
-        # Log GZ500 RMSE
-        self.log(
-            "GZ500-RMSE",
-            gz500_loss / num_steps,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-            sync_dist=True,
-        )
+        # Log requested reports
+        for i, name in enumerate(self.cfg.training.reports.features):
+            self.log(
+                name,
+                report_loss[i] / num_steps,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
 
         if self.variational:
             self.log(
