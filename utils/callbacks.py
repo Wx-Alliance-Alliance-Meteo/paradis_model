@@ -1,8 +1,6 @@
 import lightning as L
-
+from lightning.pytorch.callbacks import ModelCheckpoint, TQDMProgressBar
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
-from lightning.pytorch.callbacks import ModelCheckpoint
-from lightning.pytorch.callbacks import TQDMProgressBar
 from lightning.pytorch.utilities import rank_zero_only
 
 
@@ -14,6 +12,17 @@ class ModProgressBar(TQDMProgressBar):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.enable()
+        self._val_progress_bar = None
+
+    @property
+    def val_progress_bar(self):
+        if self._val_progress_bar is None:
+            self._val_progress_bar = self.init_validation_tqdm()
+        return self._val_progress_bar
+
+    @val_progress_bar.setter
+    def val_progress_bar(self, val):
+        self._val_progress_bar = val
 
     def disable(self):
         super().disable()
@@ -136,13 +145,13 @@ def enable_callbacks(cfg):
         )
 
     if cfg.training.checkpointing.enabled:
-        # Keep the last 10 checkpoints
+        # Keep all the checkpoints
         callbacks.append(
             ModelCheckpoint(
                 filename="{epoch:02d}",
                 monitor="step",
                 mode="max",
-                save_top_k=10,
+                save_top_k=-1,
                 save_last=True,
                 every_n_epochs=1,
                 save_on_train_epoch_end=True,

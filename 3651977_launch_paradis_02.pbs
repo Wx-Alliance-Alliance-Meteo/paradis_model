@@ -1,0 +1,55 @@
+#PBS -S /bin/bash
+#PBS -N paradis_tracker
+#PBS -l select=1:ncpus=24:mpiprocs=24:ngpus=2:mem=218G
+#PBS -q gpu
+#PBS -l walltime=12:00:00
+#PBS -o 3651977_paradis_5deg_02.log
+#PBS -e 3651977_paradis_5deg_error_02.log
+#PBS -W depend=afterany:5609606.sc6pbs-001-ib
+
+. /fs/ssm/main/opt/intelcomp/master/inteloneapi_2022.1.2_multi/oneapi/compiler/latest/env/vars.sh
+. /fs/ssm/main/opt/intelcomp/master/inteloneapi_2022.1.2_multi/oneapi/mpi/latest/env/vars.sh
+. r.load.dot rpn/code-tools/20240719/env/inteloneapi-2022.1.2
+
+eval "$(/home/saz001/ss5/miniforge3/bin/conda shell.bash hook)" || { echo "Error: Conda not found."; exit 1; }
+conda activate paradis_00 || { echo "Error: Failed to activate Conda environment."; exit 1; }
+
+cd /home/saz001/workspace/rpna/paradis/paradis_tracker/
+
+set -e
+export root_dir=/home/cap003/hall6/weatherbench_paradis/era5_5.625deg_13level/
+/home/saz001/ss5/miniforge3/envs/paradis_00/bin/python train.py \
+    dataset.root_dir="${root_dir}" \
+    model.forecast_steps=1 \
+    model.num_layers=4 \
+    model.latent_size=672 \
+    model.bias_channels=4 \
+    model.velocity_vectors=84 \
+    model.adv_interpolation=bilinear \
+    compute.batch_size=16 \
+    compute.use_amp=true \
+    compute.num_devices=2 \
+    compute.compile=false \
+    compute.num_workers=2 \
+    dataset.n_time_inputs=2 \
+    normalization.standard=true \
+    training.log_every_n_steps=20 \
+    training.print_losses=false \
+    training.max_steps=700000 \
+    training.dataset.start_date=1990-01-01 \
+    training.dataset.end_date=2019-12-30 \
+    training.dataset.preload=true \
+    training.validation_dataset.preload=true \
+    training.validation_dataset.start_date=2020-01-01 \
+    training.validation_dataset.end_date=2020-12-31 \
+    training.early_stopping.enabled=false \
+    training.optimizer.lr=3e-3 \
+    training.optimizer.weight_decay=1e-2 \
+    training.optimizer.beta1=0.9 \
+    training.optimizer.beta2=0.95 \
+    training.scheduler.wsd.enabled=true \
+    training.scheduler.wsd.warmup=0.1 \
+    training.scheduler.wsd.decay=0.2 \
+    training.loss_function.type=reversed_huber \
+    init.restart=true \
+    init.checkpoint_path=logs/lightning_logs/version_0/checkpoints/last.ckpt
