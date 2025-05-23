@@ -145,13 +145,13 @@ def enable_callbacks(cfg):
         )
 
     if cfg.training.checkpointing.enabled:
-        # Keep all the checkpoints
+        # Keep the last 10 checkpoints
         callbacks.append(
             ModelCheckpoint(
                 filename="{epoch:02d}",
                 monitor="step",
                 mode="max",
-                save_top_k=-1,
+                save_top_k=10,
                 save_last=True,
                 every_n_epochs=1,
                 save_on_train_epoch_end=True,
