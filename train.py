@@ -5,13 +5,13 @@ import logging
 
 import hydra
 import lightning as L
+from lightning.pytorch.utilities import rank_zero_only
 from omegaconf import DictConfig
-import torch
 
-from trainer import LitParadis
 from data.datamodule import Era5DataModule
+from trainer import LitParadis
 from utils.callbacks import enable_callbacks
-from utils.system import setup_system, save_train_config
+from utils.system import save_train_config, setup_system
 
 
 # pylint: disable=E1120
@@ -56,7 +56,8 @@ def main(cfg: DictConfig):
     )
 
     # Keep track of configuration parameters in logging directory
-    save_train_config(trainer.logger.log_dir, cfg)  # type: ignore
+    if cfg.compute.num_devices == 1 or rank_zero_only.rank == 0:
+        save_train_config(trainer.logger.log_dir, cfg)  # type: ignore
 
     # Train model
     checkpoint_path = cfg.init.checkpoint_path if cfg.init.restart else None
