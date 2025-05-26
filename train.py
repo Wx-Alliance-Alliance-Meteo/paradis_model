@@ -5,7 +5,6 @@ import logging
 
 import hydra
 import lightning as L
-from lightning.pytorch.utilities import rank_zero_only
 from omegaconf import DictConfig
 
 from data.datamodule import Era5DataModule
@@ -56,8 +55,7 @@ def main(cfg: DictConfig):
     )
 
     # Keep track of configuration parameters in logging directory
-    if cfg.compute.num_devices == 1 or rank_zero_only.rank == 0:
-        save_train_config(trainer.logger.log_dir, cfg)  # type: ignore
+    save_train_config(trainer.logger.log_dir, cfg)  # type: ignore
 
     # Train model
     checkpoint_path = cfg.init.checkpoint_path if cfg.init.restart else None
