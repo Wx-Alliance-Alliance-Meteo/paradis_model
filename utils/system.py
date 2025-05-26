@@ -1,7 +1,8 @@
 import os
 
-import torch
 import lightning as L
+import torch
+from lightning.pytorch.utilities import rank_zero_only
 from omegaconf import OmegaConf
 
 
@@ -18,6 +19,7 @@ def setup_system(cfg):
         torch.set_float32_matmul_precision("high")
 
 
+@rank_zero_only
 def save_train_config(log_dir: str, cfg):
 
     config_save_path = os.path.join(log_dir, "config.yaml")
