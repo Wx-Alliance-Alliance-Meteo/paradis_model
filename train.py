@@ -6,12 +6,11 @@ import logging
 import hydra
 import lightning as L
 from omegaconf import DictConfig
-import torch
 
-from trainer import LitParadis
 from data.datamodule import Era5DataModule
+from trainer import LitParadis
 from utils.callbacks import enable_callbacks
-from utils.system import setup_system, save_train_config
+from utils.system import save_train_config, setup_system
 
 
 # pylint: disable=E1120
