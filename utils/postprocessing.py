@@ -1,6 +1,8 @@
 import re
 
 import numpy
+import torch
+
 from utils.normalization import (
     denormalize_precipitation,
     denormalize_humidity,
@@ -125,6 +127,26 @@ def get_var_indices(variable_name, variable_list):
     return numpy.array(indices)
 
 
+def preprocess_variable_names(atmospheric_vars, surface_vars):
+    # Rename variables that require post-processing in dataset
+    atmospheric_vars = replace_variable_name(
+        "wind_x", "u_component_of_wind", atmospheric_vars
+    )
+    atmospheric_vars = replace_variable_name(
+        "wind_y", "v_component_of_wind", atmospheric_vars
+    )
+    atmospheric_vars = replace_variable_name(
+        "wind_z", "vertical_velocity", atmospheric_vars
+    )
+
+    surface_vars = replace_variable_name(
+        "wind_x_10m", "10m_u_component_of_wind", surface_vars
+    )
+    surface_vars = replace_variable_name(
+        "wind_y_10m", "10m_v_component_of_wind", surface_vars
+    )
+
+
 def replace_variable_name(variable_old, variable_new, variable_list):
     for i, var in enumerate(variable_list):
         var_name = re.sub(r"_h\d+$", "", var)  # Remove height suffix (e.g., "_h10")
@@ -180,45 +202,25 @@ def convert_cartesian_to_spherical_winds(latitude, longitude, cfg, array, featur
 
 def denormalize_datasets(ground_truth, output_forecast, dataset):
     """Denormalize both ground truth and forecast datasets."""
-    _denormalize_ground_truth(ground_truth, dataset)
-    _denormalize_forecast(output_forecast, dataset)
+    _denormalize_dataset(ground_truth, dataset)
+    _denormalize_dataset(output_forecast, dataset)
 
 
-def _denormalize_ground_truth(ground_truth, dataset):
+def _denormalize_dataset(data: torch.tensor, dataset_obj):
     """Denormalize the ground truth data."""
-    if dataset.custom_normalization:
-        ground_truth[:, :, dataset.norm_precip_out] = denormalize_precipitation(
-            ground_truth[:, :, dataset.norm_precip_out]
+    if dataset_obj.custom_normalization:
+        data[:, :, dataset_obj.norm_precip_out] = denormalize_precipitation(
+            data[:, :, dataset_obj.norm_precip_out]
         )
 
-        ground_truth[:, :, dataset.norm_humidity_out] = denormalize_humidity(
-            ground_truth[:, :, dataset.norm_humidity_out],
-            dataset.q_min,
-            dataset.q_max,
+        data[:, :, dataset_obj.norm_humidity_out] = denormalize_humidity(
+            data[:, :, dataset_obj.norm_humidity_out],
+            dataset_obj.q_min,
+            dataset_obj.q_max,
         )
 
-    ground_truth[:, :, dataset.norm_zscore_out] = denormalize_standard(
-        ground_truth[:, :, dataset.norm_zscore_out],
-        dataset.output_mean.view(-1, 1, 1),
-        dataset.output_std.view(-1, 1, 1),
-    )
-
-
-def _denormalize_forecast(output_forecast, dataset):
-    """Denormalize the forecast data."""
-    if dataset.custom_normalization:
-        output_forecast[:, :, dataset.norm_precip_out] = denormalize_precipitation(
-            output_forecast[:, :, dataset.norm_precip_out]
-        )
-
-        output_forecast[:, :, dataset.norm_humidity_out] = denormalize_humidity(
-            output_forecast[:, :, dataset.norm_humidity_out],
-            dataset.q_min,
-            dataset.q_max,
-        )
-
-    output_forecast[:, :, dataset.norm_zscore_out] = denormalize_standard(
-        output_forecast[:, :, dataset.norm_zscore_out],
-        dataset.output_mean.view(-1, 1, 1),
-        dataset.output_std.view(-1, 1, 1),
+    data[:, :, dataset_obj.norm_zscore_out] = denormalize_standard(
+        data[:, :, dataset_obj.norm_zscore_out],
+        dataset_obj.output_mean.view(-1, 1, 1),
+        dataset_obj.output_std.view(-1, 1, 1),
     )
