@@ -1,7 +1,8 @@
 # Project output directories
 checkpoints/
 outputs/
-logs/
+logs*/
+*.fst
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
