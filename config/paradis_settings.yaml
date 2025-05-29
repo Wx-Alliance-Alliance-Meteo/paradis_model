@@ -81,7 +81,7 @@ training:
     patience: 8                    # Number of epochs with no improvement after which training will stop
 
   loss_function:
-    type: "mse"                    # mse or reversed_huber loss function
+    type: "reversed_huber"                    # mse or reversed_huber loss function
     delta_loss: 1.0                # Threshold parameter for huber loss
 
   checkpointing:
