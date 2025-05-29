@@ -18,6 +18,12 @@ def setup_system(cfg):
     else:
         torch.set_float32_matmul_precision("high")
 
+    # Make sure number of steps or epochs is defined
+    if not cfg.forecast.enable:
+        assert not (
+            cfg.training.max_steps < 0 and cfg.training.max_epochs < 0
+        ), "Please indicate max_epochs or max_steps"
+
 
 @rank_zero_only
 def save_train_config(log_dir: str, cfg):
