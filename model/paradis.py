@@ -242,7 +242,7 @@ class Paradis(nn.Module):
         # following configuration file
         if cfg.model.latent_multiplier > 0:
             hidden_dim = (
-                cfg.model.latent_multiplier * self.num_dynamic_channels
+                cfg.model.latent_multiplier * self.dynamic_channels
                 + self.static_channels
             )
             num_vels = hidden_dim
