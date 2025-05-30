@@ -65,6 +65,8 @@ def compute_cartesian_wind(ds):
         - ds["10m_v_component_of_wind"]
         * numpy.sin(numpy.deg2rad(ds.latitude))
         * numpy.sin(numpy.deg2rad(ds.longitude)),
+        wind_z_10m=ds["10m_v_component_of_wind"]
+        * numpy.cos(numpy.deg2rad(ds.latitude)),
     )
 
     # Set attributes for the 3D wind components
@@ -73,7 +75,7 @@ def compute_cartesian_wind(ds):
         ds[var].attrs["units"] = "m s-1"
 
     # Set attributes for the surface wind components
-    for var in ["wind_x_10m", "wind_y_10m"]:
+    for var in ["wind_x_10m", "wind_y_10m", "wind_z_10m"]:
         ds[var].attrs["long_name"] = f'{var.split("_")[1]}_component_of_10m_wind'
         ds[var].attrs["units"] = "m s-1"
 
@@ -141,6 +143,7 @@ def main():
         "wind_z",
         "wind_x_10m",
         "wind_y_10m",
+        "wind_z_10m"
     ]
 
     # Determine variables to drop
@@ -151,7 +154,13 @@ def main():
 
     # Uncomment the following line if latitudes 90 and -90 need to be removed
     if args.remove_poles:
-        ds = ds.isel(latitude=slice(1, ds.latitude.size - 1))
+        lat_to_drop = []
+        for v in [-90, 90]:
+            if v in ds.latitude.values:
+                lat_to_drop.append(v)
+
+        if lat_to_drop:
+            ds = ds.sel(latitude=~ds.latitude.isin(lat_to_drop))
 
     # Step 1: Stack data for efficient storage and processing
     stack_data(ds, args.output_dir)
@@ -176,7 +185,7 @@ def stack_data(ds, output_base_dir):
     ds = compute_cartesian_wind(ds)
 
     # Determine the minimum and maximum years in the dataset
-    min_year = 2010
+    min_year = 1979
     max_year = numpy.max(ds["time.year"].values)
 
     # Keep only variables with a time dimension (e.g., atmospheric and surface variables)
@@ -326,7 +335,7 @@ def compute_statistics(output_base_dir):
 
     years = [int(item) for item in os.listdir(output_base_dir) if item.isdigit()]
 
-    min_year = 2010
+    min_year = 1979
     max_year = numpy.max(years)
 
     # Create list of files to open

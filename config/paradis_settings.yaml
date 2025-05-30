@@ -125,6 +125,7 @@ training:
     surface:
       wind_x_10m: 1.0
       wind_y_10m: 1.0
+      wind_z_10m: 1.0
       2m_temperature: 1.0
       mean_sea_level_pressure: 1.0
       surface_pressure: 1.0
@@ -163,6 +164,7 @@ features:
     surface:
       - wind_x_10m
       - wind_y_10m
+      - wind_z_10m
       - 2m_temperature
       - mean_sea_level_pressure
       - surface_pressure
