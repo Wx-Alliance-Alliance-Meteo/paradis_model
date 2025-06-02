@@ -367,14 +367,6 @@ class LitParadis(L.LightningModule):
                 sync_dist=True,
             )
 
-        # Clip gradients manually if gradient_clip_val is set
-        if self.cfg.training.gradient_clip_val > 0:
-            self.clip_gradients(
-                self.trainer.optimizers[0],
-                gradient_clip_val=self.cfg.training.gradient_clip_val,
-                gradient_clip_algorithm="norm",
-            )
-
         self.log(
             "forecast_steps",
             num_steps,
