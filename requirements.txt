@@ -6,7 +6,7 @@ standard-imghdr
 
 # Data Processing
 numpy>=1.24.0
-zarr>=2.18.3
+zarr<3.0
 xarray>=2025.1.0
 dask>=2024.12.1
 
