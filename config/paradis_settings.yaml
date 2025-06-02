@@ -34,11 +34,6 @@ compute:
   num_workers: 8                   # Number of parallel processes for data preloading
   compile: true                    # Whether to compile the model
 
-# Ensemble training/forecasting
-ensemble:
-  enable: false                    # Enable ensemble forecasting (uses variational variant)
-  beta: 0.01                       # Beta from beta-vae
-
 # Forecast parameters
 forecast:
   enable: false                    # Set model to forecast mode
@@ -54,7 +49,7 @@ training:
   max_epochs: -1                   # Maximum number of epochs the training is allowed (-1 to disable and use steps)
   max_steps: -1                    # Maximum number of steps to use for training (-1 to disable and use epochs)
   progress_bar: true               # Enable progress bar
-  gradient_clip_val: -1            # Gradient clipping value, set to -1 to disable
+  gradient_clip_val: null          # Gradient clipping value, set to null to disable
   print_losses: false              # Manually print losses to screen (removes progress bar)
   log_every_n_steps: 50            # Write to log every n steps
 
@@ -95,24 +90,24 @@ training:
     # 1. OneCycleLR
     one_cycle:
       enabled: false
-      warmup_pct_start: 0.           # Percentage of training used for warmup phase
-      lr_div_factor: 1               # Initial learning rate = max_lr/lr_div_factor
-      lr_final_div: 100              # Final learning rate = initial_lr/lr_final_div_factor
+      warmup_pct_start: 0.         # Percentage of training used for warmup phase
+      lr_div_factor: 1             # Initial learning rate = max_lr/lr_div_factor
+      lr_final_div: 100            # Final learning rate = initial_lr/lr_final_div_factor
 
     # 2. ReduceLROnPlateau
     reduce_lr:
       enabled: false
-      factor: 0.75                   # Factor by which to reduce learning rate
-      patience: 3                    # Number of epochs with no improvement after which LR will be reduced
+      factor: 0.75                 # Factor by which to reduce learning rate
+      patience: 3                  # Number of epochs with no improvement after which LR will be reduced
       threshold: 1.e-4
       threshold_mode: "rel"
-      min_lr: 1.e-7                  # Lower bound on the learning rate
+      min_lr: 1.e-7                # Lower bound on the learning rate
 
     # 3. LambdaLR with initial warmup, steady learning rate and final cooldown
     wsd:
       enabled: true
-      warmup: 0.05                   # ≥1 : number of warmup steps, else fraction
-      decay: 0.2                     # ≥1 : number of decay steps, else fraction
+      warmup: 0.05                 # ≥1 : number of warmup steps, else fraction
+      decay: 0.2                   # ≥1 : number of decay steps, else fraction
 
   variable_loss_weights:
     atmospheric:

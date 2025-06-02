@@ -3,11 +3,7 @@
 import torch
 from torch import nn
 
-from model.clp_variational import VariationalCLP
 from model.padding import GeoCyclicPadding
-
-from typing import Tuple, Union
-
 from model.gmblock import GMBlock
 
 
@@ -18,10 +14,9 @@ class NeuralSemiLagrangian(nn.Module):
         self,
         hidden_dim: int,
         mesh_size: tuple,
-        variational: bool,
         num_vels: int,
         interpolation: str = "bicubic",
-        bias_channels=4,
+        bias_channels: int = 4,
     ):
         super().__init__()
 
@@ -29,9 +24,6 @@ class NeuralSemiLagrangian(nn.Module):
         self.padding = 1
         self.padding_interp = GeoCyclicPadding(self.padding)
         self.hidden_dim = hidden_dim
-
-        # Flag for variational variant to be used in forward
-        self.variational = variational
 
         self.num_vels = num_vels
         self.mesh_size = mesh_size
@@ -54,20 +46,17 @@ class NeuralSemiLagrangian(nn.Module):
 
         # Neural network that will learn an effective velocity along the trajectory
         # Output 2 channels per hidden dimension for u and v
-        if not self.variational:
-            self.velocity_net = GMBlock(
-                input_dim=hidden_dim,
-                output_dim=2 * num_vels,
-                hidden_dim=hidden_dim,
-                kernel_size=3,
-                mesh_size=mesh_size,
-                layers=["SepConv"],
-                bias_channels=bias_channels,
-                activation=False,
-                pre_normalize=True,
-            )
-        else:
-            self.velocity_net = VariationalCLP(hidden_dim, 2 * hidden_dim, mesh_size)
+        self.velocity_net = GMBlock(
+            input_dim=hidden_dim,
+            output_dim=2 * num_vels,
+            hidden_dim=hidden_dim,
+            kernel_size=3,
+            mesh_size=mesh_size,
+            layers=["SepConv"],
+            bias_channels=bias_channels,
+            activation=False,
+            pre_normalize=True,
+        )
 
     def _transform_to_latlon(
         self,
@@ -106,16 +95,12 @@ class NeuralSemiLagrangian(nn.Module):
         lat_grid: torch.Tensor,
         lon_grid: torch.Tensor,
         dt: float,
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+    ) -> torch.Tensor:
         """Compute advection using rotated coordinate system."""
         batch_size = hidden_features.shape[0]
-        kl_loss = torch.tensor(0.0)
 
         # Get learned velocities for each channel
-        if self.variational:
-            velocities, kl_loss = self.velocity_net(hidden_features)
-        else:
-            velocities = self.velocity_net(hidden_features)
+        velocities = self.velocity_net(hidden_features)
 
         # Reshape velocities to separate u,v components per channel
         # [batch, 2*hidden_dim, lat, lon] -> [batch, hidden_dim, 2, lat, lon]
@@ -145,12 +130,9 @@ class NeuralSemiLagrangian(nn.Module):
         min_lon = torch.min(lon_grid)
         max_lon = torch.max(lon_grid)
 
-        # lat_dep, lon_dep = self._transform_to_latlon(
-        #     lat_prime, lon_prime, lat_grid, lon_grid
-        # )
-
-        lat_dep = lat_grid + lat_prime
-        lon_dep = lon_grid + lon_prime
+        lat_dep, lon_dep = self._transform_to_latlon(
+            lat_prime, lon_prime, lat_grid, lon_grid
+        )
 
         # Normalize grid to ensure consistency in interpolation
         grid_x = 2 * (lon_dep - min_lon) / (max_lon - min_lon) - 1
@@ -208,9 +190,6 @@ class NeuralSemiLagrangian(nn.Module):
         # Project back up to latent space
         interpolated = self.up_projection(interpolated)
 
-        if self.variational:
-            return interpolated, kl_loss
-
         return interpolated
 
 
@@ -228,7 +207,6 @@ class Paradis(nn.Module):
         mesh_size = (datamodule.lat_size, datamodule.lon_size)
 
         self.num_common_features = datamodule.num_common_features
-        self.variational = cfg.ensemble.enable
 
         # Get channel sizes
         self.dynamic_channels = datamodule.dataset.num_in_dyn_features
@@ -276,12 +254,11 @@ class Paradis(nn.Module):
                 NeuralSemiLagrangian(
                     hidden_dim,
                     mesh_size,
-                    variational=False,
                     num_vels=num_vels,
                     interpolation=adv_interpolation,
                     bias_channels=bias_channels,
                 )
-                for i in range(self.num_layers)
+                for _ in range(self.num_layers)
             ]
         )
 
@@ -298,7 +275,7 @@ class Paradis(nn.Module):
                     pre_normalize=True,
                     bias_channels=bias_channels,
                 )
-                for i in range(self.num_layers)
+                for _ in range(self.num_layers)
             ]
         )
 

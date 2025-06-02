@@ -36,8 +36,6 @@ class LitParadis(L.LightningModule):
         self.datamodule = datamodule
         self.model = Paradis(datamodule, cfg)
         self.cfg = cfg
-        self.variational = cfg.ensemble.enable
-        self.beta = cfg.ensemble.get("beta", None)
 
         if self.global_rank == 0:
             logging.info(
@@ -326,15 +324,9 @@ class LitParadis(L.LightningModule):
         num_steps = input_data.size(1)
         for step in range(num_steps):
             # Forward pass
-            if self.variational:
-                output_data, kl_loss = self(input_data_step)
-            else:
-                output_data = self(input_data_step)
+            output_data = self(input_data_step)
 
             loss = self.loss_fn(output_data, true_data[:, step])
-
-            if self.variational:
-                loss += self.beta * kl_loss
 
             # Compute loss (data is already transformed by dataset)
             train_loss += loss
@@ -357,23 +349,6 @@ class LitParadis(L.LightningModule):
 
         self.log("lr", self.trainer.optimizers[0].param_groups[0]["lr"], prog_bar=True)
 
-        if self.variational:
-            self.log(
-                "kl_loss",
-                kl_loss,
-                on_step=True,
-                on_epoch=True,
-                prog_bar=True,
-                sync_dist=True,
-            )
-
-        # Clip gradients manually if gradient_clip_val is set
-        if self.cfg.training.gradient_clip_val > 0:
-            self.clip_gradients(
-                self.trainer.optimizers[0],
-                gradient_clip_val=self.cfg.training.gradient_clip_val,
-                gradient_clip_algorithm="norm",
-            )
 
         self.log(
             "forecast_steps",
@@ -398,19 +373,14 @@ class LitParadis(L.LightningModule):
         num_steps = input_data.size(1)
 
         for step in range(num_steps):
+
             # Forward pass
-            if self.variational:
-                output_data, kl_loss = self(input_data_step)
-            else:
-                output_data = self(input_data_step)
+            output_data = self(input_data_step)
 
             loss = self.loss_fn(output_data, true_data[:, step])
 
             # Log requested scaled RMSE losses for validation
             report_loss += self._get_report_rmse(output_data, true_data[:, step])
-
-            if self.variational:
-                loss += self.beta * kl_loss
 
             # Compute loss (data is already transformed by dataset)
             val_loss += loss
@@ -441,15 +411,6 @@ class LitParadis(L.LightningModule):
                 sync_dist=True,
             )
 
-        if self.variational:
-            self.log(
-                "kl_loss",
-                kl_loss,
-                on_step=True,
-                on_epoch=True,
-                prog_bar=True,
-                sync_dist=True,
-            )
         return val_loss / num_steps
 
     def on_train_epoch_end(self):
