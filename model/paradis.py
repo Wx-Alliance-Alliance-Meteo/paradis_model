@@ -106,12 +106,9 @@ class NeuralSemiLagrangian(nn.Module):
         # [batch, 2*hidden_dim, lat, lon] -> [batch, hidden_dim, 2, lat, lon]
         velocities = velocities.view(batch_size, 2, self.num_vels, *self.mesh_size)
 
-        # Extract u,v compone
-        # u = velocities[:, 0] # [batch, hidden_dim, lat*lon]
-        v = velocities[:, 1]
-        u = velocities[:, 0] / torch.cos(
-            lat_grid[:, None, :, :]
-        )  # [batch, num_vels, lat*lon]
+        # Extract learned u,v components
+        u = velocities[:, 0]   
+        v = velocities[:, 1]   
 
         # Compute departure points in a local rotated coordinate system in which the origin
         # of latitude and longitude is moved to the arrival point
