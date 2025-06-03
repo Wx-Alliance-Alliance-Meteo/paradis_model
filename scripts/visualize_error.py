@@ -54,10 +54,14 @@ vmax = np.max(g_base)
 vmin = np.min(g_base)
 
 # Plot base results
-ax[0].contourf(longitude, latitude, g_base[0].T, 100, cmap="RdYlBu_r", vmax=vmax, vmin=vmin)
+ax[0].contourf(
+    longitude, latitude, g_base[0].T, 100, cmap="RdYlBu_r", vmax=vmax, vmin=vmin
+)
 
 # Plot PARADIS results
-ax[1].contourf(longitude, latitude, g_para[0], 100, cmap="RdYlBu_r", vmax=vmax, vmin=vmin)
+ax[1].contourf(
+    longitude, latitude, g_para[0], 100, cmap="RdYlBu_r", vmax=vmax, vmin=vmin
+)
 
 # Generate a pointwise error contour
 contours = ax[2].imshow(diff[0], cmap="hot_r")

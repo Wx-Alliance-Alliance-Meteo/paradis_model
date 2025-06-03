@@ -69,7 +69,7 @@ class ParadisLoss(torch.nn.Module):
         self.feature_weights = self._create_feature_weights()
 
         if loss_function == "mse":
-            self.loss_fn = torch.nn.MSELoss(reduction='none')
+            self.loss_fn = torch.nn.MSELoss(reduction="none")
         elif loss_function == "reversed_huber":
             self.loss_fn = self._pseudo_reversed_huber_loss
 

@@ -143,7 +143,7 @@ def main():
         "wind_z",
         "wind_x_10m",
         "wind_y_10m",
-        "wind_z_10m"
+        "wind_z_10m",
     ]
 
     # Determine variables to drop
@@ -268,7 +268,9 @@ def stack_data(ds, output_base_dir):
         # Write the processed dataset to a Zarr file
         output_file_path = os.path.join(output_dir)
         with dask.config.set(scheduler="threads"):
-            ds_year.to_zarr(output_file_path, mode="w", consolidated=True, zarr_format=2)
+            ds_year.to_zarr(
+                output_file_path, mode="w", consolidated=True, zarr_format=2
+            )
 
         print(
             f"Successfully processed {year} -> {output_file_path} in {time.time() - t0:.2f} seconds"
@@ -325,7 +327,7 @@ def precompute_static_data(ds, output_base_dir):
             os.path.join(output_base_dir, "constants"),
             mode="w",
             consolidated=True,
-            zarr_format=2
+            zarr_format=2,
         )
 
 
@@ -376,7 +378,10 @@ def compute_statistics(output_base_dir):
 
     with dask.config.set(scheduler="threads"):
         result_ds.to_zarr(
-            os.path.join(output_base_dir, "stats"), mode="w", consolidated=True, zarr_format=2
+            os.path.join(output_base_dir, "stats"),
+            mode="w",
+            consolidated=True,
+            zarr_format=2,
         )
 
 

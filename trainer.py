@@ -349,7 +349,6 @@ class LitParadis(L.LightningModule):
 
         self.log("lr", self.trainer.optimizers[0].param_groups[0]["lr"], prog_bar=True)
 
-
         self.log(
             "forecast_steps",
             num_steps,
