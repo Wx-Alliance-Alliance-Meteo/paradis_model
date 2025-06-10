@@ -32,16 +32,20 @@ class ParadisLoss(torch.nn.Module):
         var_loss_weights: torch.Tensor,
         output_name_order: list,
         delta_loss: float = 1.0,
+        apply_latitude_weights: bool=False,
     ) -> None:
         """Initialize the weighted reversed Huber loss function.
 
         Args:
+            loss_function: A choice between reversed_huber or mse loss functions
+            lat_grid: Latitude grid
             pressure_levels: Pressure levels in hPa used in the model
             num_features: Total number of features in the output
             num_surface_vars: Number of surface-level variables
             var_loss_weights: Variable-specific weights for the loss calculation
             output_name_order: List of variable names in order of output features
             delta_loss: Threshold parameter for the Huber loss
+            apply_latitude_weights: Whether to integrate the loss using geometric weights along latitude
         """
         super().__init__()
 
@@ -62,7 +66,7 @@ class ParadisLoss(torch.nn.Module):
         self.flip_geopotential_weights = False
 
         # Whether to apply latitude weights in loss integration
-        self.apply_latitude_weights = True
+        self.apply_latitude_weights = apply_latitude_weights
         self.lat_weights = self._compute_latitude_weights(lat_grid)
 
         # Create combined feature weights
@@ -120,18 +124,18 @@ class ParadisLoss(torch.nn.Module):
 
         if has_poles:
             raise ValueError("Grid must not contain poles!")
-        else:
-            # Validate grid endpoints
-            if not (
-                torch.isclose(
-                    torch.abs(grid_lat.max()),
-                    (90.0 - delta_lat / 2) * torch.ones_like(grid_lat.max()),
-                )
-            ):
-                raise ValueError("Grid without poles must end at ±(90° - Δλ/2)")
+        # else:
+        #     # Validate grid endpoints
+        #     if not (
+        #         torch.isclose(
+        #             torch.abs(grid_lat.max()),
+        #             (90.0 - delta_lat / 2) * torch.ones_like(grid_lat.max()),
+        #         )
+        #     ):
+        #         raise ValueError("Grid without poles must end at ±(90° - Δλ/2)")
 
-            # Simple cosine weights for grids without poles
-            weights = torch.cos(torch.deg2rad(grid_lat))
+        #     # Simple cosine weights for grids without poles
+        weights = torch.cos(torch.deg2rad(grid_lat))
 
         return weights / weights.mean()
 

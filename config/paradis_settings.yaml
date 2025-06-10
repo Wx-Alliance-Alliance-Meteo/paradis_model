@@ -27,7 +27,8 @@ normalization:
 
 # Compute/hardware aspects
 compute:
-  num_devices: 1                   # Number of GPUS/CPU devices
+  num_nodes: 1                     # Number of nodes
+  num_devices: 1                   # Number of GPUS/CPU devices per node
   accelerator: gpu                 # CPU/GPU
   use_amp: true                    # Enable AMP (Automatic Mixed Precision)
   batch_size: 32                   # Number of samples per batch
@@ -78,6 +79,7 @@ training:
   loss_function:
     type: "reversed_huber"                    # mse or reversed_huber loss function
     delta_loss: 1.0                # Threshold parameter for huber loss
+    lat_weights: false             # Integrate loss with spherical metrics
 
   checkpointing:
     enabled: true                  # Enable checkpointing

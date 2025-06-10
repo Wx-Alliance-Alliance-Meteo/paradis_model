@@ -38,6 +38,7 @@ def main(cfg: DictConfig):
         default_root_dir="logs/",
         accelerator=cfg.compute.accelerator,
         devices=cfg.compute.num_devices,
+        num_nodes=cfg.compute.num_nodes,
         strategy="auto" if cfg.compute.num_devices == 1 else "ddp",
         max_epochs=cfg.training.max_epochs,
         max_steps=cfg.training.max_steps,

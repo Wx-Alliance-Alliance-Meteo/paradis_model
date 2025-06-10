@@ -14,8 +14,7 @@ def save_results_to_zarr(
     pressure_levels,
     filename,
     ind,
-    time_ind_start,
-    time_ind_end,
+    init_times,
 ):
     """Save results to a Zarr file."""
     data_vars = {}
@@ -32,6 +31,8 @@ def save_results_to_zarr(
     # Prepare surface variables
     sur_dims = ["time", "prediction_timedelta", "latitude", "longitude"]
     for i, feature in enumerate(surface_vars):
+        if feature == "wind_z_10m":
+            continue
         data_vars[feature] = (
             sur_dims,
             data[:, :, len(atmospheric_vars) * num_levels + i],
@@ -49,7 +50,7 @@ def save_results_to_zarr(
     coords = {
         "latitude": dataset.lat,
         "longitude": dataset.lon,
-        "time": dataset.time[time_ind_start:time_ind_end],
+        "time": init_times,
         "level": pressure_levels,
         "prediction_timedelta": (numpy.arange(data.shape[1]) + 1)
         * numpy.timedelta64(6 * 3600 * 10**9, "ns"),

@@ -14,7 +14,7 @@ from utils.file_output import save_results_to_zarr
 from utils.postprocessing import (
     denormalize_datasets,
     convert_cartesian_to_spherical_winds,
-    preprocess_variable_names,
+    replace_variable_name,
 )
 from utils.visualization import plot_forecast_map
 
@@ -38,7 +38,6 @@ def main(cfg: DictConfig):
     # Extract features and dimensions
     atmospheric_vars = cfg.features.output.atmospheric
     surface_vars = cfg.features.output.surface
-
     constant_vars = cfg.features.input.constants
     pressure_levels = cfg.features.pressure_levels
 
@@ -57,9 +56,7 @@ def main(cfg: DictConfig):
     # Load model
     litmodel = LitParadis(datamodule, cfg)
     if cfg.init.checkpoint_path:
-        checkpoint = torch.load(
-            cfg.init.checkpoint_path, weights_only=True, map_location="cpu"
-        )
+        checkpoint = torch.load(cfg.init.checkpoint_path, weights_only=True)
         litmodel.load_state_dict(checkpoint["state_dict"])
     else:
         raise ValueError(
@@ -68,14 +65,32 @@ def main(cfg: DictConfig):
 
     litmodel.to(device).eval()
 
-    # Modify cartesian feature names to their spherical counterparts
-    preprocess_variable_names(atmospheric_vars, surface_vars)
+    # Rename variables that require post-processing in dataset
+    atmospheric_vars = replace_variable_name(
+        "wind_x", "u_component_of_wind", atmospheric_vars
+    )
+    atmospheric_vars = replace_variable_name(
+        "wind_y", "v_component_of_wind", atmospheric_vars
+    )
+    atmospheric_vars = replace_variable_name(
+        "wind_z", "vertical_velocity", atmospheric_vars
+    )
+
+    surface_vars = replace_variable_name(
+        "wind_x_10m", "10m_u_component_of_wind", surface_vars
+    )
+    surface_vars = replace_variable_name(
+        "wind_y_10m", "10m_v_component_of_wind", surface_vars
+    )
+
+    # Compute initialization times from dataset
+    init_times = dataset.time[cfg.dataset.n_time_inputs - 1 :: dataset.interval_steps]
 
     # Run forecast
     logging.info("Generating forecast...")
     ind = 0
     with torch.inference_mode(), torch.no_grad():
-        time_start_ind = cfg.dataset.n_time_inputs - 1
+        time_start_ind = 0
         for input_data, ground_truth in tqdm(datamodule.predict_dataloader()):
 
             batch_size = input_data.shape[0]
@@ -132,14 +147,12 @@ def main(cfg: DictConfig):
                     pressure_levels,
                     cfg.forecast.output_file,
                     ind,
-                    time_start_ind,
-                    time_start_ind + batch_size,
+                    init_times[time_start_ind : time_start_ind + batch_size],
                 )
 
             ind += 1
             time_start_ind += batch_size
 
-            # Generate plots
             if not cfg.forecast.generate_plots:
                 continue
 
@@ -158,6 +171,9 @@ def main(cfg: DictConfig):
             convert_cartesian_to_spherical_winds(
                 dataset.lat, dataset.lon, cfg, ground_truth, output_features
             )
+
+            # Generate plots for different variables
+            logging.info("Generating forecast plots...")
 
             # Generate a plot for each forecast step
             for forecast_ind in range(output_num_forecast_steps):
