@@ -65,6 +65,9 @@ class ParadisLoss(torch.nn.Module):
         # Whether to flip geopotential weights
         self.flip_geopotential_weights = False
 
+        # Whether to apply pressure weights
+        self.apply_pressure_weights = False
+
         # Whether to apply latitude weights in loss integration
         self.apply_latitude_weights = apply_latitude_weights
         self.lat_weights = self._compute_latitude_weights(lat_grid)
@@ -145,8 +148,11 @@ class ParadisLoss(torch.nn.Module):
         feature_weights = torch.zeros(self.num_features, dtype=torch.float32)
 
         # Standard pressure weights normalized by number of levels
-        pressure_weights = (self.pressure_levels).to(torch.float32)
-        pressure_weights /= torch.mean(pressure_weights)
+        if self.apply_pressure_weights:
+            pressure_weights = (self.pressure_levels).to(torch.float32)
+            pressure_weights /= torch.mean(pressure_weights)
+        else:
+            pressure_weights = torch.ones(len(self.pressure_levels), dtype=torch.float32)
 
         # Process atmospheric variables (with pressure levels)
         for i in range(0, self.num_atmospheric_vars, self.num_levels):

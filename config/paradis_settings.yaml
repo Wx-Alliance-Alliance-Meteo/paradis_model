@@ -119,6 +119,7 @@ training:
       geopotential: 1.0
       specific_humidity: 1.0
       temperature: 1.0
+      vertical_velocity: 1.0
     surface:
       wind_x_10m: 1.0
       wind_y_10m: 1.0
@@ -158,6 +159,7 @@ features:
       - wind_z
       - specific_humidity
       - temperature
+      - vertical_velocity
     surface:
       - wind_x_10m
       - wind_y_10m
