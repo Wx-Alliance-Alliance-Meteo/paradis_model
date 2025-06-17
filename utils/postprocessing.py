@@ -66,8 +66,9 @@ def compute_cartesian_wind(
     wind_y_10m = u_10m * numpy.cos(lon_rad) - v_10m * numpy.sin(lat_rad) * numpy.sin(
         lon_rad
     )
+    wind_z_10m = v_10m * numpy.cos(lat_rad)
 
-    return wind_x, wind_y, wind_z, wind_x_10m, wind_y_10m
+    return wind_x, wind_y, wind_z, wind_x_10m, wind_y_10m, wind_z_10m
 
 
 def compute_spherical_wind(
@@ -80,6 +81,7 @@ def compute_spherical_wind(
     wind_z,
     wind_x_10m,
     wind_y_10m,
+    wind_z_10m,
 ):
     """
     Compute spherical wind components (u, v, w) from 3D Cartesian wind components.
@@ -111,9 +113,11 @@ def compute_spherical_wind(
     # At 10m, w is considered 0
     # NOTE: This will fail if the poles are included
     u_10m = -wind_x_10m * numpy.sin(lon_rad) + wind_y_10m * numpy.cos(lon_rad)
-    v_10m = -wind_x_10m * numpy.cos(lon_rad) / numpy.sin(
-        lat_rad
-    ) - wind_y_10m * numpy.sin(lon_rad) / numpy.sin(lat_rad)
+    v_10m = (
+        -wind_x_10m * numpy.sin(lat_rad) * numpy.cos(lon_rad)
+        - wind_y_10m * numpy.sin(lat_rad) * numpy.sin(lon_rad)
+        + wind_z_10m * numpy.cos(lat_rad)
+    )
 
     return u, v, w, u_10m, v_10m
 
@@ -135,9 +139,15 @@ def preprocess_variable_names(atmospheric_vars, surface_vars):
     atmospheric_vars = replace_variable_name(
         "wind_y", "v_component_of_wind", atmospheric_vars
     )
-    atmospheric_vars = replace_variable_name(
-        "wind_z", "vertical_velocity", atmospheric_vars
-    )
+
+    if "vertical velocity" not in atmospheric_vars:
+        atmospheric_vars = replace_variable_name(
+            "wind_z", "vertical_velocity", atmospheric_vars
+        )
+    else:
+        atmospheric_vars = replace_variable_name(
+            "wind_z", "computed_vertical_velocity", atmospheric_vars
+        )
 
     surface_vars = replace_variable_name(
         "wind_x_10m", "10m_u_component_of_wind", surface_vars
@@ -171,12 +181,14 @@ def convert_cartesian_to_spherical_winds(latitude, longitude, cfg, array, featur
     w_ind = get_var_indices("wind_z", features)
     u10m_ind = get_var_indices("wind_x_10m", features)
     v10m_ind = get_var_indices("wind_y_10m", features)
+    w10m_ind = get_var_indices("wind_z_10m", features)
 
     wind_x = array[:, :, u_ind]
     wind_y = array[:, :, v_ind]
     wind_z = array[:, :, w_ind]
     wind_x_10m = array[:, :, u10m_ind]
     wind_y_10m = array[:, :, v10m_ind]
+    wind_z_10m = array[:, :, w10m_ind]
 
     # PARADIS output includes wind speeds in cartesian coordinates.
     # Here, we transform back to spherical
@@ -190,6 +202,7 @@ def convert_cartesian_to_spherical_winds(latitude, longitude, cfg, array, featur
         wind_z,
         wind_x_10m,
         wind_y_10m,
+        wind_z_10m,
     )
 
     # Replace variables in dataset
