@@ -150,15 +150,9 @@ class ParadisLoss(torch.nn.Module):
         # Standard pressure weights normalized by number of levels
         if self.apply_pressure_weights:
             # Compute proper integration weights along pressure coordinate
-            p = self.pressure_levels.to(torch.float32)
-
-            # First, obtain the pressure level limits, considering the data to be at the midpoints of these interfaces
-            interfaces = torch.zeros(p.shape[0] + 1, dtype=p.dtype)
-            interfaces[0] = p[0] - 0.5 * (p[1] - p[0])
-            interfaces[-1] = p[-1] + 0.5 * (p[-1] - p[-2])
-            interfaces[1:-1] = 0.5 * (p[:-1] + p[1:])
-            pressure_weights = interfaces[1:] - interfaces[:-1]
-            pressure_weights = pressure_weights / torch.sum(pressure_weights)
+            pressure_weights = torch.where(
+                self.pressure_levels / 1000 > 0.2, 0.2, self.pressure_levels / 1000
+            )
         else:
             pressure_weights = torch.ones(
                 len(self.pressure_levels), dtype=torch.float32
