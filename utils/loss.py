@@ -32,7 +32,7 @@ class ParadisLoss(torch.nn.Module):
         var_loss_weights: torch.Tensor,
         output_name_order: list,
         delta_loss: float = 1.0,
-        apply_latitude_weights: bool=False,
+        apply_latitude_weights: bool = False,
     ) -> None:
         """Initialize the weighted reversed Huber loss function.
 
@@ -66,7 +66,7 @@ class ParadisLoss(torch.nn.Module):
         self.flip_geopotential_weights = False
 
         # Whether to apply pressure weights
-        self.apply_pressure_weights = False
+        self.apply_pressure_weights = True
 
         # Whether to apply latitude weights in loss integration
         self.apply_latitude_weights = apply_latitude_weights
@@ -149,10 +149,20 @@ class ParadisLoss(torch.nn.Module):
 
         # Standard pressure weights normalized by number of levels
         if self.apply_pressure_weights:
-            pressure_weights = (self.pressure_levels).to(torch.float32)
-            pressure_weights /= torch.mean(pressure_weights)
+            # Compute proper integration weights along pressure coordinate
+            p = self.pressure_levels.to(torch.float32)
+
+            # First, obtain the pressure level limits, considering the data to be at the midpoints of these interfaces
+            interfaces = torch.zeros(p.shape[0] + 1, dtype=p.dtype)
+            interfaces[0] = p[0] - 0.5 * (p[1] - p[0])
+            interfaces[-1] = p[-1] + 0.5 * (p[-1] - p[-2])
+            interfaces[1:-1] = 0.5 * (p[:-1] + p[1:])
+            pressure_weights = interfaces[1:] - interfaces[:-1]
+            pressure_weights = pressure_weights / torch.sum(pressure_weights)
         else:
-            pressure_weights = torch.ones(len(self.pressure_levels), dtype=torch.float32)
+            pressure_weights = torch.ones(
+                len(self.pressure_levels), dtype=torch.float32
+            )
 
         # Process atmospheric variables (with pressure levels)
         for i in range(0, self.num_atmospheric_vars, self.num_levels):
