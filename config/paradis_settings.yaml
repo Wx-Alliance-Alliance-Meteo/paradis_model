@@ -7,6 +7,7 @@ model:
   num_layers: 4                    # Model depth
   bias_channels: 4                 # Number of bias channels
   velocity_vectors: 84             # Number of velocity layers (if latent_multiplier is -1)
+  diffusion_size: 672              # Latent size for the diffusion operator
   adv_interpolation: bicubic       # Choose between bilinear or bicubic
 
 # Initialization settings (seeding)

@@ -220,9 +220,11 @@ class Paradis(nn.Module):
                 + self.static_channels
             )
             num_vels = hidden_dim
+            diffusion_size = hidden_dim
         else:
             hidden_dim = cfg.model.latent_size
             num_vels = cfg.model.velocity_vectors
+            diffusion_size = cfg.model.diffusion_size
 
         # Get the interpolation type
         adv_interpolation = cfg.model.adv_interpolation
@@ -265,7 +267,7 @@ class Paradis(nn.Module):
                 GMBlock(
                     input_dim=hidden_dim,
                     output_dim=hidden_dim,
-                    hidden_dim=hidden_dim,
+                    hidden_dim=diffusion_size,
                     layers=["SepConv", "CLinear", "SepConv"],
                     mesh_size=mesh_size,
                     activation=False,
