@@ -306,13 +306,11 @@ class Paradis(nn.Module):
             # Advect the features in latent space using a Semi-Lagrangian step
             z_adv = self.advection[i](z, lat_grid, lon_grid, self.dt)
 
-            z = z + z_adv
-
             # Compute the diffusion residual
-            dz = self.diffusion_reaction[i](z)
+            dz = self.diffusion_reaction[i](z_adv)
 
             # Update the latent space features
-            z = z + dz
+            z = z + dz * self.dt
 
         # Return a scaled residual formulation
         return x[
