@@ -438,16 +438,21 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
         # Prepare variables required in custom normalization
         if self.custom_normalization:
-            # Maximum and minimum specific humidity in dataset
-            self.q_max = torch.max(
-                self.input_max[self.norm_humidity_in % self.num_dyn_inputs_single]
-            ).detach()
-            self.q_min = torch.min(
-                self.input_min[self.norm_humidity_in % self.num_dyn_inputs_single]
-            ).detach()
 
-            if self.q_min < self.eps:
+            if len(self.norm_humidity_in) > 0:
+                # Maximum and minimum specific humidity in dataset
+                self.q_max = torch.max(
+                    self.input_max[self.norm_humidity_in % self.num_dyn_inputs_single]
+                ).detach()
+                self.q_min = torch.min(
+                    self.input_min[self.norm_humidity_in % self.num_dyn_inputs_single]
+                ).detach()
+                if self.q_min < self.eps:
+                    self.q_min = torch.tensor(self.eps).detach()
+            else:
+                self.q_max = torch.tensor(0.0).detach()
                 self.q_min = torch.tensor(self.eps).detach()
+
 
         # Extract the toa_radiation mean and std
         self.toa_rad_std = ds_input.attrs["toa_radiation_std"]

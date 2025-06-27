@@ -105,6 +105,8 @@ def main():
         default=False,
         help="Remove latitudes 90 and -90",
     )
+
+
     args = parser.parse_args()
 
     # Open the dataset from the input Zarr directory
@@ -161,6 +163,15 @@ def main():
 
         if lat_to_drop:
             ds = ds.sel(latitude=~ds.latitude.isin(lat_to_drop))
+
+    # Set a small tolerance to avoid log(0)
+    tolerance = 1e-10
+
+    # Compute log_humidity safely
+    ds["log_humidity"] = numpy.log(ds["specific_humidity"].clip(min=0) + tolerance)
+
+    # Store the tolerance as a dataset attribute
+    ds.attrs["log_humidity_tolerance"] = tolerance
 
     # Step 1: Stack data for efficient storage and processing
     stack_data(ds, args.output_dir)
