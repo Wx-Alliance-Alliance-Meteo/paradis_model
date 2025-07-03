@@ -58,37 +58,6 @@ class NeuralSemiLagrangian(nn.Module):
             pre_normalize=True,
         )
 
-    def _transform_to_latlon(
-        self,
-        lat_prime: torch.Tensor,
-        lon_prime: torch.Tensor,
-        lat_p: torch.Tensor,
-        lon_p: torch.Tensor,
-    ) -> tuple:
-        """Transform from local rotated coordinates back to standard latlon coordinates."""
-        # Pre-compute trigonometric functions
-        sin_lat_prime = torch.sin(lat_prime)
-        cos_lat_prime = torch.cos(lat_prime)
-        sin_lon_prime = torch.sin(lon_prime)
-        cos_lon_prime = torch.cos(lon_prime)
-        sin_lat_p = torch.sin(lat_p)
-        cos_lat_p = torch.cos(lat_p)
-
-        # Compute standard latitude
-        sin_lat = sin_lat_prime * cos_lat_p + cos_lat_prime * cos_lon_prime * sin_lat_p
-        lat = torch.arcsin(torch.clamp(sin_lat, -1 + 1e-7, 1 - 1e-7))
-
-        # Compute standard longitude
-        num = cos_lat_prime * sin_lon_prime
-        den = cos_lat_prime * cos_lon_prime * cos_lat_p - sin_lat_prime * sin_lat_p
-
-        lon = lon_p + torch.atan2(num, den)
-
-        # Normalize longitude to [0, 2π]
-        lon = torch.remainder(lon + 2 * torch.pi, 2 * torch.pi)
-
-        return lat, lon
-
     def forward(
         self,
         hidden_features: torch.Tensor,
@@ -96,7 +65,7 @@ class NeuralSemiLagrangian(nn.Module):
         lon_grid: torch.Tensor,
         dt: float,
     ) -> torch.Tensor:
-        """Compute advection using rotated coordinate system."""
+
         batch_size = hidden_features.shape[0]
 
         # Get learned velocities for each channel
@@ -106,83 +75,25 @@ class NeuralSemiLagrangian(nn.Module):
         # [batch, 2*hidden_dim, lat, lon] -> [batch, hidden_dim, 2, lat, lon]
         velocities = velocities.view(batch_size, 2, self.num_vels, *self.mesh_size)
 
-        # Extract learned u,v components
-        u = velocities[:, 0]
+        # Extract u,v compone
+        # u = velocities[:, 0] # [batch, hidden_dim, lat*lon]
         v = velocities[:, 1]
-
-        # Compute departure points in a local rotated coordinate system in which the origin
-        # of latitude and longitude is moved to the arrival point
-        lon_prime = -u * dt
-        lat_prime = -v * dt
-
-        # Transform from rotated coordinates back to standard coordinates
-        # Expand lat/lon grid for broadcasting with per-channel coordinates
-        lat_grid = lat_grid.unsqueeze(1).expand(-1, self.num_vels, -1, -1)
-        lon_grid = lon_grid.unsqueeze(1).expand(-1, self.num_vels, -1, -1)
-
-        # Get the max and min values for normalization
-        min_lat = torch.min(lat_grid)
-        max_lat = torch.max(lat_grid)
-
-        min_lon = torch.min(lon_grid)
-        max_lon = torch.max(lon_grid)
-
-        lat_dep, lon_dep = self._transform_to_latlon(
-            lat_prime, lon_prime, lat_grid, lon_grid
-        )
-
-        # Normalize grid to ensure consistency in interpolation
-        grid_x = 2 * (lon_dep - min_lon) / (max_lon - min_lon) - 1
-        grid_y = 2 * (lat_dep - min_lat) / (max_lat - min_lat) - 1
-
-        # Apply periodicity for outside values along longitude set to [-1, 1]
-        grid_x = torch.remainder(grid_x + 1, 2) - 1
-
-        # Apply geocyclic longitude roll for values beyond +/-90 degrees latitude
-        geo_mask_left = grid_x <= 0
-        geo_mask_right = grid_x > 0
-        lat_mask_outer = torch.abs(grid_y) > 1
-        grid_x = torch.where(lat_mask_outer & geo_mask_left, grid_x + 1, grid_x)
-        grid_x = torch.where(lat_mask_outer & geo_mask_right, grid_x - 1, grid_x)
-
-        # Mirror values outside of the range [-1, 1] in the latitude direction
-        grid_y = torch.where(grid_y < -1, -(2 + grid_y), grid_y)
-        grid_y = torch.where(grid_y > 1, 2 - grid_y, grid_y)
-
-        # Reshape grid coordinates for interpolation
-        # [batch, dynamic_channels, lat, lon] -> [batch*dynamic_channels, lat, lon]
-        grid_x = grid_x.view(batch_size * self.num_vels, *grid_x.shape[-2:])
-        grid_y = grid_y.view(batch_size * self.num_vels, *grid_y.shape[-2:])
-
-        # Down-project to num_vel channels
+        u = velocities[:, 0] / torch.cos(
+            lat_grid[:, None, :, :]
+        )  # [batch, num_vels, lat*lon]
         projected_inputs = self.down_projection(hidden_features)
 
-        # Apply padding and reshape hidden features
-        dynamic_padded = self.padding_interp(projected_inputs)
+        z_p = self.padding_interp(projected_inputs)
 
-        # Make sure interpolation remains in right range after padding
-        grid_x = grid_x * hidden_features.size(-1) / dynamic_padded.size(-1)
-        grid_y = grid_y * hidden_features.size(-2) / dynamic_padded.size(-2)
+        dx = torch.pi / 180
+        dy = torch.pi / 180
 
-        # Create interpolation grid
-        grid = torch.stack([grid_x, grid_y], dim=-1)
+        flux_x = u * (z_p[..., 1:-1, 2:] - z_p[..., 1:-1, :-2]) / (2.0 * dx)
+        flux_y = v * (z_p[..., 2:, 1:-1] - z_p[..., :-2, 1:-1]) / (2.0 * dy)
 
-        # Apply padding and reshape features
-        dynamic_padded = dynamic_padded.reshape(
-            batch_size * self.num_vels, 1, *dynamic_padded.shape[-2:]
-        )
-
-        # Interpolate
-        interpolated = torch.nn.functional.grid_sample(
-            dynamic_padded,
-            grid,
-            align_corners=True,
-            mode=self.interpolation,
-            padding_mode="border",
-        )
 
         # Reshape back to original dimensions
-        interpolated = interpolated.view(batch_size, self.num_vels, *self.mesh_size)
+        interpolated = (flux_x + flux_y).view(batch_size, self.num_vels, *self.mesh_size)
 
         # Project back up to latent space
         interpolated = self.up_projection(interpolated)
