@@ -36,6 +36,7 @@ class LitParadis(L.LightningModule):
         self.datamodule = datamodule
         self.model = Paradis(datamodule, cfg)
         self.cfg = cfg
+        self.n_inputs = cfg.dataset.n_time_inputs
 
         if self.global_rank == 0:
             logging.info(
@@ -145,9 +146,18 @@ class LitParadis(L.LightningModule):
         # Common features have been previously sorted to ensure they are first
         # and hence simplify adding them
         input_data = input_data.clone()
-        input_data[:, : self.num_common_features, ...] = output_data[
-            :, : self.num_common_features, ...
-        ]
+
+        # Move back the previous inputs
+        if self.n_inputs > 1:
+            input_data[:, : self.num_common_features] = input_data[
+                :, : (self.n_inputs - 1) * self.num_common_features
+            ]
+
+        begin = (self.n_inputs - 1) * self.num_common_features
+        end = self.n_inputs * self.num_common_features
+
+        input_data[:, begin:end] = output_data[:, : self.num_common_features]
+
         return input_data
 
     def _get_persistence_loss(
@@ -338,6 +348,12 @@ class LitParadis(L.LightningModule):
                     input_data[:, step + 1], output_data
                 )
 
+                # Copy the shifted input data to the following step
+                if step + 2 < num_steps:
+                    begin = (self.n_inputs - 1) * self.num_common_features
+                    end = self.n_inputs * self.num_common_features
+                    input_data[:, step + 2, begin:end] = input_data_step[:, begin:end]
+
         # Log metrics
         self.log(
             "train_loss",
@@ -390,6 +406,12 @@ class LitParadis(L.LightningModule):
                 input_data_step = self._autoregression_input_from_output(
                     input_data[:, step + 1], output_data
                 )
+
+                # Copy the shifted input data to the following step
+                if step + 2 < num_steps:
+                    begin = (self.n_inputs - 1) * self.num_common_features
+                    end = self.n_inputs * self.num_common_features
+                    input_data[:, step + 2, begin:end] = input_data_step[:, begin:end]
 
         self.log(
             "val_loss",

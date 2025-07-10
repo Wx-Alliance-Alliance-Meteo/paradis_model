@@ -53,6 +53,8 @@ def main(cfg: DictConfig):
 
     output_features = list(dataset.dyn_output_features)
 
+    n_inputs = cfg.dataset.n_time_inputs
+
     # Load model
     litmodel = LitParadis(datamodule, cfg)
     if cfg.init.checkpoint_path:
@@ -84,7 +86,7 @@ def main(cfg: DictConfig):
     )
 
     # Compute initialization times from dataset
-    init_times = dataset.time[cfg.dataset.n_time_inputs - 1 :: dataset.interval_steps]
+    init_times = dataset.time[n_inputs - 1 :: dataset.interval_steps]
 
     # Run forecast
     logging.info("Generating forecast...")
@@ -116,6 +118,12 @@ def main(cfg: DictConfig):
                     input_data_step = litmodel._autoregression_input_from_output(
                         input_data[:, step + 1], output_data
                     ).to(device)
+
+                    # Copy the shifted input data to the following step
+                    if step + 2 < num_forecast_steps:
+                        begin = (n_inputs - 1) * litmodel.num_common_features
+                        end = n_inputs * litmodel.num_common_features
+                        input_data[:, step + 2, begin:end] = input_data_step[:, begin:end]
 
                 # Store only at required frequency
                 if step % cfg.forecast.output_frequency == 0:
