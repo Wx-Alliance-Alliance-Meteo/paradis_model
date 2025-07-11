@@ -537,7 +537,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         R = 6371  # Average earth radius in km
 
         # Compute distance between latitude points
-        dlon = torch.diff(self.lon)[0]
+        dlon = torch.diff(torch.deg2rad(self.lon))[0]
         distance_lon_inv = 1.0 / (
             2
             * torch.arcsin(torch.cos(self.lat_rad_grid) ** 2 * torch.sin(dlon / 2))
