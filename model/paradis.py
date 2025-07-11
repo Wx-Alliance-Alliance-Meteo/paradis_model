@@ -193,9 +193,6 @@ class NeuralSemiLagrangian(nn.Module):
 class Paradis(nn.Module):
     """Weather forecasting model main class."""
 
-    # Synoptic time scale (~1/Ω) in seconds
-    SYNOPTIC_TIME_SCALE = 7.29212e5
-
     def __init__(self, datamodule, cfg):
         super().__init__()
 
@@ -224,7 +221,7 @@ class Paradis(nn.Module):
         else:
             hidden_dim = cfg.model.latent_size
             num_vels = cfg.model.velocity_vectors
-            diffusion_size = cfg.model.diffusion_size
+            diffusion_size = cfg.model.get("diffusion_size", hidden_dim)
 
         # Get the interpolation type
         adv_interpolation = cfg.model.adv_interpolation
@@ -241,28 +238,22 @@ class Paradis(nn.Module):
             activation=False,
         )
 
-        # Rescale the time step to a fraction of a synoptic time scale
-        self.num_layers = cfg.model.num_layers
-        self.dt = (
-            cfg.model.base_dt / self.SYNOPTIC_TIME_SCALE  # / max(1, self.num_layers)
-        )
+        num_layers = cfg.model.num_layers
+
+        # Timestep is set to 1 in the latent space
+        self.dt = 1
 
         # Advection layer
-        self.advection = nn.ModuleList(
-            [
-                NeuralSemiLagrangian(
+        self.advection = NeuralSemiLagrangian(
                     hidden_dim,
                     mesh_size,
                     num_vels=num_vels,
                     interpolation=adv_interpolation,
                     bias_channels=bias_channels,
                 )
-                for _ in range(self.num_layers)
-            ]
-        )
 
-        # Diffusion-reaction layer
-        self.diffusion_reaction = nn.ModuleList(
+        # Diffusion-reaction layers
+        self.diffusion_layers = nn.ModuleList(
             [
                 GMBlock(
                     input_dim=hidden_dim,
@@ -274,7 +265,7 @@ class Paradis(nn.Module):
                     pre_normalize=True,
                     bias_channels=bias_channels,
                 )
-                for _ in range(self.num_layers)
+                for _ in range(num_layers)
             ]
         )
 
@@ -290,6 +281,7 @@ class Paradis(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Model time step."""
 
         # No gradients on lat/lon, ever
         x_static = x[:, self.dynamic_channels :].detach()
@@ -298,24 +290,27 @@ class Paradis(nn.Module):
         lat_grid = x_static[:, -2, :, :]
         lon_grid = x_static[:, -1, :, :]
 
-        # Project features to latent space
-        z = self.input_proj(x)
-
-        # Compute advection and diffusion-reaction
-        for i in range(self.num_layers):
-            # Advect the features in latent space using a Semi-Lagrangian step
-            z_adv = self.advection[i](z, lat_grid, lon_grid, self.dt)
-
-            # Compute the diffusion residual
-            dz = self.diffusion_reaction[i](z_adv)
-
-            # Update the latent space features
-            z = z + dz * self.dt
-
-        # Return a scaled residual formulation
-        return x[
+        # Extract relevant input features that correspond to output (common features from last time step)
+        skip = x[
             :,
             (self.n_inputs - 1)
             * self.num_common_features : self.n_inputs
             * self.num_common_features,
-        ] + self.output_proj(z)
+        ]
+
+        # Project features to latent space
+        z0 = self.input_proj(x)
+
+        # Advection
+        z_adv = self.advection(z0, lat_grid, lon_grid, self.dt)
+
+        # Diffusion-reaction - sum contributions from all layers
+        diffusion_rhs = torch.zeros_like(z0)
+        for diffusion_layer in self.diffusion_layers:
+            diffusion_rhs = diffusion_rhs + diffusion_layer(z_adv)
+
+        # Final state
+        z_final = z_adv + self.dt * diffusion_rhs
+
+        # Input-output skip connections: Model learns incremental changes rather than full state predictions
+        return skip + self.output_proj(z_final)
