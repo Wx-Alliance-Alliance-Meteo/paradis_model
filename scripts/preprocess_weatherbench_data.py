@@ -25,58 +25,85 @@ def compute_cartesian_wind(ds):
     # Constants
     g = 9.80616  # gravitational acceleration m/s^2
     R = 287.05  # Gas constant for dry air J/(kg·K)
+    R_earth = 6371000.0  # Earth radius in meters
 
-    # Add the 3D Cartesian wind components directly to the dataset
+    # Convert coordinates to radians
+    lat_rad = numpy.deg2rad(ds.latitude)
+    lon_rad = numpy.deg2rad(ds.longitude)
+
+    # Precompute sin/cos
+    sin_lat = numpy.sin(lat_rad)
+    cos_lat = numpy.cos(lat_rad)
+    sin_lon = numpy.sin(lon_rad)
+    cos_lon = numpy.cos(lon_rad)
+
+    # Convert pressure velocity (Pa/s) to geometric velocity (m/s)
+    # w = -ω * R * T / (p * g) where ω = dp/dt (Pa/s)
+    dr_dt = -ds.vertical_velocity * R * ds.temperature / (ds.level * 100 * g)
+
+    # Convert horizontal wind speeds to angular velocities
+    # u (eastward m/s) = R_earth * cos(lat) * dλ/dt
+    # v (northward m/s) = R_earth * dθ/dt
+    dlon_dt = ds.u_component_of_wind / (R_earth * cos_lat)  # radians/second
+    dlat_dt = ds.v_component_of_wind / R_earth  # radians/second
+
+    # Transform to Cartesian coordinates
+    # Position: x = R*cos(lat)*cos(lon), y = R*cos(lat)*sin(lon), z = R*sin(lat)
+    # Velocity transformation:
+    # dx/dt = dr/dt * cos(lat) * cos(lon) - R * sin(lat) * cos(lon) * dlat/dt - R * cos(lat) * sin(lon) * dlon/dt
+    # dy/dt = dr/dt * cos(lat) * sin(lon) - R * sin(lat) * sin(lon) * dlat/dt + R * cos(lat) * cos(lon) * dlon/dt
+    # dz/dt = dr/dt * sin(lat) + R * cos(lat) * dlat/dt
+
+    wind_x = (
+        dr_dt * cos_lat * cos_lon
+        - R_earth * sin_lat * cos_lon * dlat_dt
+        - R_earth * cos_lat * sin_lon * dlon_dt
+    )
+
+    wind_y = (
+        dr_dt * cos_lat * sin_lon
+        - R_earth * sin_lat * sin_lon * dlat_dt
+        + R_earth * cos_lat * cos_lon * dlon_dt
+    )
+
+    wind_z = dr_dt * sin_lat + R_earth * cos_lat * dlat_dt
+
+    # Surface wind components (dr/dt = 0 at surface)
+    dlon_dt_10m = ds["10m_u_component_of_wind"] / (R_earth * cos_lat)
+    dlat_dt_10m = ds["10m_v_component_of_wind"] / R_earth
+
+    wind_x_10m = (
+        -R_earth * sin_lat * cos_lon * dlat_dt_10m
+        - R_earth * cos_lat * sin_lon * dlon_dt_10m
+    )
+
+    wind_y_10m = (
+        -R_earth * sin_lat * sin_lon * dlat_dt_10m
+        + R_earth * cos_lat * cos_lon * dlon_dt_10m
+    )
+
+    wind_z_10m = R_earth * cos_lat * dlat_dt_10m
+
+    # Add the 3D Cartesian wind components to the dataset
     ds = ds.assign(
-        wind_x=-ds.u_component_of_wind * numpy.sin(numpy.deg2rad(ds.longitude))
-        - ds.v_component_of_wind
-        * numpy.sin(numpy.deg2rad(ds.latitude))
-        * numpy.cos(numpy.deg2rad(ds.longitude))
-        - ds.vertical_velocity
-        * R
-        * ds.temperature
-        / (ds.level * 100 * g)
-        * numpy.cos(numpy.deg2rad(ds.latitude))
-        * numpy.cos(numpy.deg2rad(ds.longitude)),
-        wind_y=ds.u_component_of_wind * numpy.cos(numpy.deg2rad(ds.longitude))
-        - ds.v_component_of_wind
-        * numpy.sin(numpy.deg2rad(ds.latitude))
-        * numpy.sin(numpy.deg2rad(ds.longitude))
-        - ds.vertical_velocity
-        * R
-        * ds.temperature
-        / (ds.level * 100 * g)
-        * numpy.cos(numpy.deg2rad(ds.latitude))
-        * numpy.sin(numpy.deg2rad(ds.longitude)),
-        wind_z=ds.v_component_of_wind * numpy.cos(numpy.deg2rad(ds.latitude))
-        - ds.vertical_velocity
-        * R
-        * ds.temperature
-        / (ds.level * 100 * g)
-        * numpy.sin(numpy.deg2rad(ds.latitude)),
-        # Surface wind components (no vertical velocity)
-        wind_x_10m=-ds["10m_u_component_of_wind"]
-        * numpy.sin(numpy.deg2rad(ds.longitude))
-        - ds["10m_v_component_of_wind"]
-        * numpy.sin(numpy.deg2rad(ds.latitude))
-        * numpy.cos(numpy.deg2rad(ds.longitude)),
-        wind_y_10m=ds["10m_u_component_of_wind"]
-        * numpy.cos(numpy.deg2rad(ds.longitude))
-        - ds["10m_v_component_of_wind"]
-        * numpy.sin(numpy.deg2rad(ds.latitude))
-        * numpy.sin(numpy.deg2rad(ds.longitude)),
-        wind_z_10m=ds["10m_v_component_of_wind"]
-        * numpy.cos(numpy.deg2rad(ds.latitude)),
+        wind_x=wind_x,
+        wind_y=wind_y,
+        wind_z=wind_z,
+        wind_x_10m=wind_x_10m,
+        wind_y_10m=wind_y_10m,
+        wind_z_10m=wind_z_10m,
     )
 
     # Set attributes for the 3D wind components
     for var in ["wind_x", "wind_y", "wind_z"]:
-        ds[var].attrs["long_name"] = f'{var.split("_")[1]}_component_of_wind'
+        ds[var].attrs["long_name"] = f'{var.split("_")[1]}_component_of_wind_cartesian'
         ds[var].attrs["units"] = "m s-1"
 
     # Set attributes for the surface wind components
     for var in ["wind_x_10m", "wind_y_10m", "wind_z_10m"]:
-        ds[var].attrs["long_name"] = f'{var.split("_")[1]}_component_of_10m_wind'
+        ds[var].attrs[
+            "long_name"
+        ] = f'{var.split("_")[1]}_component_of_10m_wind_cartesian'
         ds[var].attrs["units"] = "m s-1"
 
     return ds
@@ -105,7 +132,6 @@ def main():
         default=False,
         help="Remove latitudes 90 and -90",
     )
-
 
     args = parser.parse_args()
 

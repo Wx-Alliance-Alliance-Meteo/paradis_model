@@ -28,45 +28,60 @@ def compute_cartesian_wind(
     # Constants
     g = 9.80616  # Gravitational acceleration m/s^2
     R = 287.05  # Gas constant for dry air J/(kg·K)
+    R_earth = 6371000.0  # Earth radius in meters
 
-    # Extract necessary data
+    # Convert coordinates to radians
     lon_rad = numpy.deg2rad(longitude)
     lat_rad = numpy.deg2rad(latitude)
 
-    wind_x = (
-        -u * numpy.sin(lon_rad)
-        - v * numpy.sin(lat_rad) * numpy.cos(lon_rad)
-        - w
+    # Precompute trigonometric functions
+    sin_lat = numpy.sin(lat_rad)
+    cos_lat = numpy.cos(lat_rad)
+    sin_lon = numpy.sin(lon_rad)
+    cos_lon = numpy.cos(lon_rad)
+
+    # Convert pressure velocity (Pa/s) to geometric velocity (m/s)
+    dr_dt = (
+        -w
         * R
         * temperature
-        / (pressure_levels[:, None, None] * 100 * g)
-        * numpy.cos(lat_rad)
-        * numpy.cos(lon_rad)
+        / (pressure_levels[:, numpy.newaxis, numpy.newaxis] * 100 * g)
+    )
+
+    # Convert horizontal wind speeds to angular velocities
+    dlon_dt = u / (R_earth * cos_lat)
+    dlat_dt = v / R_earth
+
+    # Transform to Cartesian
+    wind_x = (
+        dr_dt * cos_lat * cos_lon
+        - R_earth * sin_lat * cos_lon * dlat_dt
+        - R_earth * cos_lat * sin_lon * dlon_dt
     )
 
     wind_y = (
-        u * numpy.cos(lon_rad)
-        - v * numpy.sin(lat_rad) * numpy.sin(lon_rad)
-        - w
-        * R
-        * temperature
-        / (pressure_levels[:, None, None] * 100 * g)
-        * numpy.cos(lat_rad)
-        * numpy.sin(lon_rad)
+        dr_dt * cos_lat * sin_lon
+        - R_earth * sin_lat * sin_lon * dlat_dt
+        + R_earth * cos_lat * cos_lon * dlon_dt
     )
 
-    wind_z = v * numpy.cos(lat_rad) - w * R * temperature / (
-        pressure_levels[:, None, None] * 100 * g
-    ) * numpy.sin(lat_rad)
+    wind_z = dr_dt * sin_lat + R_earth * cos_lat * dlat_dt
 
-    # Surface wind components (no vertical velocity)
-    wind_x_10m = -u_10m * numpy.sin(lon_rad) - v_10m * numpy.sin(lat_rad) * numpy.cos(
-        lon_rad
+    # Surface components (no vertical velocity)
+    dlon_dt_10m = u_10m / (R_earth * cos_lat)
+    dlat_dt_10m = v_10m / R_earth
+
+    wind_x_10m = (
+        -R_earth * sin_lat * cos_lon * dlat_dt_10m
+        - R_earth * cos_lat * sin_lon * dlon_dt_10m
     )
-    wind_y_10m = u_10m * numpy.cos(lon_rad) - v_10m * numpy.sin(lat_rad) * numpy.sin(
-        lon_rad
+
+    wind_y_10m = (
+        -R_earth * sin_lat * sin_lon * dlat_dt_10m
+        + R_earth * cos_lat * cos_lon * dlon_dt_10m
     )
-    wind_z_10m = v_10m * numpy.cos(lat_rad)
+
+    wind_z_10m = R_earth * cos_lat * dlat_dt_10m
 
     return wind_x, wind_y, wind_z, wind_x_10m, wind_y_10m, wind_z_10m
 
@@ -85,39 +100,57 @@ def compute_spherical_wind(
 ):
     """
     Compute spherical wind components (u, v, w) from 3D Cartesian wind components.
+
+    Note: Returns w in Pa/s (pressure coordinates) to match original data format.
     """
 
     # Constants
     g = 9.80616  # Gravitational acceleration m/s^2
     R = 287.05  # Gas constant for dry air J/(kg·K)
+    R_earth = 6371000.0  # Earth radius in meters
 
-    # Extract necessary data
+    # Convert coordinates to radians
     lon_rad = numpy.deg2rad(longitude)
     lat_rad = numpy.deg2rad(latitude)
 
-    # Compute spherical components
-    u = -wind_x * numpy.sin(lon_rad) + wind_y * numpy.cos(lon_rad)
+    # Precompute trigonometric functions
+    sin_lat = numpy.sin(lat_rad)
+    cos_lat = numpy.cos(lat_rad)
+    sin_lon = numpy.sin(lon_rad)
+    cos_lon = numpy.cos(lon_rad)
 
-    v = (
-        -wind_x * numpy.sin(lat_rad) * numpy.cos(lon_rad)
-        - wind_y * numpy.sin(lat_rad) * numpy.sin(lon_rad)
-        + wind_z * numpy.cos(lat_rad)
-    )
+    # Inverse transformation from Cartesian to angular velocities and geometric velocity
+    # From the orthogonality of the transformation matrix:
+    dlon_dt = (-wind_x * sin_lon + wind_y * cos_lon) / (R_earth * cos_lat)
+    dlat_dt = (
+        -wind_x * sin_lat * cos_lon - wind_y * sin_lat * sin_lon + wind_z * cos_lat
+    ) / R_earth
+    dr_dt = wind_x * cos_lat * cos_lon + wind_y * cos_lat * sin_lon + wind_z * sin_lat
 
+    # Convert angular velocities back to horizontal wind speeds in m/s
+    u = dlon_dt * R_earth * cos_lat  # eastward component
+    v = dlat_dt * R_earth  # northward component
+
+    # Convert geometric velocity (m/s) back to pressure velocity (Pa/s)
+    # ω = -w * p * g / (R * T) where w = dr/dt (m/s)
     w = (
-        -wind_x * numpy.cos(lat_rad) * numpy.cos(lon_rad)
-        - wind_y * numpy.cos(lat_rad) * numpy.sin(lon_rad)
-        - wind_z * numpy.sin(lat_rad)
-    ) * (pressure_levels[:, None, None] * 100 * g / (R * temperature))
-
-    # At 10m, w is considered 0
-    # NOTE: This will fail if the poles are included
-    u_10m = -wind_x_10m * numpy.sin(lon_rad) + wind_y_10m * numpy.cos(lon_rad)
-    v_10m = (
-        -wind_x_10m * numpy.sin(lat_rad) * numpy.cos(lon_rad)
-        - wind_y_10m * numpy.sin(lat_rad) * numpy.sin(lon_rad)
-        + wind_z_10m * numpy.cos(lat_rad)
+        -dr_dt
+        * pressure_levels[:, numpy.newaxis, numpy.newaxis]
+        * 100
+        * g
+        / (R * temperature)
     )
+
+    # Surface wind components (same calculation for horizontal components)
+    dlon_dt_10m = (-wind_x_10m * sin_lon + wind_y_10m * cos_lon) / (R_earth * cos_lat)
+    dlat_dt_10m = (
+        -wind_x_10m * sin_lat * cos_lon
+        - wind_y_10m * sin_lat * sin_lon
+        + wind_z_10m * cos_lat
+    ) / R_earth
+
+    u_10m = dlon_dt_10m * R_earth * cos_lat
+    v_10m = dlat_dt_10m * R_earth
 
     return u, v, w, u_10m, v_10m
 
