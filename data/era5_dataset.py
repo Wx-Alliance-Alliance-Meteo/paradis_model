@@ -453,7 +453,6 @@ class ERA5Dataset(torch.utils.data.Dataset):
                 self.q_max = torch.tensor(0.0).detach()
                 self.q_min = torch.tensor(self.eps).detach()
 
-
         # Extract the toa_radiation mean and std
         self.toa_rad_std = ds_input.attrs["toa_radiation_std"]
         self.toa_rad_mean = ds_input.attrs["toa_radiation_mean"]

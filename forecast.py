@@ -123,7 +123,9 @@ def main(cfg: DictConfig):
                     if step + 2 < num_forecast_steps:
                         begin = (n_inputs - 1) * litmodel.num_common_features
                         end = n_inputs * litmodel.num_common_features
-                        input_data[:, step + 2, begin:end] = input_data_step[:, begin:end]
+                        input_data[:, step + 2, begin:end] = input_data_step[
+                            :, begin:end
+                        ]
 
                 # Store only at required frequency
                 if step % cfg.forecast.output_frequency == 0:
