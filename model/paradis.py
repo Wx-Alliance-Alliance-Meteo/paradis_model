@@ -21,7 +21,7 @@ class NeuralSemiLagrangian(nn.Module):
         super().__init__()
 
         # For cubic interpolation
-        self.padding = 1
+        self.padding = 2
         self.padding_interp = GeoCyclicPadding(self.padding)
         self.hidden_dim = hidden_dim
 
@@ -245,12 +245,12 @@ class Paradis(nn.Module):
 
         # Advection layer
         self.advection = NeuralSemiLagrangian(
-                    hidden_dim,
-                    mesh_size,
-                    num_vels=num_vels,
-                    interpolation=adv_interpolation,
-                    bias_channels=bias_channels,
-                )
+            hidden_dim,
+            mesh_size,
+            num_vels=num_vels,
+            interpolation=adv_interpolation,
+            bias_channels=bias_channels,
+        )
 
         # Diffusion-reaction layers
         self.diffusion_layers = nn.ModuleList(
