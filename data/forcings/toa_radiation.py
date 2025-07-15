@@ -96,25 +96,19 @@ def local_solar_time_rad(longitude_deg, julian_day):
 
 
 # Cosine of the zenith angle, given latitude and local true solar time
-def cos_zenith_angle(latitude, declination, true_local_solar_time_rad, weight):
+def cos_zenith_angle(latitude_rad, declination_rad, true_local_solar_time_rad, weight):
     # See eqn 3-15 of hal.science document; latitude, declination, and true local solar times are all
     # in radians
-    assert latitude.shape[1] == 1
-    assert true_local_solar_time_rad.shape[0] == 1
-    ni = latitude.shape[0]
-    nj = true_local_solar_time_rad.shape[1]
-    out = numpy.empty((ni, nj), dtype=numpy.float32)
+    sdec = numpy.sin(declination_rad)
+    cdec = numpy.cos(declination_rad)
+    clst = numpy.cos(true_local_solar_time_rad)
 
-    sdec = numpy.sin(declination)
-    cdec = numpy.cos(declination)
-    clst = numpy.cos(true_local_solar_time_rad[0, :])
-
-    slat = numpy.sin(latitude[:, 0])
-    clat = numpy.cos(latitude[:, 0])
+    slat = numpy.sin(latitude_rad)
+    clat = numpy.cos(latitude_rad)
 
     out = (
         numpy.maximum(
-            0, slat[:, numpy.newaxis] * sdec + clat[:, numpy.newaxis] * cdec * clst
+            0, slat * sdec + clat * cdec * clst
         )
         * weight
     )
@@ -130,14 +124,14 @@ def toa_radiation_integrated(latitude, longitude, times, weights):
 
     # slat = numpy.sin(latitude*numpy.pi/180)
     # clat = numpy.cos(latitude*numpy.pi/180)
-    lat_deg = (latitude * numpy.pi / 180).astype(numpy.float32)
+    lat_rad = (latitude * numpy.pi / 180).astype(numpy.float32)
     longitude = longitude.astype(numpy.float32)
 
     for tt, (time, weight) in enumerate(zip(times, weights)):
         julian_day = (time - julian_refdatetime_float) / 86400e6
         (
             ascension,
-            declination,
+            declination_rad,
             distance,
             mean_longitude,
             mean_anomaly_rad,
@@ -148,10 +142,10 @@ def toa_radiation_integrated(latitude, longitude, times, weights):
             2 * numpy.pi
         )  # convert radians to days
         true_local_solar_time = local_solar_time_rad(longitude, julian_day + eot)
-        declination = numpy.float32(declination)
+        declination_rad = numpy.float32(declination_rad)
         toa_radiation += cos_zenith_angle(
-            lat_deg,
-            declination,
+            lat_rad,
+            declination_rad,
             true_local_solar_time,
             (1360.56 / distance**2) * weight,
         )
@@ -173,8 +167,8 @@ def toa_radiation(times: numpy.ndarray, lat: numpy.ndarray, lon: numpy.ndarray):
     """Calculate top of atmosphere radiation, integrated over the 1h period ending at the specified times.
     Args:
         times: Array of datetime64 timestamps
-        lat: Latitude array
-        lon: Longitude array
+        lat: Latitude array (degrees). Can be 1D for a regular grid, or ND for an irregular grid.
+        lon: Longitude array (degrees). Can be 1D for a regular grid, or ND for an irregular grid. If ND, must have the same shape as lat.
     Returns:
         numpy.ndarray: TOA radiation values
     """
@@ -185,9 +179,16 @@ def toa_radiation(times: numpy.ndarray, lat: numpy.ndarray, lon: numpy.ndarray):
 
     # If latitude/longitude have dimension 1, assume that they really
     # specify two different axes of a 2D grid
-    lat_data = lat.reshape((-1, 1))
-    lon_data = lon.reshape((1, -1))
-    output_shape = (lat.size, lon.size)
+    if lat.ndim == 1 and lon.ndim == 1:
+        lat_data = lat.reshape((-1, 1))
+        lon_data = lon.reshape((1, -1))
+        output_shape = (lat.size, lon.size)
+    else:
+        if lat.shape != lon.shape:
+            raise ValueError("if not 1D, lat and lon must have the same shape")
+        lat_data = lat
+        lon_data = lon
+        output_shape = lat.shape
 
     output_rad = numpy.empty((time_data.size,) + output_shape, dtype=numpy.float32)
     for idx, otime in enumerate(time_data):
