@@ -4,6 +4,8 @@ class LinearCubedSphereInterpolator:
     def __init__(self, lat, lon, cubed_sphere):
         dlon = lon[1]-lon[0]
         dlat = lat[1]-lat[0]
+        
+        lon = np.concat((lon, [360]))
 
         lon_cs_deg = np.rad2deg(cubed_sphere.lon) % 360
         lat_cs_deg = np.rad2deg(cubed_sphere.lat)
@@ -25,15 +27,17 @@ class LinearCubedSphereInterpolator:
         self.ty = (lat_cs_deg - y1) / (y2 - y1)
         
     def interpolate(self, data):
+        data = np.concat((data, data[..., 0:1]), axis=-1)
+        
         # Get data at the corners
-        q11 = data[..., self.idx_lat, self.idx_lon]        
-        q12 = data[..., self.idx_lat + 1, self.idx_lon]    
-        q21 = data[..., self.idx_lat, self.idx_lon + 1]    
+        q11 = data[..., self.idx_lat,     self.idx_lon]        
+        q12 = data[..., self.idx_lat,     self.idx_lon + 1]    
+        q21 = data[..., self.idx_lat + 1, self.idx_lon]    
         q22 = data[..., self.idx_lat + 1, self.idx_lon + 1]
 
         # Perform linear interpolation along x-direction
-        R1 = q11 * (1 - self.tx) + q21 * self.tx  
-        R2 = q12 * (1 - self.tx) + q22 * self.tx
+        R1 = q11 * (1 - self.tx) + q12 * self.tx
+        R2 = q21 * (1 - self.tx) + q22 * self.tx
 
         # Perform linear interpolation along y-direction
         interpolated_values = R1 * (1 - self.ty) + R2 * self.ty

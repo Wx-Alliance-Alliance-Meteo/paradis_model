@@ -2,86 +2,25 @@ import argparse
 import xarray
 import numpy
 import dask
-from dask.diagnostics.progress  import ProgressBar
+from dask.diagnostics.progress import ProgressBar
 import os
 import time
 import sys
+import torch
 import dask.config
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from data.forcings.toa_radiation import toa_radiation
 from utils.cubed_sphere.cubed_sphere import CubedSphere
-from utils.cubed_sphere.linear_cubed_sphere_interpolator import LinearCubedSphereInterpolator
+from utils.cubed_sphere.torch_interpolator import (
+    TorchCubedSphereInterpolator,
+)
 
-def compute_cartesian_wind(ds):
-    """
-    Compute 3D Cartesian wind components from spherical components.
-
-    Args:
-        ds (xarray.Dataset): Dataset containing wind components and coordinates
-
-    Returns:
-        tuple: Dataset with added Cartesian wind components
-    """
-    # Constants
-    g = 9.80616  # gravitational acceleration m/s^2
-    R = 287.05  # Gas constant for dry air J/(kg·K)
-
-    # Add the 3D Cartesian wind components directly to the dataset
-    ds = ds.assign(
-        wind_x=-ds.u_component_of_wind * numpy.sin(numpy.deg2rad(ds.longitude))
-        - ds.v_component_of_wind
-        * numpy.sin(numpy.deg2rad(ds.latitude))
-        * numpy.cos(numpy.deg2rad(ds.longitude))
-        - ds.vertical_velocity
-        * R
-        * ds.temperature
-        / (ds.level * 100 * g)
-        * numpy.cos(numpy.deg2rad(ds.latitude))
-        * numpy.cos(numpy.deg2rad(ds.longitude)),
-        wind_y=ds.u_component_of_wind * numpy.cos(numpy.deg2rad(ds.longitude))
-        - ds.v_component_of_wind
-        * numpy.sin(numpy.deg2rad(ds.latitude))
-        * numpy.sin(numpy.deg2rad(ds.longitude))
-        - ds.vertical_velocity
-        * R
-        * ds.temperature
-        / (ds.level * 100 * g)
-        * numpy.cos(numpy.deg2rad(ds.latitude))
-        * numpy.sin(numpy.deg2rad(ds.longitude)),
-        wind_z=ds.v_component_of_wind * numpy.cos(numpy.deg2rad(ds.latitude))
-        - ds.vertical_velocity
-        * R
-        * ds.temperature
-        / (ds.level * 100 * g)
-        * numpy.sin(numpy.deg2rad(ds.latitude)),
-        # Surface wind components (no vertical velocity)
-        wind_x_10m=-ds["10m_u_component_of_wind"]
-        * numpy.sin(numpy.deg2rad(ds.longitude))
-        - ds["10m_v_component_of_wind"]
-        * numpy.sin(numpy.deg2rad(ds.latitude))
-        * numpy.cos(numpy.deg2rad(ds.longitude)),
-        wind_y_10m=ds["10m_u_component_of_wind"]
-        * numpy.cos(numpy.deg2rad(ds.longitude))
-        - ds["10m_v_component_of_wind"]
-        * numpy.sin(numpy.deg2rad(ds.latitude))
-        * numpy.sin(numpy.deg2rad(ds.longitude)),
-        wind_z_10m=ds["10m_v_component_of_wind"]
-        * numpy.cos(numpy.deg2rad(ds.latitude)),
-    )
-
-    # Set attributes for the 3D wind components
-    for var in ["wind_x", "wind_y", "wind_z"]:
-        ds[var].attrs["long_name"] = f'{var.split("_")[1]}_component_of_wind'
-        ds[var].attrs["units"] = "m s-1"
-
-    # Set attributes for the surface wind components
-    for var in ["wind_x_10m", "wind_y_10m", "wind_z_10m"]:
-        ds[var].attrs["long_name"] = f'{var.split("_")[1]}_component_of_10m_wind'
-        ds[var].attrs["units"] = "m s-1"
-
-    return ds
+# Constants
+R_earth = 6371000.0  # Earth radius in meters
+g = 9.80616  # gravitational acceleration m/s^2
+R = 287.05  # Gas constant for dry air J/(kg·K)
 
 
 def main():
@@ -100,25 +39,26 @@ def main():
     parser.add_argument(
         "-o", "--output_dir", required=True, help="Output directory for processed data"
     )
-    
+
     parser.add_argument(
-        "-n", "--num_elem_cs", required=True, help="Number of elements in cubed sphere" 
+        "-n", "--num_elem_cs", required=True, help="Number of elements in cubed sphere"
     )
 
     parser.add_argument(
-        "--remove-poles",
-        action="store_true",
-        default=False,
-        help="Remove latitudes 90 and -90",
+        "--interpolation_mode",
+        type=str,
+        default='bilinear',
+        choices=['bilinear', 'bicubic', 'nearest'],
+        help="Interpolation mode for regridding."
     )
+
     args = parser.parse_args()
 
     # Open the dataset from the input Zarr directory
     ds = xarray.open_zarr(args.input_dir)
-
-    # Ensure the dataset dimensions are ordered as time, latitude, longitude, level
-    ds = ds.transpose("time", "latitude", "longitude", "level")
-
+    
+    ds = ds.transpose("time", "level", "latitude", "longitude")
+    
     # Remove variables that don't have corresponding directories in the input data
     # These variables are likely placeholders or contain only NaN values
 
@@ -144,12 +84,6 @@ def main():
         "total_column_water",
         "standard_deviation_of_orography",
         "slope_of_sub_gridscale_orography",
-        "wind_x",
-        "wind_y",
-        "wind_z",
-        "wind_x_10m",
-        "wind_y_10m",
-        "wind_z_10m"
     ]
 
     # Determine variables to drop
@@ -158,29 +92,62 @@ def main():
     # Drop the unwanted variables
     ds = ds.drop_vars(drop_variables)
 
-    # Uncomment the following line if latitudes 90 and -90 need to be removed
-    if args.remove_poles:
-        lat_to_drop = []
-        for v in [-90, 90]:
-            if v in ds.latitude.values:
-                lat_to_drop.append(v)
-
-        if lat_to_drop:
-            ds = ds.sel(latitude=~ds.latitude.isin(lat_to_drop))
-
+    # Cube-sphere grid
     num_elem_cs = int(args.num_elem_cs)
+    cubed_sphere = CubedSphere(num_elem=num_elem_cs, radius = R_earth)
+    lon = ds.longitude.values
+    lat = ds.latitude.values
+    cs_interpolator = TorchCubedSphereInterpolator(lat, lon, cubed_sphere, mode=args.interpolation_mode)
 
     # Step 1: Stack data for efficient storage and processing
-    stack_data(ds, args.output_dir, num_elem_cs)
+    stack_data(ds, args.output_dir, cubed_sphere, cs_interpolator)
 
     # Step 2: Precompute static data (e.g., geographic variables)
-    precompute_static_data(ds, args.output_dir, num_elem_cs)
+    precompute_static_data(ds, args.output_dir, cubed_sphere, cs_interpolator)
 
     # Step 3: Compute mean and standard deviation for atmospheric and surface variables
-    compute_statistics(args.output_dir, num_elem_cs)
+    compute_statistics(args.output_dir)
 
 
-def stack_data(ds, output_base_dir, num_elem_cs):
+def convert_to_cubed_sphere(ds, interpolator, cubed_sphere):
+    for var in ds.data_vars:
+        dims = ds[var].dims
+        if dims[-2:] == ('latitude', 'longitude'):
+            new_data = interpolator.interpolate(ds[var].values).numpy()
+            new_dims = dims[:-2] + ("panel_id", "xi", "eta")
+            ds[var] = xarray.DataArray(new_data, dims=new_dims)
+
+    ds = ds.drop_vars(['latitude', 'longitude'])
+    ds = ds.assign_coords({
+        'panel_id': cubed_sphere.panel_id,
+        'xi': cubed_sphere.xi,
+        'eta': cubed_sphere.eta,
+    })
+    
+    return ds
+            
+def convert_wind(ds, from_coord, to_coord, cubed_sphere, input_vars, output_vars):
+    if len(input_vars) == 3:
+        # Convert pressure velocity (Pa/s) to geometric velocity (m/s)
+        # w = -ω * R * T / (p * g) where ω = dp/dt (Pa/s)
+        vertical_wind = -ds[input_vars[-1]] * R * ds.temperature / (ds.level * 100 * g)
+        physical_winds = numpy.stack((ds[input_vars[0]], ds[input_vars[1]], vertical_wind), axis=-1)
+        vertical = True
+    else:
+        physical_winds = numpy.stack((ds[input_vars[0]], ds[input_vars[1]]), axis=-1)
+        vertical = False
+    
+    J = cubed_sphere.get_jacobian(from_coord, to_coord, vertical)
+    new_winds = (J @ physical_winds[..., None]).squeeze(-1)
+    dims = ds[input_vars[0]].dims
+
+    ds = ds.assign({v: (dims, new_winds[...,i]) for i, v in enumerate(output_vars)})
+
+    return ds
+    
+    
+
+def stack_data(ds, output_base_dir, cubed_sphere, cs_interpolator):
     """
     Processes and stacks data for each year, storing it in a Zarr format with a unit chunk size
     along the time dimension.
@@ -189,9 +156,6 @@ def stack_data(ds, output_base_dir, num_elem_cs):
         ds (xarray.Dataset): The input dataset to process.
         output_base_dir (str): Directory to store the processed yearly data.
     """
-    # Add Cartesian wind components to the dataset
-    ds = compute_cartesian_wind(ds)
-
     # Determine the minimum and maximum years in the dataset
     min_year = 1979
     max_year = numpy.max(ds["time.year"].values)
@@ -204,16 +168,7 @@ def stack_data(ds, output_base_dir, num_elem_cs):
     pbar.register()
 
     # Variables to retain dimensions for stacking
-    keep_dims = ["time", "latitude", "longitude"]
-    
-    lon = numpy.concatenate((ds.longitude.values, [360]))
-    lat = ds.latitude.values
-    
-    cubed_sphere = CubedSphere(num_elem=num_elem_cs)
-    cs_interpolator = LinearCubedSphereInterpolator(lat, lon, cubed_sphere)
-    panel_id = list(range(6))
-    xi = cubed_sphere.xi
-    eta = cubed_sphere.eta
+    keep_dims = ["time", "panel_id", "xi", "eta"]
 
     # Process data year by year
     for year in range(min_year, max_year + 1):
@@ -222,6 +177,17 @@ def stack_data(ds, output_base_dir, num_elem_cs):
 
         # Select data for the current year
         ds_year = ds.sel(time=ds["time.year"] == year)
+        
+        # Convert variables to cubed-sphere and convert winds
+        ds_year = convert_to_cubed_sphere(ds_year, cs_interpolator, cubed_sphere)
+
+        ds_year = convert_wind(ds_year, 'physical', 'local', cubed_sphere, 
+                                ('10m_u_component_of_wind', '10m_v_component_of_wind'),
+                                ('wind_xi_10m', 'wind_eta_10m'))
+
+        ds_year = convert_wind(ds_year, 'physical', 'local', cubed_sphere, 
+                            ('u_component_of_wind', 'v_component_of_wind', 'vertical_velocity'),
+                            ('wind_xi', 'wind_eta', 'wind_zeta'))
 
         # Stack variables along a new "features" dimension
         ds_year = ds_year.to_stacked_array(new_dim="features", sample_dims=keep_dims)
@@ -257,7 +223,7 @@ def stack_data(ds, output_base_dir, num_elem_cs):
         ds_year = ds_year.assign_coords(features=new_names)
 
         # Add descriptive attributes to the dataset
-        ds_year.attrs["description"] = "Stacked dataset per lat/lon grid point"
+        ds_year.attrs["description"] = "Stacked dataset on cubed-sphere grid"
         ds_year.attrs["note"] = (
             "Variables have been renamed based on their original names and levels."
         )
@@ -266,24 +232,7 @@ def stack_data(ds, output_base_dir, num_elem_cs):
         attrs_to_remove = ["long_name", "short_name", "units"]
         for attr in attrs_to_remove:
             ds_year.attrs.pop(attr, None)
-            
-        # Interpolate data on the cubed-sphere
-        data = numpy.transpose(ds_year.values,(0,3,1,2))     # Time, features, lat, lon
-        data = numpy.concatenate( (data, data[...,0:1]), axis=-1) # Add periodic point in longitude
         
-        data_cs = cs_interpolator.interpolate(data)  
-        data_cs = numpy.transpose(data_cs, (0,2,3,4,1))      # Time, panel_id, xi, eta, features
-
-        cs_coords = {
-            'time': ds_year.time.values,
-            'panel_id': panel_id,
-            'xi': xi,
-            'eta': eta,
-            'features': ds_year.features.values,
-        }
-        
-        ds_year = xarray.DataArray(data_cs, coords=cs_coords, dims=['time', 'panel_id', 'xi', 'eta', 'features'])
-
         # Define chunk sizes for optimized Zarr storage
         chunk_sizes = {
             "time": 1,
@@ -304,80 +253,50 @@ def stack_data(ds, output_base_dir, num_elem_cs):
         # Write the processed dataset to a Zarr file
         output_file_path = os.path.join(output_dir)
         with dask.config.set(scheduler="threads"):
-            ds_year.to_zarr(output_file_path, mode="w", consolidated=True, zarr_format=2)
+            ds_year.to_zarr(
+                output_file_path, mode="w", consolidated=True, zarr_format=2
+            )
 
         print(
             f"Successfully processed {year} -> {output_file_path} in {time.time() - t0:.2f} seconds"
         )
 
-    
-def precompute_static_data(ds, output_base_dir, num_elem_cs):
+
+def precompute_static_data(ds, output_base_dir, cubed_sphere, cs_interpolator):
     pbar = ProgressBar()
     pbar.register()
 
-    # Create the cubed sphere grid
-    cubed_sphere = CubedSphere(num_elem=num_elem_cs)
-
     # Keep only the static data from the original lat-lon dataset
-    ds_static_latlon = ds.drop_vars([var for var in ds.data_vars if "time" in ds[var].dims])
-
-    # Interpolate static variables onto the cubed sphere grid
-    lon = numpy.concatenate((ds.longitude.values, [360]))
-    lat = ds.latitude.values
-    cs_interpolator = LinearCubedSphereInterpolator(lat, lon, cubed_sphere)
-
-    data_vars = {}
-    
-    # Interpolate existing static variables if numeric
-    for var in ds_static_latlon.data_vars:
-        if numpy.issubdtype(ds_static_latlon[var].dtype, numpy.number):
-            has_nans = numpy.isnan(ds_static_latlon[var].values).any()
-            if not has_nans:
-                # The data needs to be (lat, lon) for interpolation
-                data_latlon = ds_static_latlon[var].values
-                if len(data_latlon.shape) == 2: # lat, lon
-                    # Add periodic point in longitude
-                    data_latlon = numpy.concatenate((data_latlon, data_latlon[:, 0:1]), axis=1)
-                    data_cs = cs_interpolator.interpolate(data_latlon)
-                    data_vars[var] = xarray.DataArray(
-                        data_cs,
-                        dims=["panel_id", "xi", "eta"],
-                    )
-
-    # Compute geometric variables on the cubed sphere
-    lat_rad = cubed_sphere.lat
-    lon_rad = cubed_sphere.lon
-
-    # Add lat/lon in degrees to be consistent with original dataset
-    data_vars["latitude"] = xarray.DataArray(numpy.rad2deg(lat_rad), dims=["panel_id", "xi", "eta"])
-    data_vars["longitude"] = xarray.DataArray(numpy.rad2deg(lon_rad), dims=["panel_id", "xi", "eta"])
-    
-    data_vars["cos_latitude"] = xarray.DataArray(numpy.cos(lat_rad), dims=["panel_id", "xi", "eta"])
-    data_vars["cos_longitude"] = xarray.DataArray(numpy.cos(lon_rad), dims=["panel_id", "xi", "eta"])
-    data_vars["sin_longitude"] = xarray.DataArray(numpy.sin(lon_rad), dims=["panel_id", "xi", "eta"])
-
-    # Convert to a dataset
-    ds_result = xarray.Dataset(
-        data_vars=data_vars,
-        coords={"panel_id": list(range(6)), "xi": cubed_sphere.xi, "eta": cubed_sphere.eta}
+    ds_static = ds.drop_vars(
+        [var for var in ds.data_vars if "time" in ds[var].dims or numpy.isnan(ds[var].values).any()]
     )
+    static_dims = ("panel_id", "xi", "eta")
+    
+    ds_static = convert_to_cubed_sphere(ds_static, cs_interpolator, cubed_sphere)
 
-    # Store mean and standard deviation for these variables
-    for var in ds_result.data_vars:
-        mean = ds_result[var].mean().values
-        std = ds_result[var].std().values
-        ds_result[var] = ds_result[var].assign_attrs(mean=mean, std=std)
+    # Add lat/lon
+    ds_static["latitude"] = xarray.DataArray(numpy.rad2deg(cubed_sphere.lat), dims=static_dims)
+    ds_static["longitude"] = xarray.DataArray(numpy.rad2deg(cubed_sphere.lon), dims=static_dims)
+    ds_static["cos_latitude"] = xarray.DataArray(cubed_sphere.cos_lat, dims=static_dims)
+    ds_static["cos_longitude"] = xarray.DataArray(cubed_sphere.cos_lon, dims=static_dims)
+    ds_static["sin_latitude"] = xarray.DataArray(cubed_sphere.sin_lat, dims=static_dims)
+    ds_static["sin_longitude"] = xarray.DataArray(cubed_sphere.sin_lon, dims=static_dims)
+    
+    for var in ds_static.data_vars:
+        mean = ds_static[var].mean().values
+        std = ds_static[var].std().values
+        ds_static[var] = ds_static[var].assign_attrs(mean=mean, std=std)
 
     with pbar, dask.config.set(scheduler="threads"):
-        ds_result.to_zarr(
+        ds_static.to_zarr(
             os.path.join(output_base_dir, "constants"),
             mode="w",
             consolidated=True,
-            zarr_format=2
+            zarr_format=2,
         )
 
 
-def compute_statistics(output_base_dir, num_elem_cs):
+def compute_statistics(output_base_dir):
     """Compute mean and standard deviation of data variables"""
     pbar = ProgressBar()
     pbar.register()
@@ -389,12 +308,14 @@ def compute_statistics(output_base_dir, num_elem_cs):
 
     # Create list of files to open
     files = [
-        os.path.join(output_base_dir, f"{year}")
+        os.path.join(output_base_dir, str(year))
         for year in range(min_year, max_year + 1)
     ]
 
     # Open with a larger chunk as this will accumulate data
-    ds = xarray.open_mfdataset(files, chunks={"time": 1}, engine="zarr")
+    ds = xarray.open_mfdataset(
+        files, chunks={"time": 1}, engine="zarr"
+    )
 
     # Compute time-mean and time-standard deviation (per-level)
     mean_ds = ds.mean(dim=["time", "panel_id", "xi", "eta"], skipna=True)
@@ -408,7 +329,7 @@ def compute_statistics(output_base_dir, num_elem_cs):
     lon_values = constants_ds.longitude.values
 
     # Compute toa_solar radiation
-    toa_rad = toa_radiation(ds.time.values, lat_values.flatten(), lon_values.flatten())
+    toa_rad = toa_radiation(ds.time.values, lat_values, lon_values)
     toa_rad_mean = numpy.mean(toa_rad)
     toa_rad_std = numpy.std(toa_rad)
 
@@ -427,10 +348,12 @@ def compute_statistics(output_base_dir, num_elem_cs):
 
     with dask.config.set(scheduler="threads"):
         result_ds.to_zarr(
-            os.path.join(output_base_dir, "stats"), mode="w", consolidated=True, zarr_format=2
+            os.path.join(output_base_dir, "stats"),
+            mode="w",
+            consolidated=True,
+            zarr_format=2,
         )
 
 
 if __name__ == "__main__":
     main()
-

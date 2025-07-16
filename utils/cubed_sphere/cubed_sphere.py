@@ -3,7 +3,7 @@ from scipy.spatial.transform import Rotation
 from matplotlib import pyplot as plt
 
 class CubedSphere:
-    def __init__(self, num_elem: int, lambda0: float = 0.0, phi0: float = 0.0, alpha0: float = 0.0, padding_width: int = 0):
+    def __init__(self, num_elem: int, radius: float = 1.0,lambda0: float = 0.0, phi0: float = 0.0, alpha0: float = 0.0):
         """Initialize the cubed sphere geometry, for an earthlike sphere with no topography.
 
         This function initializes the basic CubedSphere geometry object, which provides the parameters necessary
@@ -40,8 +40,10 @@ class CubedSphere:
            Valid range ]-π/2,0]
         """
         self.num_panel = 6
+        self.panel_id = np.arange(self.num_panel)
         self.num_elem = num_elem
-        self.padding_width = padding_width
+        self.radius = radius
+        self.grid_shape = (self.num_panel, num_elem, num_elem)
 
         # Get base panel vectors and apply rotation
         panel_center, panel_up, panel_right = self.get_panel_faces()
@@ -49,16 +51,13 @@ class CubedSphere:
         self.panel_center = R.apply(panel_center)
         self.panel_up = R.apply(panel_up)
         self.panel_right = R.apply(panel_right)
-
-        # Physical constants
-        self.earth_radius = 6371220.0  # Mean radius of the earth (m)
         
         # Local coordinate 
         domain = (-np.pi / 4, np.pi / 4)
         delta_x = (domain[1] - domain[0]) / num_elem
         
-        self.xi = domain[0] + delta_x * (np.arange(-padding_width, num_elem+padding_width) + 0.5)   # West to east
-        self.eta = domain[0] + delta_x * (np.arange(-padding_width, num_elem+padding_width) + 0.5)  # South to north
+        self.xi = domain[0] + delta_x * (np.arange(0, num_elem) + 0.5)   # West to east
+        self.eta = domain[0] + delta_x * (np.arange(0, num_elem) + 0.5)  # South to north
         
         self.Xi, self.Eta = np.meshgrid(self.xi, self.eta, indexing='ij')
         # Xi and Eta are the same on all faces so we set first dim to size 1 so broadcast works
@@ -89,11 +88,8 @@ class CubedSphere:
         self.cos_lon = np.cos(self.lon)
         self.sin_lon = np.sin(self.lon)
         
-        # Add latlon in degree 
-        lon_deg = np.rad2deg(self.lon) % 360
-        lat_deg = np.rad2deg(self.lat)
-
-        self.lonlat = np.stack((lon_deg, lat_deg), axis=-1)
+        # Cache for Jacobian
+        self.jacobian = {}
     
     def get_panel_faces(self):
         panel_center = np.array([
@@ -124,8 +120,15 @@ class CubedSphere:
         Y = np.tan(eta)
         return X, Y
 
-    def _J_local_to_gnomonic(self, X, Y):
-        J = np.zeros(X.shape + (2,2))
+    def _J_local_to_gnomonic(self, vertical=False):
+        X, Y = self.X, self.Y
+        
+        if not vertical:
+            J = np.zeros(self.grid_shape + (2,2))
+        else:
+            J = np.zeros(self.grid_shape + (3,3))
+            J[..., 2, 2] = 1
+            
         J[..., 0, 0] = 1 + X**2
         J[..., 1, 1] = 1 + Y**2
         return J
@@ -135,43 +138,45 @@ class CubedSphere:
         eta = np.arctan(Y)
         return xi, eta
     
-    def _J_gnomonic_to_local(self, X, Y):
-        J = np.zeros(X.shape + (2,2))
+    def _J_gnomonic_to_local(self, vertical=False):
+        X, Y = self.X, self.Y
+
+        if not vertical:
+            J = np.zeros(self.grid_shape + (2,2))
+        else:
+            J = np.zeros(self.grid_shape + (3,3))
+            J[..., 2, 2] = 1
+            
         J[..., 0, 0] = 1 / (1 + X**2)
         J[..., 1, 1] = 1 / (1 + Y**2)
         return J
 
-    def _gnomonic_to_cartesian(self, X, Y, panel_id=None):
-        if panel_id is not None:  # Compute for a specific panel. Dimension (1, num_elem, num_elem, 1)
-            c = self.panel_center[panel_id, None, None, :] 
-            r = self.panel_right[panel_id, None, None, :]
-            u = self.panel_up[panel_id, None, None, :]
-            X = X[..., None]
-            Y = Y[..., None]
-        else: # Compute for all panel. Dimension (num_panel, num_elem, num_elem, 1)
-            c = self.panel_center[:, None, None, :]
-            r = self.panel_right[:, None, None, :]
-            u = self.panel_up[:, None, None, :]
-            if X.ndim == 2:
-                X = X[None, ..., None]
-                Y = Y[None, ..., None]
-            else: 
-                X = X[..., None]
-                Y = Y[..., None]
-
-        delta = np.sqrt(1.0 + X**2 + Y**2)
-        points = (c + r * X + u * Y) / delta
+    def _gnomonic_to_cartesian(self, X, Y):
+        c = self.panel_center[:, None, None, :]
+        r = self.panel_right[:, None, None, :]
+        u = self.panel_up[:, None, None, :]
+        X = X[..., None]
+        Y = Y[..., None]
+        
+        R_delta = self.radius / np.sqrt(1.0 + X**2 + Y**2)
+        points = (c + r * X + u * Y) * R_delta
         Xc, Yc, Zc = points[..., 0], points[..., 1], points[..., 2]
         return Xc, Yc, Zc
     
-    def _J_gnomonic_to_cartesian(self, X, Y, delta, c, r, u):
-        J = np.zeros((6,) + X.shape[1:3] + (3,2))
+    def _J_gnomonic_to_cartesian(self, vertical=False):
+        X, Y, delta = self.X[..., None], self.Y[..., None], self.delta[..., None]
+        c = self.panel_center[:,None,None,:]
+        r = self.panel_right[:,None,None,:]
+        u = self.panel_up[:,None,None,:]
         
-        X, Y, delta = X[..., None], Y[..., None], delta[..., None]
-        c, r, u = c[:,None,None,:], r[:,None,None,:], u[:,None,None,:]
-        
-        J[..., 0] = (r * (1+Y**2) - X * (c + u * Y)) / delta ** 3
-        J[..., 1] = (u * (1+X**2) - Y * (c + r * X)) / delta ** 3
+        if not vertical:
+            J = np.zeros(self.grid_shape + (3,2))
+        else:
+            J = np.zeros(self.grid_shape + (3,3))    
+            J[..., 2] = (c + r*X + u*Y) / delta
+
+        J[..., 0] = self.radius * (r * (1+Y**2) - X * (c + u * Y)) / delta ** 3
+        J[..., 1] = self.radius * (u * (1+X**2) - Y * (c + r * X)) / delta ** 3
         return J
 
     def _cartesian_to_gnomonic(self, Xc, Yc, Zc):
@@ -193,56 +198,101 @@ class CubedSphere:
         X = p_dot_r / p_dot_c
         Y = p_dot_u / p_dot_c
         
-        return X, Y, panel_indices # Return panel_indices as part of the transformation result
+        return X, Y, panel_indices 
 
-    def _J_cartesian_to_gnomonic(self, X, Y, delta, c, r, u):
-        J = np.zeros((6,) + X.shape[1:3] + (2,3))
+    def _J_cartesian_to_gnomonic(self, vertical=False):
+        X, Y, delta = self.X[..., None], self.Y[..., None], self.delta[..., None]
+        c = self.panel_center[:,None,None,:]
+        r = self.panel_right[:,None,None,:]
+        u = self.panel_up[:,None,None,:]
         
-        X, Y, delta = X[..., None], Y[..., None], delta[..., None]
-        c, r, u = c[:,None,None,:], r[:,None,None,:], u[:,None,None,:]
+        if not vertical:
+            J = np.zeros(self.grid_shape + (2,3))
+        else:
+            J = np.zeros(self.grid_shape + (3,3))
+            J[...,2, :] = (c + r*X + u*Y) / delta
         
-        J[..., 0, :] = delta * (r - X*c)
-        J[..., 1, :] = delta * (u - Y*c)
+        J[..., 0, :] = delta / self.radius * (r - X*c)
+        J[..., 1, :] = delta / self.radius * (u - Y*c)
         return J
 
     def _spherical_to_cartesian(self, lat, lon):
-        Xc = np.cos(lat) * np.cos(lon)
-        Yc = np.cos(lat) * np.sin(lon)
-        Zc = np.sin(lat)
+        Xc = self.radius * np.cos(lat) * np.cos(lon)
+        Yc = self.radius * np.cos(lat) * np.sin(lon)
+        Zc = self.radius * np.sin(lat)
         return Xc, Yc, Zc
 
-    def _J_spherical_to_cartesian(self, cos_lat, sin_lat, cos_lon, sin_lon):
-        J = np.zeros(cos_lat.shape + (3,2))
-        J[..., 0, 0] = -sin_lat*cos_lon
-        J[..., 0, 1] = -cos_lat*sin_lon
-        J[..., 1, 0] = -sin_lat*sin_lon
-        J[..., 1, 1] = cos_lat*cos_lon
-        J[..., 2, 0] = cos_lat
+    def _J_spherical_to_cartesian(self, vertical=False):
+        cos_lat, sin_lat = self.cos_lat, self.sin_lat
+        cos_lon, sin_lon = self.cos_lon, self.sin_lon
+        
+        if not vertical:
+            J = np.zeros(self.grid_shape + (3,2))
+        else:
+            J = np.zeros(self.grid_shape + (3,3))
+            J[..., 0, 2] = cos_lat * cos_lon
+            J[..., 1, 2] = cos_lat * sin_lon
+            J[..., 2, 2] = sin_lat
+
+        J[..., 0, 0] = -self.radius * sin_lat * cos_lon
+        J[..., 0, 1] = -self.radius * cos_lat * sin_lon
+        J[..., 1, 0] = -self.radius * sin_lat * sin_lon
+        J[..., 1, 1] =  self.radius * cos_lat * cos_lon
+        J[..., 2, 0] =  self.radius * cos_lat
+            
         return J
 
     def _cartesian_to_spherical(self, Xc, Yc, Zc):
-        hypotxy = np.hypot(Xc, Yc)
-        lat = np.arctan2(Zc, hypotxy)
+        lat = np.arcsin(Zc / self.radius)
         lon = np.arctan2(Yc, Xc)
         return lat, lon
     
-    def _J_cartesian_to_spherical(self, cos_lat, cos_lon, sin_lon):
-        J = np.zeros(cos_lat.shape + (2,3))
-        J[..., 0, 2] = 1/cos_lat
-        J[..., 1, 0] = -sin_lon/cos_lat
-        J[..., 1, 1] = cos_lon/cos_lat
+    def _J_cartesian_to_spherical(self, vertical=False):
+        cos_lat, sin_lat = self.cos_lat, self.sin_lat
+        cos_lon, sin_lon = self.cos_lon, self.sin_lon
+        r = self.radius
+        
+        if not vertical:
+            J = np.zeros(self.grid_shape + (2,3))
+        else:
+            J = np.zeros(self.grid_shape + (3,3))
+            J[..., 2, 0] = cos_lat * cos_lon
+            J[..., 2, 1] = cos_lat * sin_lon
+            J[..., 2, 2] = sin_lat
+
+        J[..., 0, 0] = -1/r * sin_lat * cos_lon
+        J[..., 0, 1] = -1/r * sin_lat * sin_lon
+        J[..., 0, 2] =  1/r * cos_lat
+        J[..., 1, 0] = -1/r * sin_lon / cos_lat
+        J[..., 1, 1] =  1/r * cos_lon / cos_lat
         return J
 
-    def _J_spherical_to_physical(self, cos_lat, Re):
-        J = np.zeros(cos_lat.shape + (2,2))
-        J[..., 0, 0] = Re * cos_lat
-        J[..., 1, 1] = Re
+    def _J_spherical_to_physical(self, vertical=False):
+        cos_lat = self.cos_lat
+        r = self.radius
+        
+        if not vertical:
+            J = np.zeros(self.grid_shape + (2,2))
+        else:
+            J = np.zeros(self.grid_shape + (3,3))
+            J[..., 2, 2] = 1
+            
+        J[..., 0, 0] = r * cos_lat
+        J[..., 1, 1] = r
         return J
     
-    def _J_physical_to_spherical(self, cos_lat, Re):
-        J = np.zeros(cos_lat.shape + (2,2))
-        J[..., 0, 0] = 1/(Re*cos_lat)
-        J[..., 1, 1] = 1/Re
+    def _J_physical_to_spherical(self, vertical=False):
+        cos_lat = self.cos_lat
+        r = self.radius
+        
+        if not vertical:
+            J = np.zeros(self.grid_shape + (2,2))
+        else:
+            J = np.zeros(self.grid_shape + (3,3))
+            J[..., 2, 2] = 1
+            
+        J[..., 0, 0] = 1/(r*cos_lat)
+        J[..., 1, 1] = 1/r
         return J
     
     def transform_coord(self, from_coord, to_coord, **vars):
@@ -274,7 +324,10 @@ class CubedSphere:
         return vars
             
     
-    def get_jacobian(self, from_coord, to_coord):
+    def get_jacobian(self, from_coord, to_coord, vertical=False):
+        if (from_coord, to_coord, vertical) in self.jacobian:
+            return self.jacobian[(from_coord, to_coord, vertical)]
+        
         if from_coord not in self.coord_map:
             raise ValueError(f"Invalid from_coord: {from_coord}")
         if to_coord not in self.coord_map:
@@ -284,41 +337,38 @@ class CubedSphere:
         to_idx = self.coord_map[to_coord]
         direction = np.sign(to_idx - from_idx)
         
-        cs_shape = self.X.shape
-        X, Y, delta = self.X, self.Y, self.delta
-        c, u, r = self.panel_center, self.panel_up, self.panel_right
-        cos_lat, cos_lon = self.cos_lat, self.cos_lon
-        sin_lat, sin_lon = self.sin_lat, self.sin_lon
-        Re = self.earth_radius
-        
-        n_from = 3 if from_coord == 'cartesian' else 2
+        n_from = 3 if from_coord == 'cartesian' or vertical else 2
         
         # Initialize Jacobian to identity
-        J = np.zeros(cs_shape + (n_from, n_from))
+        J = np.zeros(self.grid_shape + (n_from, n_from))
         for i in range(n_from):
                 J[..., i, i] = 1
         
         while from_idx != to_idx:
             if from_idx == 0 and direction == 1:       # Local to Gnomonic
-                J_cur = self._J_local_to_gnomonic(X, Y)
+                J_cur = self._J_local_to_gnomonic(vertical)
             elif from_idx == 1 and direction == -1:    # Gnomonic to Local
-                J_cur = self._J_gnomonic_to_local(X, Y)
+                J_cur = self._J_gnomonic_to_local(vertical)
             elif from_idx == 1 and direction == 1:     # Gnomonic to Cartesian
-                J_cur = self._J_gnomonic_to_cartesian(X, Y, delta, c, r, u)
+                J_cur = self._J_gnomonic_to_cartesian(vertical)
             elif from_idx == 2 and direction == -1:    # Cartesian to Gnomonic
-                J_cur = self._J_cartesian_to_gnomonic(X, Y, delta, c, r, u)
+                J_cur = self._J_cartesian_to_gnomonic(vertical)
             elif from_idx == 2 and direction == 1:     # Cartesian to Spherical
-                J_cur = self._J_cartesian_to_spherical(cos_lat, cos_lon, sin_lon)
+                J_cur = self._J_cartesian_to_spherical(vertical)
             elif from_idx == 3 and direction == -1:    # Spherical to Cartesian
-                J_cur = self._J_spherical_to_cartesian(cos_lat, sin_lat, cos_lon, sin_lon)
+                J_cur = self._J_spherical_to_cartesian(vertical)
             elif from_idx == 3 and direction == 1:     # Spherical to Physical
-                J_cur = self._J_spherical_to_physical(cos_lat, Re)
+                J_cur = self._J_spherical_to_physical(vertical)
             elif from_idx == 4 and direction == -1:    # Physical to Spherical
-                J_cur = self._J_physical_to_spherical(cos_lat, Re)
+                J_cur = self._J_physical_to_spherical(vertical)
             
             # Update Jacobian 
             J = J_cur @ J
             from_idx += direction
+        
+        # Save jacobian for reuse
+        if vertical is None:
+            self.jacobian[(from_coord, to_coord, vertical)] = J
         
         return J
 
@@ -344,7 +394,7 @@ class CubedSphere:
         
         return uv
 
-    def wind2contra(self, u, v, xi, eta):
+    def wind2contra(self, u, v):
         """
         Convert physical winds (zonal, meridional) to contravariant winds.
 
@@ -353,9 +403,7 @@ class CubedSphere:
         u, v : NDArray
            Input zonal and meridional winds, in meters per second.
            Shape: (num_panel, num_elem, num_elem)
-        xi, eta : NDArray
-            Local angular coordinates for each grid point.
-
+           
         Returns:
         -------
         u1u2 : NDArray
@@ -368,7 +416,6 @@ class CubedSphere:
         
         return u1u2
         
-
         
     def plot_data(self, data, remove_halo=False): 
         # Define the resolution for the faces
@@ -399,5 +446,6 @@ class CubedSphere:
             cs_img[y:y+res, x:x+res] = np.flipud(data[i].T)
 
         fig, ax = plt.subplots(figsize=(12, 9))
-        ax.imshow(cs_img)
+        im = ax.imshow(cs_img)
+        plt.colorbar(im, ax=ax)
         return fig
