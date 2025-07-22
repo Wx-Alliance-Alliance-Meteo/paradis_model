@@ -139,24 +139,25 @@ class LitParadis(L.LightningModule):
             self.custom_norms = not cfg.normalization.standard
 
     def _autoregression_input_from_output(
-        self, input_data: torch.Tensor, output_data: torch.Tensor
+        self,
+        input_data: torch.Tensor,
+        output_data: torch.Tensor,
+        step: int,
+        num_steps: int,
     ) -> torch.Tensor:
         """Process the next input in autoregression."""
         # Add features needed from the output.
         # Common features have been previously sorted to ensure they are first
         # and hence simplify adding them
-        input_data = input_data.clone()
 
-        # Move back the previous inputs
-        if self.n_inputs > 1:
-            input_data[:, : self.num_common_features] = input_data[
-                :, : (self.n_inputs - 1) * self.num_common_features
+        # Update future inputs with the current output
+        steps_left = num_steps - step - 1
+        for i in range(min(steps_left, self.n_inputs)):
+            beg_i = self.num_common_features * (self.n_inputs - i - 1)
+            end_i = self.num_common_features * (self.n_inputs - i)
+            input_data[:, step + i + 1, beg_i:end_i] = output_data[
+                :, : self.num_common_features
             ]
-
-        begin = (self.n_inputs - 1) * self.num_common_features
-        end = self.n_inputs * self.num_common_features
-
-        input_data[:, begin:end] = output_data[:, : self.num_common_features]
 
         return input_data
 
@@ -329,30 +330,20 @@ class LitParadis(L.LightningModule):
         input_data, true_data = batch
 
         train_loss = 0.0
-        kl_loss = 0.0
-        input_data_step = input_data[:, 0]  # Start with first timestep
 
         num_steps = input_data.size(1)
         for step in range(num_steps):
             # Forward pass
-            output_data = self(input_data_step)
+            output_data = self(input_data[:, step])
 
             loss = self.loss_fn(output_data, true_data[:, step])
 
             # Compute loss (data is already transformed by dataset)
             train_loss += loss
 
-            # Prepare next step input
-            if step + 1 < num_steps:
-                input_data_step = self._autoregression_input_from_output(
-                    input_data[:, step + 1], output_data
-                )
-
-                # Copy the shifted input data to the following step
-                if step + 2 < num_steps:
-                    begin = (self.n_inputs - 1) * self.num_common_features
-                    end = self.n_inputs * self.num_common_features
-                    input_data[:, step + 2, begin:end] = input_data_step[:, begin:end]
+            input_data = self._autoregression_input_from_output(
+                input_data, output_data, step, num_steps
+            )
 
         # Log metrics
         self.log(
@@ -384,14 +375,12 @@ class LitParadis(L.LightningModule):
 
         val_loss = 0.0
         report_loss = 0.0
-        kl_loss = 0.0
-        input_data_step = input_data[:, 0]  # Start with first timestep
         num_steps = input_data.size(1)
 
         for step in range(num_steps):
 
             # Forward pass
-            output_data = self(input_data_step)
+            output_data = self(input_data[:, step])
 
             loss = self.loss_fn(output_data, true_data[:, step])
 
@@ -401,17 +390,9 @@ class LitParadis(L.LightningModule):
             # Compute loss (data is already transformed by dataset)
             val_loss += loss
 
-            # Prepare next step input
-            if step + 1 < num_steps:
-                input_data_step = self._autoregression_input_from_output(
-                    input_data[:, step + 1], output_data
-                )
-
-                # Copy the shifted input data to the following step
-                if step + 2 < num_steps:
-                    begin = (self.n_inputs - 1) * self.num_common_features
-                    end = self.n_inputs * self.num_common_features
-                    input_data[:, step + 2, begin:end] = input_data_step[:, begin:end]
+            input_data = self._autoregression_input_from_output(
+                input_data, output_data, step, num_steps
+            )
 
         self.log(
             "val_loss",
