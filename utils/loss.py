@@ -70,7 +70,8 @@ class ParadisLoss(torch.nn.Module):
 
         # Whether to apply latitude weights in loss integration
         self.apply_latitude_weights = apply_latitude_weights
-        self.lat_weights = self._compute_latitude_weights(lat_grid)
+        if self.apply_latitude_weights:
+            self.lat_weights = self._compute_latitude_weights(lat_grid)
 
         # Create combined feature weights
         self.feature_weights = self._create_feature_weights()

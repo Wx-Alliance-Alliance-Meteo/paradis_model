@@ -55,6 +55,8 @@ class CubedSphere:
         # Local coordinate 
         domain = (-np.pi / 4, np.pi / 4)
         delta_x = (domain[1] - domain[0]) / num_elem
+        self.delta_x = delta_x
+        self.panel_domain = domain
         
         self.xi = domain[0] + delta_x * (np.arange(0, num_elem) + 0.5)   # West to east
         self.eta = domain[0] + delta_x * (np.arange(0, num_elem) + 0.5)  # South to north
@@ -187,10 +189,11 @@ class CubedSphere:
         panel_indices = np.argmax(p_dot_cs, axis=-1)
     
         # Select panel vectors for each point based on panel_indices 
+        c = self.panel_center[panel_indices]
         r = self.panel_right[panel_indices]   
         u = self.panel_up[panel_indices]   
 
-        p_dot_c = p_dot_cs[panel_indices]   
+        p_dot_c = np.sum(points * c, axis=-1)
         p_dot_r = np.sum(points * r, axis=-1)
         p_dot_u = np.sum(points * u, axis=-1)
 
