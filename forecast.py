@@ -98,13 +98,8 @@ def main(cfg: DictConfig):
             batch_size = input_data.shape[0]
 
             output_forecast = torch.empty(
-                (
-                    batch_size,
-                    output_num_forecast_steps,
-                    num_features,
-                    dataset.lat_size,
-                    dataset.lon_size,
-                ),
+                (batch_size, output_num_forecast_steps, num_features)
+                + dataset.grid_shape,
                 device=device,
             )
 

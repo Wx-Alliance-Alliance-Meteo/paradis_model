@@ -75,8 +75,7 @@ class Era5DataModule(L.LightningDataModule):
                 self.output_name_order = train_era5_dataset.dyn_output_features
                 self.lat = train_era5_dataset.lat
                 self.lon = train_era5_dataset.lon
-                self.lat_size = train_era5_dataset.lat_size
-                self.lon_size = train_era5_dataset.lon_size
+                self.grid_shape = train_era5_dataset.grid_shape
 
             if stage == "predict":
                 pred_start_date = self.cfg.forecast.start_date
@@ -101,8 +100,8 @@ class Era5DataModule(L.LightningDataModule):
                 self.output_name_order = self.dataset.dyn_output_features
                 self.lat = self.dataset.lat
                 self.lon = self.dataset.lon
-                self.lat_size = self.dataset.lat_size
-                self.lon_size = self.dataset.lon_size
+                self.grid_shape = self.dataset.grid_shape
+
 
             logging.info(
                 "Dataset contains: %d input features, %d output features.",

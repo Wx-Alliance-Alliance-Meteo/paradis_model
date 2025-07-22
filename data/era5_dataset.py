@@ -115,19 +115,40 @@ class ERA5Dataset(torch.utils.data.Dataset):
         # Select the time range needed to process this dataset
         ds = ds.sel(time=slice(adjusted_start_date, adjusted_end_date))
 
+        # Identify grid type
+        if numpy.all([c in ds.coords for c in ['latitude', 'longitude']]):
+            self.grid_type = 'latlon'
+            self.grid_shape = (ds.latitude.size, ds.longitude.size)
+        elif numpy.all([c in ds.coords for c in ['panel_id', 'xi', 'eta']]): 
+            self.grid_type = 'cubed_sphere'
+            self.grid_shape = (
+                ds.panel_id.size,
+                ds.xi.size,
+                ds.eta.size,
+            )
+        else:
+            raise ValueError("Unsupported grid type. Only 'latlon' and 'cubed_sphere' are supported.")
+
         # Extract latitude and longitude to build the graph
         self.lat = torch.from_numpy(ds.latitude.values)
         self.lon = torch.from_numpy(ds.longitude.values)
-        self.lat_size = len(self.lat)
-        self.lon_size = len(self.lon)
+        
+        # Convert lat/lon to radians
+        lat_rad = torch.deg2rad(self.lat).to(self.dtype)
+        lon_rad = torch.deg2rad(self.lon).to(self.dtype)
+        if self.grid_type == 'latlon':  
+            self.lat_rad_grid, self.lon_rad_grid = torch.meshgrid(
+                lat_rad, lon_rad, indexing="ij"
+            )
+        else: # Lat lon in the cubed-sphere is already on the grid
+            self.lat_rad_grid = lat_rad
+            self.lon_rad_grid = lon_rad
+
         self.pressure_levels = features_cfg.pressure_levels
 
         # The number of time instances in the dataset represents its length
         self.time = ds.time.values
         self.length = ds.time.size
-
-        # Store the size of the grid (lat * lon)
-        self.grid_size = ds.latitude.size * ds.longitude.size
 
         # Setup input and output features based on config
         input_atmospheric = [
@@ -157,13 +178,6 @@ class ERA5Dataset(torch.utils.data.Dataset):
             os.path.join(root_dir, "constants"), engine="zarr"
         ).compute()  # Definitely preload constants
 
-        # Convert lat/lon to radians
-        lat_rad = torch.deg2rad(self.lat).to(self.dtype)
-        lon_rad = torch.deg2rad(self.lon).to(self.dtype)
-        self.lat_rad_grid, self.lon_rad_grid = torch.meshgrid(
-            lat_rad, lon_rad, indexing="ij"
-        )
-
         # Use zscore to normalize the following variables
         normalize_const_vars = {
             "geopotential_at_surface",
@@ -189,13 +203,12 @@ class ERA5Dataset(torch.utils.data.Dataset):
             torch.from_numpy(ds_constants["land_sea_mask"].data).to(self.dtype)
         )
 
-        # Include the distance variation of two longitude points along the latitude direction
-        self._compute_geometric_constants()
-
         post_constants = []
         for feature in ["lon_spacing", "latitude", "longitude"]:
             if feature in features_cfg.input.constants:
-                if feature == "lon_spacing":
+                if feature == "lon_spacing" and self.grid_type == 'latlon':
+                    # Include the distance variation of two longitude points along the latitude direction
+                    self._compute_geometric_constants()
                     post_constants.append(self.d_lon_inv)
                 if feature == "latitude":
                     post_constants.append(self.lat_rad_grid)
@@ -205,10 +218,10 @@ class ERA5Dataset(torch.utils.data.Dataset):
         # Stack all constant features together
         self.constant_data = (
             torch.stack([*pre_constants, *post_constants])
-            .permute(1, 2, 0)
-            .reshape(self.lat_size, self.lon_size, -1)
+            .movedim(0, -1)
+            .reshape(*self.grid_shape, -1)
             .unsqueeze(0)
-            .expand(self.forecast_steps, -1, -1, -1)
+            .expand(self.forecast_steps, *([-1] * (len(self.grid_shape)+1)))
         )
 
         # Store these for access in forecaster
@@ -300,7 +313,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         if numpy.isnan(input_data.data).any() or numpy.isnan(true_data.data).any():
             raise ValueError("NaN values detected in input/output data")
 
-        # Convert to tensors - data comes in [time, lat, lon, features]
+        # Convert to tensors - data comes in [time, *grid_shape, features]
         x = torch.tensor(input_data.data, dtype=self.dtype)
 
         # Concatenate n_time_inputs if requested
@@ -326,21 +339,22 @@ class ERA5Dataset(torch.utils.data.Dataset):
         # Add constant data to input
         x = torch.cat([x, self.constant_data[:steps]], dim=-1)
 
-        # Permute to [time, channels, latitude, longitude] format
-        x_grid = x.permute(0, 3, 1, 2)
-        y_grid = y.permute(0, 3, 1, 2)
+        # Move dimension from [time, *grid_shape, channels] to [time, channels, *grid_shape] format
+        x_grid = x.movedim(-1, 1)
+        y_grid = y.movedim(-1, 1)
 
         return x_grid, y_grid
 
     def _run_dataset_checks(self):
-        # Check if grid includes poles
-        has_poles = torch.any(
-            torch.isclose(
-                torch.abs(self.lat_rad_grid),
-                torch.tensor(torch.pi, dtype=self.lat_rad_grid.dtype),
+        # Check if grid includes pole in latlon
+        if self.grid_type == 'latlon':
+            has_poles = torch.any(
+                torch.isclose(
+                    torch.abs(self.lat_rad_grid),
+                    torch.tensor(torch.pi, dtype=self.lat_rad_grid.dtype),
+                )
             )
-        )
-        assert not has_poles, "Grid with poles unsupported!"
+            assert not has_poles, "Grid with poles unsupported!"
 
         # Make sure latitude and longitude are in input file
         assert (
@@ -521,7 +535,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
                     var_forcing = (
                         var_forcing.unfold(0, self.n_time_inputs, 1)
                         .view(steps, 1, 1, self.n_time_inputs)
-                        .expand(steps, self.lat_size, self.lon_size, self.n_time_inputs)
+                        .expand(steps, *self.grid_shape, self.n_time_inputs)
                     )
 
                     forcings.append(var_forcing)

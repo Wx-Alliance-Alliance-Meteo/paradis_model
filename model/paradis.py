@@ -103,7 +103,7 @@ class NeuralSemiLagrangian(nn.Module):
         velocities = self.velocity_net(hidden_features)
 
         # Reshape velocities to separate u,v components per channel
-        # [batch, 2*hidden_dim, lat, lon] -> [batch, hidden_dim, 2, lat, lon]
+        # [batch, 2*hidden_dim, lat, lon] -> [batch, 2, hidden_dim, lat, lon]
         velocities = velocities.view(batch_size, 2, self.num_vels, *self.mesh_size)
 
         # Extract learned u,v components
@@ -198,7 +198,7 @@ class Paradis(nn.Module):
 
         # Extract dimensions from config
         output_dim = datamodule.num_out_features
-        mesh_size = (datamodule.lat_size, datamodule.lon_size)
+        mesh_size = datamodule.grid_shape
 
         self.num_common_features = datamodule.num_common_features
 
@@ -293,9 +293,7 @@ class Paradis(nn.Module):
         # Extract relevant input features that correspond to output (common features from last time step)
         skip = x[
             :,
-            (self.n_inputs - 1)
-            * self.num_common_features : self.n_inputs
-            * self.num_common_features,
+            (self.n_inputs - 1) * self.num_common_features : self.n_inputs * self.num_common_features,
         ]
 
         # Project features to latent space
