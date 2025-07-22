@@ -133,6 +133,13 @@ def main():
         help="Remove latitudes 90 and -90",
     )
 
+    parser.add_argument(
+        "--interp_deg",
+        type=float,
+        default=0.0,
+        help="Resolution of the grid to interpolate to cell centers"
+    )
+
     args = parser.parse_args()
 
     # Open the dataset from the input Zarr directory
@@ -189,6 +196,13 @@ def main():
 
         if lat_to_drop:
             ds = ds.sel(latitude=~ds.latitude.isin(lat_to_drop))
+
+    # Interpolate latitude to cell centers
+    if args.interp_deg > 0:
+        source_deg = abs(ds.latitude[1] - ds.latitude[0])
+        latitude = numpy.arange(-90, 90, args.interp_deg) + args.interp_deg / 2
+        longitude = numpy.arange(0, 360, args.interp_deg) + args.interp_deg / 2
+        ds = ds.interp(latitude=latitude, longitude=longitude)
 
     # Set a small tolerance to avoid log(0)
     tolerance = 1e-10
