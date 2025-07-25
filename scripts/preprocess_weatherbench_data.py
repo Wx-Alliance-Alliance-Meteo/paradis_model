@@ -187,8 +187,8 @@ def main():
     # Drop the unwanted variables
     ds = ds.drop_vars(drop_variables)
 
-    # Uncomment the following line if latitudes 90 and -90 need to be removed
-    if args.remove_poles:
+    # Remove poles only if we don't interpolate
+    if args.remove_poles and args.interp_deg == 0:
         lat_to_drop = []
         for v in [-90, 90]:
             if v in ds.latitude.values:
@@ -199,10 +199,14 @@ def main():
 
     # Interpolate latitude to cell centers
     if args.interp_deg > 0:
-        source_deg = abs(ds.latitude[1] - ds.latitude[0])
         latitude = numpy.arange(-90, 90, args.interp_deg) + args.interp_deg / 2
         longitude = numpy.arange(0, 360, args.interp_deg) + args.interp_deg / 2
-        ds = ds.interp(latitude=latitude, longitude=longitude)
+        
+        ds_360 = ds.sel(longitude=0)
+        ds_360 = ds_360.assign_coords(longitude=360)
+        ds_padded = xarray.concat([ds, ds_360], dim="longitude")
+        
+        ds = ds_padded.interp(latitude=latitude, longitude=longitude)
 
     # Set a small tolerance to avoid log(0)
     tolerance = 1e-10
