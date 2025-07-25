@@ -108,22 +108,13 @@ def main(cfg: DictConfig):
                 device=device,
             )
 
-            input_data_step = input_data[:, 0].to(device)
-
             frequency_counter = 0
             for step in range(num_forecast_steps):
-                output_data = litmodel(input_data_step)
-
-                if step + 1 < num_forecast_steps:
-                    input_data_step = litmodel._autoregression_input_from_output(
-                        input_data[:, step + 1], output_data
-                    ).to(device)
-
-                    # Copy the shifted input data to the following step
-                    if step + 2 < num_forecast_steps:
-                        begin = (n_inputs - 1) * litmodel.num_common_features
-                        end = n_inputs * litmodel.num_common_features
-                        input_data[:, step + 2, begin:end] = input_data_step[:, begin:end]
+                output_data = litmodel(input_data[:, step])
+                
+                input_data = litmodel._autoregression_input_from_output(
+                    input_data, output_data, step, num_forecast_steps
+                )
 
                 # Store only at required frequency
                 if step % cfg.forecast.output_frequency == 0:
