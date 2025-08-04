@@ -110,7 +110,9 @@ def main(cfg: DictConfig):
 
             frequency_counter = 0
             for step in range(num_forecast_steps):
-                output_data = litmodel(input_data[:, step])
+                # output_data = litmodel(input_data[:, step])
+                output_data = litmodel(input_data[:, step].to(device))
+
                 
                 input_data = litmodel._autoregression_input_from_output(
                     input_data, output_data, step, num_forecast_steps
