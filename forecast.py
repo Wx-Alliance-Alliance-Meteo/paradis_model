@@ -57,10 +57,7 @@ def main(cfg: DictConfig):
 
     # Load model
     litmodel = LitParadis(datamodule, cfg)
-    if cfg.init.checkpoint_path:
-        checkpoint = torch.load(cfg.init.checkpoint_path, weights_only=True)
-        litmodel.load_state_dict(checkpoint["state_dict"])
-    else:
+    if not cfg.init.checkpoint_path:
         raise ValueError(
             "checkpoint_path must be specified in the config for forecasting"
         )
@@ -111,9 +108,9 @@ def main(cfg: DictConfig):
             frequency_counter = 0
             for step in range(num_forecast_steps):
                 # output_data = litmodel(input_data[:, step])
-                output_data = litmodel(input_data[:, step].to(device))
+                output_data = litmodel(input_data[:, step])
 
-                
+
                 input_data = litmodel._autoregression_input_from_output(
                     input_data, output_data, step, num_forecast_steps
                 )
