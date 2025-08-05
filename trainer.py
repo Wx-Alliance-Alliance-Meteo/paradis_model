@@ -116,7 +116,7 @@ class LitParadis(L.LightningModule):
             )
 
         # Load weights only but reset lightning configuration
-        if cfg.init.checkpoint_path and not cfg.init.restart:
+        if (cfg.init.checkpoint_path and not cfg.init.restart) or cfg.forecast.enable:
             # Load into CPU, then Lightning will transfer to GPU
             checkpoint = torch.load(
                 cfg.init.checkpoint_path, weights_only=True, map_location="cpu"
