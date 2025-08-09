@@ -5,6 +5,7 @@ from torch import nn
 
 from model.padding import GeoCyclicPadding
 from model.gmblock import GMBlock
+from model.simple_blocks import ChannelNorm
 
 
 class NeuralSemiLagrangian(nn.Module):
@@ -252,17 +253,22 @@ class Paradis(nn.Module):
             bias_channels=bias_channels,
         )
 
+        # Shared normalization for diffusion-reaction layers
+        self.shared_rhs_norm = ChannelNorm(
+            input_dim=hidden_dim, output_dim=hidden_dim, bias=True
+        )
+
         # Diffusion-reaction layers
-        self.diffusion_layers = nn.ModuleList(
+        self.diffusion_reactions_layers = nn.ModuleList(
             [
                 GMBlock(
                     input_dim=hidden_dim,
                     output_dim=hidden_dim,
                     hidden_dim=diffusion_size,
-                    layers=["SepConv", "CLinear", "SepConv"],
+                    layers=["SepConv"],
                     mesh_size=mesh_size,
-                    activation=False,
-                    pre_normalize=True,
+                    activation=True,
+                    pre_normalize=False,
                     bias_channels=bias_channels,
                 )
                 for _ in range(num_layers)
@@ -274,7 +280,7 @@ class Paradis(nn.Module):
             input_dim=hidden_dim,
             output_dim=output_dim,
             hidden_dim=hidden_dim,
-            layers=["SepConv", "CLinear"],
+            layers=["SepConv", "SepConv"],
             mesh_size=mesh_size,
             activation=False,
             bias_channels=bias_channels,
@@ -304,13 +310,16 @@ class Paradis(nn.Module):
         # Advection
         z_adv = self.advection(z0, lat_grid, lon_grid, self.dt)
 
+        # Shared normalization for all RHS computations
+        z_adv_normalized = self.shared_rhs_norm(z_adv)
+
         # Diffusion-reaction - sum contributions from all layers
-        diffusion_rhs = torch.zeros_like(z0)
-        for diffusion_layer in self.diffusion_layers:
-            diffusion_rhs = diffusion_rhs + diffusion_layer(z_adv)
+        rhs = torch.zeros_like(z0)
+        for layer in self.diffusion_reactions_layers:
+            rhs = rhs + layer(z_adv_normalized)
 
         # Final state
-        z_final = z_adv + self.dt * diffusion_rhs
+        z_final = z_adv + self.dt * rhs
 
         # Input-output skip connections: Model learns incremental changes rather than full state predictions
         return skip + self.output_proj(z_final)

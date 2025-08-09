@@ -137,7 +137,7 @@ def main():
         "--interp_deg",
         type=float,
         default=0.0,
-        help="Resolution of the grid to interpolate to cell centers"
+        help="Resolution of the grid to interpolate to cell centers",
     )
 
     args = parser.parse_args()
@@ -201,11 +201,11 @@ def main():
     if args.interp_deg > 0:
         latitude = numpy.arange(-90, 90, args.interp_deg) + args.interp_deg / 2
         longitude = numpy.arange(0, 360, args.interp_deg) + args.interp_deg / 2
-        
+
         ds_360 = ds.sel(longitude=0)
         ds_360 = ds_360.assign_coords(longitude=360)
         ds_padded = xarray.concat([ds, ds_360], dim="longitude")
-        
+
         ds = ds_padded.interp(latitude=latitude, longitude=longitude)
 
     # Set a small tolerance to avoid log(0)

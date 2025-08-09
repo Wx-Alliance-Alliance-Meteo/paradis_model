@@ -73,5 +73,8 @@ def save_results_to_zarr(
             )
         else:
             xarray.Dataset(data_vars=data_vars, coords=coords).to_zarr(
-                filename, consolidated=True, append_dim="time", zarr_format=2,
+                filename,
+                consolidated=True,
+                append_dim="time",
+                zarr_format=2,
             )
