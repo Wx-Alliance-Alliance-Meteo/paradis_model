@@ -77,9 +77,7 @@ training:
     patience: 8                    # Number of epochs with no improvement after which training will stop
 
   loss_function:
-    type: "reversed_huber"                    # mse or reversed_huber loss function
-    delta_loss: 1.0                # Threshold parameter for huber loss
-    lat_weights: false             # Integrate loss with spherical metrics
+    delta_loss: 1.0                # Threshold for BerHu loss
 
   checkpointing:
     enabled: true                  # Enable checkpointing

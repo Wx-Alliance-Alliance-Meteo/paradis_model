@@ -88,7 +88,6 @@ class LitParadis(L.LightningModule):
 
         # Initialize loss function with delta schedule parameters
         self.loss_fn = ParadisLoss(
-            loss_function=cfg.training.loss_function.type,
             lat_grid=datamodule.lat,
             pressure_levels=torch.tensor(
                 cfg.features.pressure_levels, dtype=torch.float32
@@ -97,8 +96,7 @@ class LitParadis(L.LightningModule):
             num_surface_vars=len(cfg.features.output.surface),
             var_loss_weights=var_loss_weights_reordered,
             output_name_order=datamodule.output_name_order,
-            delta_loss=cfg.training.loss_function.delta_loss,
-            apply_latitude_weights=cfg.training.loss_function.lat_weights,
+            delta=cfg.training.loss_function.delta_loss,
         )
 
         self.forecast_steps = cfg.model.forecast_steps
@@ -177,8 +175,6 @@ class LitParadis(L.LightningModule):
 
     def _get_report_rmse(self, output_data, pred_data):
 
-        lat_weights = self.loss_fn.lat_weights.view(1, 1, -1, 1).to(output_data.device)
-
         # Compute the batch error
         errors = torch.empty(
             len(self.report_ind), dtype=output_data.dtype, device=output_data.device
@@ -189,16 +185,15 @@ class LitParadis(L.LightningModule):
                 q_max = self.datamodule.dataset.q_max
                 o_data = denormalize_humidity(output_data[:, ind], q_min, q_max)
                 p_data = denormalize_humidity(pred_data[:, ind], q_min, q_max)
-                errors[i] = torch.mean((o_data - p_data) ** 2 * lat_weights)
+                errors[i] = torch.mean((o_data - p_data) ** 2)
             elif self.custom_norms and "precipitation" in self.report_features[i]:
                 o_data = denormalize_precipitation(output_data[:, ind])
                 p_data = denormalize_precipitation(pred_data[:, ind])
-                errors[i] = torch.mean((o_data - p_data) ** 2 * lat_weights)
+                errors[i] = torch.mean((o_data - p_data) ** 2)
             else:
                 errors[i] = torch.mean(
                     ((output_data[:, ind] - pred_data[:, ind]) * self.report_std[i])
                     ** 2
-                    * lat_weights
                 )
 
         return torch.sqrt(errors).detach()

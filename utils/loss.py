@@ -5,7 +5,7 @@ import torch
 
 
 class ParadisLoss(torch.nn.Module):
-    """Loss function.
+    """BerHu loss function.
 
     This loss function implements a weighting scheme that accounts for key aspects
     of meteorological data:
@@ -13,46 +13,39 @@ class ParadisLoss(torch.nn.Module):
     1. Vertical weighting: Implements pressure-level dependent weights that decrease with altitude.
     2. Variable-specific weighting: Allows different weights for various meteorological variables
        (e.g., temperature, wind, precipitation) to balance their relative importance.
-    3. Spatial weighting: Applies latitude-dependent weights to account for the varying grid cell
-       areas on a spherical surface, ensuring proper representation of polar and equatorial regions.
 
-    The final loss can use a reversed Huber loss, which applies:
-     - Linear penalties to small errors (|error| ≤ delta)
-     - Quadratic penalties to large errors (|error| > delta)
-    or a simple MSE loss function.
+    The loss uses a BerHu function:
+    - L1 penalty for small errors (|error| ≤ δ)
+    - L2-like penalty for large errors (|error| > δ)
     """
 
     def __init__(
         self,
-        loss_function: str,
         lat_grid: torch.Tensor,
         pressure_levels: torch.Tensor,
         num_features: int,
         num_surface_vars: int,
         var_loss_weights: torch.Tensor,
         output_name_order: list,
-        delta_loss: float = 1.0,
-        apply_latitude_weights: bool = False,
+        delta: float = 1.0,
     ) -> None:
-        """Initialize the weighted reversed Huber loss function.
+        """Initialize the weighted BerHu loss function.
 
         Args:
-            loss_function: A choice between reversed_huber or mse loss functions
             lat_grid: Latitude grid
             pressure_levels: Pressure levels in hPa used in the model
             num_features: Total number of features in the output
             num_surface_vars: Number of surface-level variables
             var_loss_weights: Variable-specific weights for the loss calculation
             output_name_order: List of variable names in order of output features
-            delta_loss: Threshold parameter for the Huber loss
-            apply_latitude_weights: Whether to integrate the loss using geometric weights along latitude
+            delta: Threshold value (δ)
         """
         super().__init__()
 
+        self.delta = delta
+
         # Ensure inputs are float32
         self.pressure_levels = pressure_levels.to(torch.float32)
-
-        self.delta = delta_loss
 
         # Store dimensions
         self.num_levels = len(pressure_levels)
@@ -68,17 +61,8 @@ class ParadisLoss(torch.nn.Module):
         # Whether to apply pressure weights
         self.apply_pressure_weights = True
 
-        # Whether to apply latitude weights in loss integration
-        self.apply_latitude_weights = apply_latitude_weights
-        self.lat_weights = self._compute_latitude_weights(lat_grid)
-
         # Create combined feature weights
         self.feature_weights = self._create_feature_weights()
-
-        if loss_function == "mse":
-            self.loss_fn = torch.nn.MSELoss(reduction="none")
-        elif loss_function == "reversed_huber":
-            self.loss_fn = self._pseudo_reversed_huber_loss
 
     def _check_uniform_spacing(self, grid: torch.Tensor) -> float:
         """Check if grid has uniform spacing and return the delta.
@@ -96,51 +80,6 @@ class ParadisLoss(torch.nn.Module):
         if not torch.allclose(diff, diff[0]):
             raise ValueError(f"Grid {grid} is not uniformly spaced")
         return diff[0].item()
-
-    def _compute_latitude_weights(self, grid_lat: torch.Tensor) -> torch.Tensor:
-        """Compute latitude weights based on grid cell areas.
-
-        For a latitude grid, this handles two cases:
-        1. Grids without poles: Points represent slices between lat±Δλ/2
-           Weight proportional to cos(lat)
-        2. Grids with poles: Points at poles represent half-slices
-           For non-pole points: weight ∝ cos(λ)⋅sin(Δλ/2)
-           For pole points: weight ∝ sin(Δλ/4)²
-
-        Args:
-            grid_lat: Latitude coordinates in degrees
-
-        Returns:
-            Normalized weights with unit mean
-
-        Raises:
-            ValueError: If grid is not uniformly spaced or has invalid endpoints
-        """
-
-        # Validate uniform spacing
-        delta_lat = torch.abs(torch.tensor(self._check_uniform_spacing(grid_lat)))
-
-        # Check if grid includes poles
-        has_poles = torch.any(
-            torch.isclose(torch.abs(grid_lat), torch.tensor(90.0, dtype=grid_lat.dtype))
-        )
-
-        if has_poles:
-            raise ValueError("Grid must not contain poles!")
-        # else:
-        #     # Validate grid endpoints
-        #     if not (
-        #         torch.isclose(
-        #             torch.abs(grid_lat.max()),
-        #             (90.0 - delta_lat / 2) * torch.ones_like(grid_lat.max()),
-        #         )
-        #     ):
-        #         raise ValueError("Grid without poles must end at ±(90° - Δλ/2)")
-
-        #     # Simple cosine weights for grids without poles
-        weights = torch.cos(torch.deg2rad(grid_lat))
-
-        return weights / weights.mean()
 
     def _create_feature_weights(self) -> torch.Tensor:
         """Create weights for all features."""
@@ -184,26 +123,28 @@ class ParadisLoss(torch.nn.Module):
 
         return feature_weights
 
-    def _pseudo_reversed_huber_loss(
-        self, pred: torch.Tensor, target: torch.Tensor
-    ) -> torch.Tensor:
-        """Compute the pseudo reversed Huber loss.
+    def _berhu_loss(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """Compute the BerHu loss.
 
         Args:
-            error: Error tensor (pred - target)
+            pred: Predicted values
+            target: Target values
 
         Returns:
             Loss tensor with same shape as input
         """
-        error = pred - target
-        abs_error = torch.abs(error)
-        small_error = self.delta * abs_error
-        large_error = 0.5 * error**2
-        weight = 1 / (1 + torch.exp(-2 * (abs_error - self.delta)))
-        return (1 - weight) * small_error + weight * large_error
+        delta = self.delta
+        diff = torch.abs(pred - target)
+
+        loss = torch.where(
+            diff <= delta,
+            diff,  # L1 for small errors
+            (diff**2 + delta**2) / (2 * delta),  # L2-like for large errors
+        )
+        return loss
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """Calculate weighted reversed Huber loss.
+        """Calculate weighted BerHu loss.
 
         Args:
             pred: Predicted values
@@ -213,16 +154,9 @@ class ParadisLoss(torch.nn.Module):
             Weighted loss value
         """
         # Prepare weights with correct shapes for broadcasting
-        lat_weights = self.lat_weights.view(1, 1, -1, 1).to(pred.device)
         feature_weights = self.feature_weights.view(1, -1, 1, 1).to(pred.device)
 
-        # Get the loss using the appropriate function
-        loss = self.loss_fn(pred, target)
-
-        # Apply weights to loss components
-        weighted_loss = loss * feature_weights
-
-        if self.apply_latitude_weights:
-            weighted_loss *= lat_weights
+        # Get the BerHu loss and apply weights
+        weighted_loss = self._berhu_loss(pred, target) * feature_weights
 
         return weighted_loss.mean()
