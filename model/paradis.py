@@ -29,20 +29,6 @@ class NeuralSemiLagrangian(nn.Module):
         self.num_vels = num_vels
         self.mesh_size = mesh_size
 
-        self.down_projection = GMBlock(
-            input_dim=hidden_dim,
-            output_dim=num_vels,
-            mesh_size=mesh_size,
-            layers=["CLinear"],
-        )
-
-        self.up_projection = GMBlock(
-            input_dim=num_vels,
-            output_dim=hidden_dim,
-            mesh_size=mesh_size,
-            layers=["CLinear"],
-        )
-
         self.interpolation = interpolation
 
         # Neural network that will learn an effective velocity along the trajectory
@@ -53,9 +39,9 @@ class NeuralSemiLagrangian(nn.Module):
             hidden_dim=hidden_dim,
             kernel_size=3,
             mesh_size=mesh_size,
-            layers=["SepConv"],
+            layers=["SepConv", "SepConv"],
             bias_channels=bias_channels,
-            activation=False,
+            activation=True,
             pre_normalize=True,
         )
 
@@ -155,11 +141,8 @@ class NeuralSemiLagrangian(nn.Module):
         grid_x = grid_x.view(batch_size * self.num_vels, *grid_x.shape[-2:])
         grid_y = grid_y.view(batch_size * self.num_vels, *grid_y.shape[-2:])
 
-        # Down-project to num_vel channels
-        projected_inputs = self.down_projection(hidden_features)
-
         # Apply padding and reshape hidden features
-        dynamic_padded = self.padding_interp(projected_inputs)
+        dynamic_padded = self.padding_interp(hidden_features)
 
         # Make sure interpolation remains in right range after padding
         grid_x = grid_x * hidden_features.size(-1) / dynamic_padded.size(-1)
@@ -183,12 +166,7 @@ class NeuralSemiLagrangian(nn.Module):
         )
 
         # Reshape back to original dimensions
-        interpolated = interpolated.view(batch_size, self.num_vels, *self.mesh_size)
-
-        # Project back up to latent space
-        interpolated = self.up_projection(interpolated)
-
-        return interpolated
+        return interpolated.view(batch_size, self.num_vels, *self.mesh_size)
 
 
 class Paradis(nn.Module):
