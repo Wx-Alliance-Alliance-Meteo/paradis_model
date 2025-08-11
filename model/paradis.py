@@ -188,19 +188,15 @@ class Paradis(nn.Module):
         # Get the number of time inputs
         self.n_inputs = datamodule.dataset.n_time_inputs
 
-        # Specify hidden dimension based on multiplier or fixed size,
+        # Specify hidden dimension based on multiplier,
         # following configuration file
-        if cfg.model.latent_multiplier > 0:
-            hidden_dim = (
-                cfg.model.latent_multiplier * self.dynamic_channels
-                + self.static_channels
-            )
-            num_vels = hidden_dim
-            diffusion_size = hidden_dim
-        else:
-            hidden_dim = cfg.model.latent_size
-            num_vels = cfg.model.velocity_vectors
-            diffusion_size = cfg.model.get("diffusion_size", hidden_dim)
+        assert  cfg.model.latent_multiplier > 0
+        hidden_dim = (
+            cfg.model.latent_multiplier * self.dynamic_channels
+            + self.static_channels
+        )
+        num_vels = hidden_dim
+        diffusion_size = hidden_dim
 
         # Get the interpolation type
         adv_interpolation = cfg.model.adv_interpolation
