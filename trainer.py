@@ -125,6 +125,11 @@ class LitParadis(L.LightningModule):
 
         # Store the index and stats of the report quantities
         if not cfg.forecast.enable and cfg.training.reports.enable:
+            # Compute latitude weights for integration in reports
+            lat_weights = torch.cos(torch.deg2rad(datamodule.lat))
+            lat_weights = lat_weights / lat_weights.mean()
+            self.lat_weights = lat_weights.view(1, 1, -1, 1)
+
             self.report_features = cfg.training.reports.features
             self.report_ind = [
                 datamodule.dataset.dyn_input_features.index(feature)
@@ -175,6 +180,8 @@ class LitParadis(L.LightningModule):
 
     def _get_report_rmse(self, output_data, pred_data):
 
+        lat_weights = self.lat_weights.to(output_data.device)
+
         # Compute the batch error
         errors = torch.empty(
             len(self.report_ind), dtype=output_data.dtype, device=output_data.device
@@ -185,15 +192,16 @@ class LitParadis(L.LightningModule):
                 q_max = self.datamodule.dataset.q_max
                 o_data = denormalize_humidity(output_data[:, ind], q_min, q_max)
                 p_data = denormalize_humidity(pred_data[:, ind], q_min, q_max)
-                errors[i] = torch.mean((o_data - p_data) ** 2)
+                errors[i] = torch.mean((o_data - p_data) ** 2 * lat_weights)
             elif self.custom_norms and "precipitation" in self.report_features[i]:
                 o_data = denormalize_precipitation(output_data[:, ind])
                 p_data = denormalize_precipitation(pred_data[:, ind])
-                errors[i] = torch.mean((o_data - p_data) ** 2)
+                errors[i] = torch.mean((o_data - p_data) ** 2 * lat_weights)
             else:
                 errors[i] = torch.mean(
                     ((output_data[:, ind] - pred_data[:, ind]) * self.report_std[i])
                     ** 2
+                    * lat_weights
                 )
 
         return torch.sqrt(errors).detach()
