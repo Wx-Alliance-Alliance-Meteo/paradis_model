@@ -114,39 +114,34 @@ class NeuralSemiLagrangian(nn.Module):
         min_lon = torch.min(lon_grid)
         max_lon = torch.max(lon_grid)
 
+        # Compute the departure lat/lon grid
         lat_dep, lon_dep = self._transform_to_latlon(
             lat_prime, lon_prime, lat_grid, lon_grid
         )
 
-        # Normalize grid to ensure consistency in interpolation
-        grid_x = 2 * (lon_dep - min_lon) / (max_lon - min_lon) - 1
-        grid_y = 2 * (lat_dep - min_lat) / (max_lat - min_lat) - 1
+        _, _, H, W = hidden_features.shape
 
-        # Apply periodicity for outside values along longitude set to [-1, 1]
-        grid_x = torch.remainder(grid_x + 1, 2) - 1
+        # Convert departure points to pixel locations
+        # For example, pixel_x now in [0 .. W-1], pixel_y in [0 .. H-1]
+        pix_x = (lon_dep - min_lon) / (max_lon - min_lon) * (W - 1)
+        pix_y = (lat_dep - min_lat) / (max_lat - min_lat) * (H - 1)
 
-        # Apply geocyclic longitude roll for values beyond +/-90 degrees latitude
-        geo_mask_left = grid_x <= 0
-        geo_mask_right = grid_x > 0
-        lat_mask_outer = torch.abs(grid_y) > 1
-        grid_x = torch.where(lat_mask_outer & geo_mask_left, grid_x + 1, grid_x)
-        grid_x = torch.where(lat_mask_outer & geo_mask_right, grid_x - 1, grid_x)
+        # Add padding
+        dynamic_padded = self.padding_interp(hidden_features)
+        padding = self.padding_interp.pad_width
 
-        # Mirror values outside of the range [-1, 1] in the latitude direction
-        grid_y = torch.where(grid_y < -1, -(2 + grid_y), grid_y)
-        grid_y = torch.where(grid_y > 1, 2 - grid_y, grid_y)
+        # Shift pixels by the padding width
+        # [0, 1, 2, 3...] -> [2, 3, 4, 5...] (if pad_width=2)
+        pix_x_pad = pix_x + padding
+        pix_y_pad = pix_y + padding
 
-        # Reshape grid coordinates for interpolation
-        # [batch, dynamic_channels, lat, lon] -> [batch*dynamic_channels, lat, lon]
+        # Normalize into [-1, 1]
+        _, _, H_pad, W_pad = dynamic_padded.shape
+        grid_x = 2.0 * (pix_x_pad / float(W_pad - 1)) - 1.0
+        grid_y = 2.0 * (pix_y_pad / float(H_pad - 1)) - 1.0
+
         grid_x = grid_x.view(batch_size * self.num_vels, *grid_x.shape[-2:])
         grid_y = grid_y.view(batch_size * self.num_vels, *grid_y.shape[-2:])
-
-        # Apply padding and reshape hidden features
-        dynamic_padded = self.padding_interp(hidden_features)
-
-        # Make sure interpolation remains in right range after padding
-        grid_x = grid_x * hidden_features.size(-1) / dynamic_padded.size(-1)
-        grid_y = grid_y * hidden_features.size(-2) / dynamic_padded.size(-2)
 
         # Create interpolation grid
         grid = torch.stack([grid_x, grid_y], dim=-1)
@@ -165,7 +160,6 @@ class NeuralSemiLagrangian(nn.Module):
             padding_mode="border",
         )
 
-        # Reshape back to original dimensions
         return interpolated.view(batch_size, self.num_vels, *self.mesh_size)
 
 
@@ -190,10 +184,9 @@ class Paradis(nn.Module):
 
         # Specify hidden dimension based on multiplier,
         # following configuration file
-        assert  cfg.model.latent_multiplier > 0
+        assert cfg.model.latent_multiplier > 0
         hidden_dim = (
-            cfg.model.latent_multiplier * self.dynamic_channels
-            + self.static_channels
+            cfg.model.latent_multiplier * self.dynamic_channels + self.static_channels
         )
         num_vels = hidden_dim
         diffusion_size = hidden_dim
