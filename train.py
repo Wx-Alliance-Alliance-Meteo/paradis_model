@@ -42,6 +42,7 @@ def main(cfg: DictConfig):
         strategy="auto" if cfg.compute.num_devices == 1 else "ddp",
         max_epochs=cfg.training.max_epochs,
         max_steps=cfg.training.max_steps,
+        accumulate_grad_batches=cfg.training.get("accumulate_grad_batches", 1),
         gradient_clip_val=cfg.training.gradient_clip_val,
         gradient_clip_algorithm="norm",
         log_every_n_steps=cfg.training.log_every_n_steps,
