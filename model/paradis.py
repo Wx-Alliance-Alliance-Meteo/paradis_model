@@ -6,6 +6,7 @@ from torch import nn
 from model.padding import GeoCyclicPadding
 from model.gmblock import GMBlock
 from model.simple_blocks import ChannelNorm
+from torch.nn.utils import spectral_norm
 
 
 class NeuralSemiLagrangian(nn.Module):
@@ -152,15 +153,13 @@ class NeuralSemiLagrangian(nn.Module):
         )
 
         # Interpolate
-        interpolated = torch.nn.functional.grid_sample(
+        return torch.nn.functional.grid_sample(
             dynamic_padded,
             grid,
             align_corners=True,
             mode=self.interpolation,
             padding_mode="border",
-        )
-
-        return interpolated.view(batch_size, self.num_vels, *self.mesh_size)
+        ).view(batch_size, self.num_vels, *self.mesh_size)
 
 
 class Paradis(nn.Module):
@@ -206,10 +205,10 @@ class Paradis(nn.Module):
             activation=False,
         )
 
-        num_layers = cfg.model.num_layers
+        num_rhs = cfg.model.num_rhs
 
         # Timestep is set to 1 in the latent space
-        self.dt = 1
+        self.dt = 1.0
 
         # Advection layer
         self.advection = NeuralSemiLagrangian(
@@ -238,7 +237,7 @@ class Paradis(nn.Module):
                     pre_normalize=False,
                     bias_channels=bias_channels,
                 )
-                for _ in range(num_layers)
+                for _ in range(num_rhs)
             ]
         )
 

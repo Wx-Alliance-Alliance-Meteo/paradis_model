@@ -17,7 +17,7 @@ class Era5DataModule(L.LightningDataModule):
         # Extract configuration parameters for data
         self.cfg = cfg
         self.root_dir = cfg.dataset.root_dir
-        self.batch_size = cfg.compute.batch_size
+        self.batch_size = cfg.training.batch_size
         self.forecast_steps = cfg.model.forecast_steps
         self.num_workers = cfg.compute.num_workers
 
