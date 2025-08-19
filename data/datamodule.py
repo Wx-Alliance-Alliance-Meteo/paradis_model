@@ -76,6 +76,7 @@ class Era5DataModule(L.LightningDataModule):
                 self.lat = train_era5_dataset.lat
                 self.lon = train_era5_dataset.lon
                 self.grid_shape = train_era5_dataset.grid_shape
+                self.grid_type  = train_era5_dataset.grid_type
 
             if stage == "predict":
                 pred_start_date = self.cfg.forecast.start_date
@@ -101,7 +102,7 @@ class Era5DataModule(L.LightningDataModule):
                 self.lat = self.dataset.lat
                 self.lon = self.dataset.lon
                 self.grid_shape = self.dataset.grid_shape
-
+                self.grid_type = self.dataset.grid_type
 
             logging.info(
                 "Dataset contains: %d input features, %d output features.",
@@ -122,7 +123,7 @@ class Era5DataModule(L.LightningDataModule):
             shuffle=True,
             pin_memory=True,
             drop_last=self.drop_last,
-            persistent_workers=True,
+            persistent_workers=self.num_workers>0,
         )
 
     def val_dataloader(self):
@@ -135,7 +136,7 @@ class Era5DataModule(L.LightningDataModule):
             shuffle=self.cfg.training.validation_dataset.validation_batches is not None,
             pin_memory=True,
             drop_last=self.drop_last,
-            persistent_workers=True,
+            persistent_workers=self.num_workers>0,
         )
 
     def predict_dataloader(self):

@@ -2,8 +2,10 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 from matplotlib import pyplot as plt
 
+R_earth = 6371000.0  # Earth radius in meters
+
 class CubedSphere:
-    def __init__(self, num_elem: int, radius: float = 1.0,lambda0: float = 0.0, phi0: float = 0.0, alpha0: float = 0.0):
+    def __init__(self, num_elem: int, radius: float = R_earth, lambda0: float = 0.0, phi0: float = 0.0, alpha0: float = 0.0):
         """Initialize the cubed sphere geometry, for an earthlike sphere with no topography.
 
         This function initializes the basic CubedSphere geometry object, which provides the parameters necessary
@@ -325,7 +327,13 @@ class CubedSphere:
             from_idx += direction
         
         return vars
-            
+    
+    
+    def remap_local(self, xi, eta):
+        vars = self.transform_coord('local', 'cartesian', xi=xi, eta=eta)
+        final = self.transform_coord('cartesian', 'local', Xc = vars['Xc'], Yc = vars['Yc'], Zc = vars['Zc']) 
+        
+        return final['panel_id'], final['xi'], final['eta']
     
     def get_jacobian(self, from_coord, to_coord, vertical=False):
         if (from_coord, to_coord, vertical) in self.jacobian:

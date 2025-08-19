@@ -33,6 +33,7 @@ class ParadisLoss(torch.nn.Module):
         output_name_order: list,
         delta_loss: float = 1.0,
         apply_latitude_weights: bool = False,
+        grid_type: str = 'latlon'
     ) -> None:
         """Initialize the weighted reversed Huber loss function.
 
@@ -53,6 +54,8 @@ class ParadisLoss(torch.nn.Module):
         self.pressure_levels = pressure_levels.to(torch.float32)
 
         self.delta = delta_loss
+        
+        self.grid_type = grid_type
 
         # Store dimensions
         self.num_levels = len(pressure_levels)
@@ -70,7 +73,7 @@ class ParadisLoss(torch.nn.Module):
 
         # Whether to apply latitude weights in loss integration
         self.apply_latitude_weights = apply_latitude_weights
-        if self.apply_latitude_weights:
+        if grid_type == 'latlon':
             self.lat_weights = self._compute_latitude_weights(lat_grid)
 
         # Create combined feature weights
@@ -214,9 +217,11 @@ class ParadisLoss(torch.nn.Module):
             Weighted loss value
         """
         # Prepare weights with correct shapes for broadcasting
-        lat_weights = self.lat_weights.view(1, 1, -1, 1).to(pred.device)
-        feature_weights = self.feature_weights.view(1, -1, 1, 1).to(pred.device)
-
+        if self.grid_type == 'latlon': 
+            feature_weights = self.feature_weights.view(1, -1, 1, 1).to(pred.device)
+        else: 
+            feature_weights = self.feature_weights.view(1, -1, 1, 1, 1).to(pred.device)
+            
         # Get the loss using the appropriate function
         loss = self.loss_fn(pred, target)
 
@@ -224,6 +229,7 @@ class ParadisLoss(torch.nn.Module):
         weighted_loss = loss * feature_weights
 
         if self.apply_latitude_weights:
+            lat_weights = self.lat_weights.view(1, 1, -1, 1).to(pred.device)
             weighted_loss *= lat_weights
 
         return weighted_loss.mean()

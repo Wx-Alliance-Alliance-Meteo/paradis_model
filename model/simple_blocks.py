@@ -3,8 +3,9 @@ from torch import nn
 
 from model.padding import GeoCyclicPadding
 
-from typing import Any  # For optional/unused parameters
-from typing import Tuple  # For mesh_size when used
+from typing import Any      # For optional/unused parameters
+from typing import Tuple    # For mesh_size when used
+from typing import Callable # For padding function 
 
 """
     simple_blocks: Wrapper file to consolidate simple NN layers, defined as those that do
@@ -40,7 +41,8 @@ class FullConv(nn.Conv2d):
         *,
         kernel_size: int,  # Required
         bias: bool = True,  # Optional
-        mesh_size: Any = None,  # Not used
+        padding: Callable | None = None,
+        **kwargs
     ):
 
         self._kernel_size = kernel_size
@@ -48,7 +50,11 @@ class FullConv(nn.Conv2d):
         super().__init__(input_dim, output_dim, kernel_size=kernel_size, bias=bias)
 
         if self._kernel_size > 1:
-            self._padding = GeoCyclicPadding(kernel_size // 2)
+            pad = kernel_size // 2
+            if padding is None:
+                self._padding = GeoCyclicPadding(pad)
+            else:
+                self._padding = padding(pad)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         if self._kernel_size > 1:
@@ -69,7 +75,8 @@ class FlatConv(nn.Conv2d):
         *,
         kernel_size: int,  # Required
         bias: bool = True,  # Optional
-        mesh_size: Any = None,  # Not used
+        padding: Callable | None = None,
+        **kwargs
     ):
         assert input_dim == output_dim
         dim = input_dim
@@ -79,7 +86,11 @@ class FlatConv(nn.Conv2d):
         super().__init__(dim, dim, kernel_size=kernel_size, groups=dim, bias=bias)
 
         if self._kernel_size > 1:
-            self._padding = GeoCyclicPadding(kernel_size // 2)
+            pad = kernel_size // 2
+            if padding is None:
+                self._padding = GeoCyclicPadding(pad)
+            else:
+                self._padding = padding(pad)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         if self._kernel_size > 1:
@@ -96,9 +107,8 @@ class CLinear(nn.Conv2d):
         input_dim: int,
         output_dim: int,
         *,
-        kernel_size: int = 1,  # Not used (linear always has a kernel size of 1)
         bias: bool = True,  # Optional
-        mesh_size: Any = None,  # Not used
+        **kwargs
     ):
         super().__init__(input_dim, output_dim, kernel_size=1, bias=bias)
 
@@ -116,14 +126,19 @@ class SepConv(nn.Module):
         *,
         kernel_size: int,  # Required
         bias: bool = True,  # Optional
-        mesh_size: Any = None,  # Not used
+        padding: Callable | None = None,
+        **kwargs
     ):
         super().__init__()
 
         self.kernel_size = kernel_size
 
         if kernel_size > 1:
-            self.padding = GeoCyclicPadding(kernel_size // 2)
+            pad = kernel_size // 2
+            if padding is None:
+                self.padding = GeoCyclicPadding(pad)
+            else:
+                self.padding = padding(pad)
 
         self.conv = nn.Conv2d(
             input_dim, input_dim, kernel_size, groups=input_dim, bias=False
@@ -154,8 +169,8 @@ class GlobalNorm(nn.LayerNorm):
         output_dim: int,
         *,
         bias: bool = True,  # passed to LayerNorm
-        kernel_size: int = 1,  # Not used
         mesh_size: Tuple[int, int],  # required
+        **kwargs
     ):
         assert input_dim == output_dim
         super().__init__(list((input_dim,) + mesh_size), bias=bias)
@@ -180,9 +195,8 @@ class ChannelNorm(nn.Module):
         input_dim: int,
         output_dim: int,
         *,
-        kernel_size: int = 1,  # Not used
         bias: bool = True,  # Optional
-        mesh_size: Any = None,  # Not used
+        **kwargs
     ):
         assert input_dim == output_dim
         super().__init__()
@@ -237,10 +251,12 @@ class NormedConv(nn.Module):
         bias: bool = True,  # passed to GlobalNorm
         kernel_size: int,  # required
         mesh_size: Tuple[int, int],  # required
+        padding: Callable | None = None,
+        **kwargs
     ):
         super().__init__()
 
-        self.conv = FullConv(input_dim, output_dim, kernel_size=kernel_size, bias=True)
+        self.conv = FullConv(input_dim, output_dim, kernel_size=kernel_size, bias=True, padding=padding)
         self.norm = GlobalNorm(output_dim, output_dim, mesh_size=mesh_size, bias=bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -263,9 +279,8 @@ class GlobalBias(nn.Module):
         input_dim: int,
         output_dim: int,
         *,
-        bias: bool = True,  # Not used (would be redundant)
-        kernel_size: int = 0,  # Not used
         mesh_size: Tuple[int, int],  # required
+        **kwargs
     ):
         super().__init__()
 

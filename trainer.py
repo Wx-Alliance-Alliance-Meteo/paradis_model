@@ -99,6 +99,7 @@ class LitParadis(L.LightningModule):
             output_name_order=datamodule.output_name_order,
             delta_loss=cfg.training.loss_function.delta_loss,
             apply_latitude_weights=cfg.training.loss_function.lat_weights,
+            grid_type=datamodule.grid_type
         )
 
         self.forecast_steps = cfg.model.forecast_steps

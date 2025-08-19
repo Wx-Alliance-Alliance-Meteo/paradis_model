@@ -5,6 +5,8 @@ from collections.abc import Sequence
 
 from typing import Union, Type, Tuple
 
+from model.padding import GeoCyclicPadding
+
 ActivationType = Type[nn.Module]
 
 # Build directory of simple blocks by inspecting the simple_blocks submodule, allowing
@@ -45,6 +47,7 @@ class GMBlock(nn.Sequential):
             Sequence, bool
         ] = False,  # Sequence: apply activation function per layer?  Bool: final layer only?
         pre_normalize: bool = False,  # Whether to apply a prenorm (ChannelNorm) to the input before other layers
+        padding = GeoCyclicPadding, # Name of padding function to use
     ):
         """Perform initialization and construct layer sequence"""
 
@@ -108,11 +111,13 @@ class GMBlock(nn.Sequential):
 
             ltypename = ltype.__name__
             layer_name = f"{idx}-{ltypename}"
+
             layer_obj = ltype(
                 input_dim=layer_in_size,
                 output_dim=layer_out_size,
                 mesh_size=mesh_size,
                 kernel_size=kernel_size,
+                padding=padding,
             )
 
             blocks.append((layer_name, layer_obj))

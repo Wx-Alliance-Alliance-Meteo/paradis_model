@@ -534,7 +534,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
                     var_forcing = torch.tensor(var_ds.data, dtype=self.dtype)
                     var_forcing = (
                         var_forcing.unfold(0, self.n_time_inputs, 1)
-                        .view(steps, 1, 1, self.n_time_inputs)
+                        .view((steps, *([1]*len(self.grid_shape)), self.n_time_inputs))
                         .expand(steps, *self.grid_shape, self.n_time_inputs)
                     )
 
