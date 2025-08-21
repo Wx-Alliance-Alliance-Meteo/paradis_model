@@ -94,11 +94,9 @@ class ERA5Dataset(torch.utils.data.Dataset):
         time_delta = timedelta(hours=hours)
         time_delta = numpy.timedelta64(int(time_delta.total_seconds()), "s")
 
-        start_date_dt = numpy.datetime64(start_date)
-        time_delta_start = timedelta(hours=time_resolution)
-        adjusted_start_date = (
-            start_date_dt - (self.n_time_inputs - 1) * time_delta_start
-        )
+        start_date_dt = numpy.datetime64(start_date, "s")
+        step = numpy.timedelta64(6, "h")
+        adjusted_start_date = start_date_dt - (self.n_time_inputs - 1) * step
 
         # Convert end_date to a datetime object and adjust end date
         if end_date is not None:
@@ -330,7 +328,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         x_grid = x.permute(0, 3, 1, 2)
         y_grid = y.permute(0, 3, 1, 2)
 
-        return x_grid, y_grid
+        return x_grid.float(), y_grid.float()
 
     def _run_dataset_checks(self):
         # Check if grid includes poles
@@ -452,7 +450,6 @@ class ERA5Dataset(torch.utils.data.Dataset):
             else:
                 self.q_max = torch.tensor(0.0).detach()
                 self.q_min = torch.tensor(self.eps).detach()
-
 
         # Extract the toa_radiation mean and std
         self.toa_rad_std = ds_input.attrs["toa_radiation_std"]

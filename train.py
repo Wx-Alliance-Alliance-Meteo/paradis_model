@@ -35,7 +35,7 @@ def main(cfg: DictConfig):
 
     # Instantiate lightning trainer with options
     trainer = L.Trainer(
-        default_root_dir="logs/",
+        default_root_dir=cfg.training.log_dir,
         accelerator=cfg.compute.accelerator,
         devices=cfg.compute.num_devices,
         num_nodes=cfg.compute.num_nodes,

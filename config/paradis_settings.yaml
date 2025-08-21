@@ -53,6 +53,7 @@ training:
   gradient_clip_val: null          # Gradient clipping value, set to null to disable
   print_losses: false              # Manually print losses to screen (removes progress bar)
   log_every_n_steps: 50            # Write to log every n steps
+  log_dir: logs
 
   dataset:
     start_date: 2010-01-01         # Start date for the training dataset (YYYY-MM-DD)
