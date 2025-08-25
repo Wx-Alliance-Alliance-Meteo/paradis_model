@@ -49,7 +49,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         # Lazy open this dataset
         ds = xarray.open_mfdataset(
             os.path.join(root_dir, "*"),
-            chunks={"time": self.forecast_steps + 1},
+            chunks={"time": 1},
             engine="zarr",
         )
 
