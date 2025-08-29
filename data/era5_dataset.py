@@ -294,10 +294,6 @@ class ERA5Dataset(torch.utils.data.Dataset):
         # Load arrays into CPU memory
         input_data, true_data = dask.compute(input_data, true_data)  # type: ignore -- dask.compute is really dask.base.compute
 
-        # Add checks for invalid values
-        if numpy.isnan(input_data.data).any() or numpy.isnan(true_data.data).any():
-            raise ValueError("NaN values detected in input/output data")
-
         # Convert to tensors - data comes in [time, lat, lon, features]
         x = torch.tensor(input_data.data, dtype=self.dtype)
 
