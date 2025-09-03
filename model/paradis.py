@@ -50,7 +50,7 @@ class NeuralSemiLagrangian(nn.Module):
         # Output 2 channels per hidden dimension for u and v
         self.velocity_net = GMBlock(
             input_dim=hidden_dim,
-            output_dim=2 * num_vels,
+            output_dim=3 * num_vels,
             hidden_dim=hidden_dim,
             kernel_size=3,
             mesh_size=mesh_size,
@@ -110,6 +110,50 @@ class NeuralSemiLagrangian(nn.Module):
         lon = torch.remainder(lon + 2 * torch.pi, 2 * torch.pi)
 
         return lat, lon
+    
+    def _angular_rotation(
+        self,
+        lat: torch.Tensor, 
+        lon: torch.Tensor, 
+        omega: torch.Tensor, 
+        dt: float):
+        sin_lat = torch.sin(lat)
+        cos_lat = torch.cos(lat)
+        sin_lon = torch.sin(lon)
+        cos_lon = torch.cos(lon)
+        
+        # Coordinates in cartesian
+        x0 = torch.stack([
+            cos_lat * cos_lon, 
+            cos_lat * sin_lon, 
+            sin_lat
+        ], dim=1)
+        
+        # Rotation angle
+        omega_norm = torch.norm(omega, dim=1)
+        theta = -omega_norm * dt
+        
+        u = omega / omega_norm.unsqueeze(1)
+        
+        sin_theta = torch.sin(theta).unsqueeze(1)
+        cos_theta = torch.cos(theta).unsqueeze(1)
+        
+        u_cross_x0 = torch.cross(u, x0, dim=1)
+        u_dot_x0 = (u * x0).sum(dim=1, keepdim=True)
+        
+        # Compute new position
+        x_new = x0 * cos_theta + u_cross_x0 * sin_theta + u * (u_dot_x0 * (1 - cos_theta))
+        x_new = x_new / torch.norm(x_new, dim=1, keepdim=True)
+        
+        # Back to (lat, lon)
+        x_comp = x_new[:, 0, :, :, :]
+        y_comp = x_new[:, 1, :, :, :]
+        z_comp = x_new[:, 2, :, :, :]
+
+        lat_dep = torch.asin(z_comp)
+        lon_dep = torch.atan2(y_comp, x_comp)
+
+        return lat_dep, lon_dep
 
     def forward(
         self,
@@ -123,31 +167,11 @@ class NeuralSemiLagrangian(nn.Module):
         velocities = self.velocity_net(hidden_features)
 
         # Reshape velocities to separate u,v components per channel
-        # [batch, 2*hidden_dim, lat, lon] -> [batch, hidden_dim, 2, lat, lon]
-        velocities = velocities.view(batch_size, 2, self.num_vels, *self.mesh_size)
+        # [batch, 2*hidden_dim, lat, lon] -> [batch, hidden_dim, 3, lat, lon]
+        velocities = velocities.view(batch_size, 3, self.num_vels, *self.mesh_size)
 
-        # Extract learned u,v components
-        u = velocities[:, 0]
-        v = velocities[:, 1]
-
-        # Down-project latent features to num_vel channels
-        projected_inputs = self.down_projection(hidden_features)
-
-        # Compute departure points in a local rotated coordinate system in which the origin
-        # of latitude and longitude is moved to the arrival point
-        lon_prime = -u * dt
-        lat_prime = -v * dt
-
-        # Transform from rotated coordinates back to standard coordinates
-        # Expand lat/lon grid for broadcasting with per-channel coordinates
-        lat_grid = self.lat_grid.expand(-1, self.num_vels, -1, -1)
-        lon_grid = self.lon_grid.expand(-1, self.num_vels, -1, -1)
-
-        # Compute the departure lat/lon grid
-        lat_dep, lon_dep = self._transform_to_latlon(
-            lat_prime, lon_prime, lat_grid, lon_grid
-        )
-
+        lat_dep, lon_dep = self._angular_rotation(self.lat_grid, self.lon_grid, velocities, dt)
+        
         # Convert departure points to pixel locations
         # For example, pixel_x now in [0 .. W-1], pixel_y in [0 .. H-1]
         pix_x = (lon_dep - self.min_lon) / self.d_lon * (self.Wf - 1.0)
