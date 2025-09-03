@@ -151,6 +151,7 @@ class LitParadis(L.LightningModule):
         # and hence simplify adding them
 
         # Update future inputs with the current output
+        input_data = input_data.clone()
         steps_left = num_steps - step - 1
         for i in range(min(steps_left, self.n_inputs)):
             beg_i = self.num_common_features * (self.n_inputs - i - 1)
