@@ -15,6 +15,8 @@ class NeuralSemiLagrangian(nn.Module):
         hidden_dim: int,
         mesh_size: tuple,
         num_vels: int,
+        lat_grid: torch.Tensor,
+        lon_grid: torch.Tensor,
         interpolation: str = "bicubic",
         bias_channels: int = 4,
     ):
@@ -58,6 +60,26 @@ class NeuralSemiLagrangian(nn.Module):
             pre_normalize=True,
         )
 
+        H, W = mesh_size
+
+        # Store for later use
+        self.register_buffer("lat_grid", lat_grid.unsqueeze(0).unsqueeze(0))
+        self.register_buffer("lon_grid", lon_grid.unsqueeze(0).unsqueeze(0))
+
+        # Buffers: normalization constants
+        self.register_buffer("Hf", torch.tensor(float(H)))
+        self.register_buffer("Wf", torch.tensor(float(W)))
+        self.register_buffer("pad", torch.tensor(float(self.padding)))
+
+        self.register_buffer("min_lat", torch.min(lat_grid))
+        self.register_buffer("max_lat", torch.max(lat_grid))
+
+        self.register_buffer("min_lon", torch.min(lon_grid))
+        self.register_buffer("max_lon", torch.max(lon_grid))
+
+        self.register_buffer("d_lon", self.max_lon - self.min_lon)
+        self.register_buffer("d_lat", self.max_lat - self.min_lat)
+
     def _transform_to_latlon(
         self,
         lat_prime: torch.Tensor,
@@ -92,8 +114,6 @@ class NeuralSemiLagrangian(nn.Module):
     def forward(
         self,
         hidden_features: torch.Tensor,
-        lat_grid: torch.Tensor,
-        lon_grid: torch.Tensor,
         dt: float,
     ) -> torch.Tensor:
         """Compute advection using rotated coordinate system."""
@@ -120,36 +140,26 @@ class NeuralSemiLagrangian(nn.Module):
 
         # Transform from rotated coordinates back to standard coordinates
         # Expand lat/lon grid for broadcasting with per-channel coordinates
-        lat_grid = lat_grid.unsqueeze(1).expand(-1, self.num_vels, -1, -1)
-        lon_grid = lon_grid.unsqueeze(1).expand(-1, self.num_vels, -1, -1)
-
-        # Get the max and min values for normalization
-        min_lat = torch.min(lat_grid)
-        max_lat = torch.max(lat_grid)
-
-        min_lon = torch.min(lon_grid)
-        max_lon = torch.max(lon_grid)
+        lat_grid = self.lat_grid.expand(-1, self.num_vels, -1, -1)
+        lon_grid = self.lon_grid.expand(-1, self.num_vels, -1, -1)
 
         # Compute the departure lat/lon grid
         lat_dep, lon_dep = self._transform_to_latlon(
             lat_prime, lon_prime, lat_grid, lon_grid
         )
 
-        _, _, H, W = hidden_features.shape
-
         # Convert departure points to pixel locations
         # For example, pixel_x now in [0 .. W-1], pixel_y in [0 .. H-1]
-        pix_x = (lon_dep - min_lon) / (max_lon - min_lon) * (W - 1)
-        pix_y = (lat_dep - min_lat) / (max_lat - min_lat) * (H - 1)
+        pix_x = (lon_dep - self.min_lon) / self.d_lon * (self.Wf - 1.0)
+        pix_y = (lat_dep - self.min_lat) / self.d_lat * (self.Hf - 1.0)
 
         # Add padding
         dynamic_padded = self.padding_interp(projected_inputs)
-        padding = self.padding_interp.pad_width
 
         # Shift pixels by the padding width
         # [0, 1, 2, 3...] -> [2, 3, 4, 5...] (if pad_width=2)
-        pix_x_pad = pix_x + padding
-        pix_y_pad = pix_y + padding
+        pix_x_pad = pix_x + self.pad
+        pix_y_pad = pix_y + self.pad
 
         # Normalize into [-1, 1]
         _, _, H_pad, W_pad = dynamic_padded.shape
@@ -173,7 +183,7 @@ class NeuralSemiLagrangian(nn.Module):
             grid,
             align_corners=True,
             mode=self.interpolation,
-            padding_mode="border",
+            padding_mode="zeros",
         )
 
         # Reshape back to original dimensions and project back up to latent space
@@ -190,7 +200,7 @@ class Paradis(nn.Module):
     # Synoptic time scale (~1/Ω) in seconds
     SYNOPTIC_TIME_SCALE = 7.29212e5
 
-    def __init__(self, datamodule, cfg):
+    def __init__(self, datamodule, cfg, lat_grid, lon_grid):
         super().__init__()
 
         # Extract dimensions from config
@@ -248,6 +258,8 @@ class Paradis(nn.Module):
                     hidden_dim,
                     mesh_size,
                     num_vels=num_vels,
+                    lat_grid=lat_grid,
+                    lon_grid=lon_grid,
                     interpolation=adv_interpolation,
                     bias_channels=bias_channels,
                 )
@@ -288,17 +300,13 @@ class Paradis(nn.Module):
         # No gradients on lat/lon, ever
         x_static = x[:, self.dynamic_channels :].detach()
 
-        # Extract lat/lon from static features (last 2 channels)
-        lat_grid = x_static[:, -2, :, :]
-        lon_grid = x_static[:, -1, :, :]
-
         # Project features to latent space
         z = self.input_proj(x)
 
         # Compute advection and diffusion-reaction
         for i in range(self.num_layers):
             # Advect the features in latent space using a Semi-Lagrangian step
-            z_adv = self.advection[i](z, lat_grid, lon_grid, self.dt)
+            z_adv = self.advection[i](z, self.dt)
 
             # Compute the diffusion residual
             dz = self.diffusion_reaction[i](z_adv)

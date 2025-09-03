@@ -34,7 +34,9 @@ class LitParadis(L.LightningModule):
 
         # Instantiate the model
         self.datamodule = datamodule
-        self.model = Paradis(datamodule, cfg)
+        lat_grid = datamodule.dataset.lat_rad_grid
+        lon_grid = datamodule.dataset.lon_rad_grid
+        self.model = Paradis(datamodule, cfg, lat_grid, lon_grid)
         self.cfg = cfg
         self.n_inputs = cfg.dataset.n_time_inputs
 
