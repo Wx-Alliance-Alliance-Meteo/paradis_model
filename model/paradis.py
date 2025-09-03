@@ -177,6 +177,9 @@ class NeuralSemiLagrangian(nn.Module):
         pix_x = (lon_dep - self.min_lon) / self.d_lon * (self.Wf - 1.0)
         pix_y = (lat_dep - self.min_lat) / self.d_lat * (self.Hf - 1.0)
 
+        # Down-project latent features to num_vel channels
+        projected_inputs = self.down_projection(hidden_features)
+        
         # Add padding
         dynamic_padded = self.padding_interp(projected_inputs)
 
