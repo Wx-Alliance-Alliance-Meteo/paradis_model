@@ -19,6 +19,7 @@ class NeuralSemiLagrangian(nn.Module):
         lon_grid: torch.Tensor,
         interpolation: str = "bicubic",
         bias_channels: int = 4,
+        angular: bool = False,
     ):
         super().__init__()
 
@@ -45,12 +46,13 @@ class NeuralSemiLagrangian(nn.Module):
         )
 
         self.interpolation = interpolation
+        num_dim = 3 if angular else 2
 
         # Neural network that will learn an effective velocity along the trajectory
         # Output 2 channels per hidden dimension for u and v
         self.velocity_net = GMBlock(
             input_dim=hidden_dim,
-            output_dim=3 * num_vels,
+            output_dim=num_dim * num_vels,
             hidden_dim=hidden_dim,
             kernel_size=3,
             mesh_size=mesh_size,
@@ -79,6 +81,8 @@ class NeuralSemiLagrangian(nn.Module):
 
         self.register_buffer("d_lon", self.max_lon - self.min_lon)
         self.register_buffer("d_lat", self.max_lat - self.min_lat)
+
+        self.forward = self.forward_angular if angular else self.forward_cartesian
 
     def _transform_to_latlon(
         self,
@@ -110,76 +114,93 @@ class NeuralSemiLagrangian(nn.Module):
         lon = torch.remainder(lon + 2 * torch.pi, 2 * torch.pi)
 
         return lat, lon
-    
+
     def _angular_rotation(
-        self,
-        lat: torch.Tensor, 
-        lon: torch.Tensor, 
-        omega: torch.Tensor, 
-        dt: float):
+        self, lat: torch.Tensor, lon: torch.Tensor, omega: torch.Tensor, dt: float
+    ):
         sin_lat = torch.sin(lat)
         cos_lat = torch.cos(lat)
         sin_lon = torch.sin(lon)
         cos_lon = torch.cos(lon)
-        
+
         # Coordinates in cartesian
-        x0 = torch.stack([
-            cos_lat * cos_lon, 
-            cos_lat * sin_lon, 
-            sin_lat
-        ], dim=1)
-        
+        x0 = torch.stack([cos_lat * cos_lon, cos_lat * sin_lon, sin_lat], dim=1)
+
         # Rotation angle
         omega_norm = torch.norm(omega, dim=1)
-        theta = -omega_norm * dt
-        
-        u = omega / omega_norm.unsqueeze(1)
-        
+        safe_norm = torch.clamp(omega_norm, min=1e-6)  # avoid /0
+
+        theta = -safe_norm * dt
+
+        u = omega / safe_norm.unsqueeze(1)
+
         sin_theta = torch.sin(theta).unsqueeze(1)
         cos_theta = torch.cos(theta).unsqueeze(1)
-        
+
         u_cross_x0 = torch.cross(u, x0, dim=1)
         u_dot_x0 = (u * x0).sum(dim=1, keepdim=True)
-        
+
         # Compute new position
-        x_new = x0 * cos_theta + u_cross_x0 * sin_theta + u * (u_dot_x0 * (1 - cos_theta))
-        x_new = x_new / torch.norm(x_new, dim=1, keepdim=True)
-        
+        x_new = (
+            x0 * cos_theta + u_cross_x0 * sin_theta + u * (u_dot_x0 * (1 - cos_theta))
+        )
+        x_new = torch.nn.functional.normalize(x_new, dim=1, eps=1e-12)
+
         # Back to (lat, lon)
         x_comp = x_new[:, 0, :, :, :]
         y_comp = x_new[:, 1, :, :, :]
         z_comp = x_new[:, 2, :, :, :]
 
+        z_comp = z_comp.clamp_(-1.0, 1.0)
+
         lat_dep = torch.asin(z_comp)
-        lon_dep = torch.atan2(y_comp, x_comp)
+        lon_dep = torch.atan2(y_comp, x_comp) + torch.pi
 
         return lat_dep, lon_dep
 
-    def forward(
+    def forward_cartesian(
         self,
         hidden_features: torch.Tensor,
         dt: float,
     ) -> torch.Tensor:
         """Compute advection using rotated coordinate system."""
         batch_size = hidden_features.shape[0]
+        H, W = self.mesh_size
 
         # Get learned velocities for each channel
         velocities = self.velocity_net(hidden_features)
 
         # Reshape velocities to separate u,v components per channel
-        # [batch, 2*hidden_dim, lat, lon] -> [batch, hidden_dim, 3, lat, lon]
-        velocities = velocities.view(batch_size, 3, self.num_vels, *self.mesh_size)
+        # [batch, 2*hidden_dim, lat, lon] -> [batch, hidden_dim, 2, lat, lon]
+        velocities = velocities.view(batch_size, 2, self.num_vels, H, W)
 
-        lat_dep, lon_dep = self._angular_rotation(self.lat_grid, self.lon_grid, velocities, dt)
-        
+        # Extract learned u,v components
+        u = velocities[:, 0]
+        v = velocities[:, 1]
+
+        # Down-project latent features to num_vel channels
+        projected_inputs = self.down_projection(hidden_features)
+
+        # Compute departure points in a local rotated coordinate system in which the origin
+        # of latitude and longitude is moved to the arrival point
+        lon_prime = -u * dt
+        lat_prime = -v * dt
+
+        # Transform from rotated coordinates back to standard coordinates
+        # Expand lat/lon grid for broadcasting with per-channel coordinates
+        lat_grid = self.lat_grid.expand(-1, self.num_vels, -1, -1)
+        lon_grid = self.lon_grid.expand(-1, self.num_vels, -1, -1)
+
+        # Compute the departure lat/lon grid
+        lat_dep, lon_dep = self._transform_to_latlon(
+            lat_prime, lon_prime, lat_grid, lon_grid
+        )
+
         # Convert departure points to pixel locations
         # For example, pixel_x now in [0 .. W-1], pixel_y in [0 .. H-1]
         pix_x = (lon_dep - self.min_lon) / self.d_lon * (self.Wf - 1.0)
         pix_y = (lat_dep - self.min_lat) / self.d_lat * (self.Hf - 1.0)
 
-        # Down-project latent features to num_vel channels
-        projected_inputs = self.down_projection(hidden_features)
-        
         # Add padding
         dynamic_padded = self.padding_interp(projected_inputs)
 
@@ -189,19 +210,21 @@ class NeuralSemiLagrangian(nn.Module):
         pix_y_pad = pix_y + self.pad
 
         # Normalize into [-1, 1]
-        _, _, H_pad, W_pad = dynamic_padded.shape
+        H_pad = H + 2 * self.padding
+        W_pad = W + 2 * self.padding
+
         grid_x = 2.0 * (pix_x_pad / float(W_pad - 1)) - 1.0
         grid_y = 2.0 * (pix_y_pad / float(H_pad - 1)) - 1.0
 
-        grid_x = grid_x.view(batch_size * self.num_vels, *grid_x.shape[-2:])
-        grid_y = grid_y.view(batch_size * self.num_vels, *grid_y.shape[-2:])
+        grid_x = grid_x.view(batch_size * self.num_vels, H, W)
+        grid_y = grid_y.view(batch_size * self.num_vels, H, W)
 
         # Create interpolation grid
         grid = torch.stack([grid_x, grid_y], dim=-1)
 
         # Apply padding and reshape features
         dynamic_padded = dynamic_padded.reshape(
-            batch_size * self.num_vels, 1, *dynamic_padded.shape[-2:]
+            batch_size * self.num_vels, 1, H_pad, W_pad
         )
 
         # Interpolate
@@ -215,7 +238,77 @@ class NeuralSemiLagrangian(nn.Module):
 
         # Reshape back to original dimensions and project back up to latent space
         interpolated = self.up_projection(
-            interpolated.view(batch_size, self.num_vels, *self.mesh_size)
+            interpolated.view(batch_size, self.num_vels, H, W)
+        )
+
+        return interpolated
+
+    def forward_angular(
+        self,
+        hidden_features: torch.Tensor,
+        dt: float,
+    ) -> torch.Tensor:
+        """Compute advection using rotated coordinate system."""
+        batch_size = hidden_features.shape[0]
+        H, W = self.mesh_size
+
+        # Get learned velocities for each channel
+        velocities = self.velocity_net(hidden_features)
+
+        # Reshape velocities to separate u,v components per channel
+        # [batch, 2*hidden_dim, lat, lon] -> [batch, hidden_dim, 3, lat, lon]
+        velocities = velocities.view(batch_size, 3, self.num_vels, H, W)
+
+        lat_dep, lon_dep = self._angular_rotation(
+            self.lat_grid, self.lon_grid, velocities, dt
+        )
+
+        # Convert departure points to pixel locations
+        # For example, pixel_x now in [0 .. W-1], pixel_y in [0 .. H-1]
+        pix_x = (lon_dep - self.min_lon) / self.d_lon * (self.Wf - 1.0)
+        pix_y = (lat_dep - self.min_lat) / self.d_lat * (self.Hf - 1.0)
+
+        # Down-project latent features to num_vel channels
+        projected_inputs = self.down_projection(hidden_features)
+
+        # Add padding
+        dynamic_padded = self.padding_interp(projected_inputs)
+
+        # Shift pixels by the padding width
+        # [0, 1, 2, 3...] -> [2, 3, 4, 5...] (if pad_width=2)
+        pix_x_pad = pix_x + self.pad
+        pix_y_pad = pix_y + self.pad
+
+        # Normalize into [-1, 1]
+        H_pad = H + 2 * self.padding
+        W_pad = W + 2 * self.padding
+
+        grid_x = 2.0 * (pix_x_pad / float(W_pad - 1)) - 1.0
+        grid_y = 2.0 * (pix_y_pad / float(H_pad - 1)) - 1.0
+
+        grid_x = grid_x.view(batch_size * self.num_vels, H, W)
+        grid_y = grid_y.view(batch_size * self.num_vels, H, W)
+
+        # Create interpolation grid
+        grid = torch.stack([grid_x, grid_y], dim=-1)
+
+        # Apply padding and reshape features
+        dynamic_padded = dynamic_padded.reshape(
+            batch_size * self.num_vels, 1, H_pad, W_pad
+        )
+
+        # Interpolate
+        interpolated = torch.nn.functional.grid_sample(
+            dynamic_padded,
+            grid,
+            align_corners=True,
+            mode=self.interpolation,
+            padding_mode="zeros",
+        )
+
+        # Reshape back to original dimensions and project back up to latent space
+        interpolated = self.up_projection(
+            interpolated.view(batch_size, self.num_vels, H, W)
         )
 
         return interpolated
@@ -289,6 +382,7 @@ class Paradis(nn.Module):
                     lon_grid=lon_grid,
                     interpolation=adv_interpolation,
                     bias_channels=bias_channels,
+                    angular=cfg.model.angular,
                 )
                 for _ in range(self.num_layers)
             ]
@@ -335,8 +429,10 @@ class Paradis(nn.Module):
             # Advect the features in latent space using a Semi-Lagrangian step
             z_adv = self.advection[i](z, self.dt)
 
+            z = z + z_adv
+
             # Compute the diffusion residual
-            dz = self.diffusion_reaction[i](z_adv)
+            dz = self.diffusion_reaction[i](z)
 
             # Update the latent space features
             z = z + dz * self.dt
