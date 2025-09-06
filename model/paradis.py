@@ -172,7 +172,7 @@ class NeuralSemiLagrangian(nn.Module):
 
         # Reshape velocities to separate u,v components per channel
         # [batch, 2*hidden_dim, lat, lon] -> [batch, hidden_dim, 2, lat, lon]
-        velocities = velocities.view(batch_size, 2, self.num_vels, H, W)
+        velocities = velocities.reshape(batch_size, 2, self.num_vels, H, W)
 
         # Extract learned u,v components
         u = velocities[:, 0]
@@ -216,8 +216,8 @@ class NeuralSemiLagrangian(nn.Module):
         grid_x = 2.0 * (pix_x_pad / float(W_pad - 1)) - 1.0
         grid_y = 2.0 * (pix_y_pad / float(H_pad - 1)) - 1.0
 
-        grid_x = grid_x.view(batch_size * self.num_vels, H, W)
-        grid_y = grid_y.view(batch_size * self.num_vels, H, W)
+        grid_x = grid_x.reshape(batch_size * self.num_vels, H, W)
+        grid_y = grid_y.reshape(batch_size * self.num_vels, H, W)
 
         # Create interpolation grid
         grid = torch.stack([grid_x, grid_y], dim=-1)
@@ -238,7 +238,7 @@ class NeuralSemiLagrangian(nn.Module):
 
         # Reshape back to original dimensions and project back up to latent space
         interpolated = self.up_projection(
-            interpolated.view(batch_size, self.num_vels, H, W)
+            interpolated.reshape(batch_size, self.num_vels, H, W)
         )
 
         return interpolated
@@ -257,7 +257,7 @@ class NeuralSemiLagrangian(nn.Module):
 
         # Reshape velocities to separate u,v components per channel
         # [batch, 2*hidden_dim, lat, lon] -> [batch, hidden_dim, 3, lat, lon]
-        velocities = velocities.view(batch_size, 3, self.num_vels, H, W)
+        velocities = velocities.reshape(batch_size, 3, self.num_vels, H, W)
 
         lat_dep, lon_dep = self._angular_rotation(
             self.lat_grid, self.lon_grid, velocities, dt
@@ -286,8 +286,8 @@ class NeuralSemiLagrangian(nn.Module):
         grid_x = 2.0 * (pix_x_pad / float(W_pad - 1)) - 1.0
         grid_y = 2.0 * (pix_y_pad / float(H_pad - 1)) - 1.0
 
-        grid_x = grid_x.view(batch_size * self.num_vels, H, W)
-        grid_y = grid_y.view(batch_size * self.num_vels, H, W)
+        grid_x = grid_x.reshape(batch_size * self.num_vels, H, W)
+        grid_y = grid_y.reshape(batch_size * self.num_vels, H, W)
 
         # Create interpolation grid
         grid = torch.stack([grid_x, grid_y], dim=-1)
@@ -308,7 +308,7 @@ class NeuralSemiLagrangian(nn.Module):
 
         # Reshape back to original dimensions and project back up to latent space
         interpolated = self.up_projection(
-            interpolated.view(batch_size, self.num_vels, H, W)
+            interpolated.reshape(batch_size, self.num_vels, H, W)
         )
 
         return interpolated
