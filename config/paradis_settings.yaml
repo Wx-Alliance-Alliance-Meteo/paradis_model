@@ -10,6 +10,7 @@ model:
   diffusion_size: 672              # Latent size for the diffusion operator
   reaction_size: 672
   adv_interpolation: bicubic       # Choose between bilinear or bicubic
+  angular: false                   # Whether to use angular or cartesian velocities in network
 
 # Initialization settings (seeding)
 init:
@@ -187,6 +188,9 @@ features:
       - slope_of_sub_gridscale_orography
       - standard_deviation_of_orography
       - lon_spacing
+      - cos_latitude
+      - cos_longitude
+      - sin_longitude
       - latitude
       - longitude
 
