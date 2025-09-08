@@ -449,8 +449,6 @@ class Paradis(nn.Module):
 
             z = z + z_adv
 
-            z = z + z_adv
-
             # Compute the diffusion residual
             dz = self.diffusion[i](z)
 
