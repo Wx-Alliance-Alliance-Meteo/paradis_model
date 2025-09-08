@@ -225,10 +225,12 @@ class Paradis(nn.Module):
             )
             num_vels = hidden_dim
             diffusion_size = hidden_dim
+            reaction_size = hidden_dim
         else:
             hidden_dim = cfg.model.latent_size
             num_vels = cfg.model.velocity_vectors
             diffusion_size = cfg.model.diffusion_size
+            reaction_size = cfg.model.reaction_size
 
         # Get the interpolation type
         adv_interpolation = cfg.model.adv_interpolation
@@ -268,13 +270,29 @@ class Paradis(nn.Module):
         )
 
         # Diffusion-reaction layer
-        self.diffusion_reaction = nn.ModuleList(
+        self.diffusion = nn.ModuleList(
             [
                 GMBlock(
                     input_dim=hidden_dim,
                     output_dim=hidden_dim,
                     hidden_dim=diffusion_size,
-                    layers=["SepConv", "CLinear", "SepConv"],
+                    layers=["SepConv"],
+                    mesh_size=mesh_size,
+                    activation=False,
+                    pre_normalize=True,
+                    bias_channels=bias_channels,
+                )
+                for _ in range(self.num_layers)
+            ]
+        )
+
+        self.reaction = nn.ModuleList(
+            [
+                GMBlock(
+                    input_dim=hidden_dim,
+                    output_dim=hidden_dim,
+                    hidden_dim=reaction_size,
+                    layers=["CLinear", "CLinear"],
                     mesh_size=mesh_size,
                     activation=False,
                     pre_normalize=True,
@@ -308,8 +326,14 @@ class Paradis(nn.Module):
             # Advect the features in latent space using a Semi-Lagrangian step
             z_adv = self.advection[i](z, self.dt)
 
+            z = z + z_adv
+
             # Compute the diffusion residual
-            dz = self.diffusion_reaction[i](z_adv)
+            dz = self.diffusion[i](z)
+
+            z = z + dz
+
+            dz = self.reaction[i](z)
 
             # Update the latent space features
             z = z + dz * self.dt
