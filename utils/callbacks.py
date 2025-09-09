@@ -137,10 +137,11 @@ def enable_callbacks(cfg):
         # Stop epochs when validation loss is not decreasing during a coupe of epochs
         callbacks.append(
             EarlyStopping(
-                monitor="val_loss",
+                monitor="geopotential_h500",
                 mode="min",
                 patience=cfg.training.early_stopping.patience,
                 check_finite=True,  # Make sure validation has not gone to nan
+                divergence_threshold=1e4,
             )
         )
 
