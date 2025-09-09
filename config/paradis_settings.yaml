@@ -24,6 +24,7 @@ dataset:
   time_resolution: 6h              # Dataset original resolution
   n_time_inputs: 2                 # Number inputs (For example, n_time_inputs: 2 feeds [tn-1, tn])
   sampling_interval: 6h            # Sample dataset feeds at this time interval
+  prediction_delta: 6h             # Prediction will be done at t+prediction_delta
 
 normalization:
   standard: False                  # (True = z-score normalization to all variables, False = custom norms)
