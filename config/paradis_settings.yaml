@@ -54,6 +54,16 @@ training:
   print_losses: false              # Manually print losses to screen (removes progress bar)
   log_every_n_steps: 50            # Write to log every n steps
 
+  checkpointing:
+    enabled: true
+    dirpath: checkpoints          # folder to save .ckpt files
+    filename: "{epoch}-{val_loss:.4f}"
+    monitor: val_loss             # you log this per-epoch in validation_step
+    mode: min                     # minimize val_loss
+    save_top_k: 3                 # keep best 3
+    every_n_epochs: 1
+    save_last: true
+
   dataset:
     start_date: 2010-01-01         # Start date for the training dataset (YYYY-MM-DD)
     end_date: 2019-12-31           # End date for the training dataset (YYYY-MM-DD)
@@ -80,10 +90,8 @@ training:
     type: "reversed_huber"                    # mse or reversed_huber loss function
     delta_loss: 1.0                # Threshold parameter for huber loss
     lat_weights: false             # Integrate loss with spherical metrics
-
-  checkpointing:
-    enabled: true                  # Enable checkpointing
-
+    lambda_geopotential_dp: 0.1   # Set 0 to turn off penalty for hydrostatic balance
+    
   # Scheduler configuration - Choose ONE of the following scheduler types by
   # setting enable to true in the appropriate section:
 

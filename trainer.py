@@ -15,6 +15,66 @@ from data.datamodule import Era5DataModule
 
 import omegaconf.dictconfig
 
+def find_geopotential_channels(output_name_order):
+    """
+    Detect channels named like 'geopotential_h<level>'.
+    Returns:
+      idx: list[int] channel indices sorted by pressure level
+      p_levels_hpa: torch.float32 tensor of levels [hPa], matching idx order
+    """
+    pairs = []  # (pressure_hpa:int, channel_idx:int)
+    pat = re.compile(r"^geopotential_h(\d+)$")
+    for i, name in enumerate(output_name_order):
+        m = pat.match(name)
+        if m:
+            pairs.append((int(m.group(1)), i))
+
+    if not pairs:
+        # Helpful error that shows what prefixes exist
+        prefixes = sorted({n.split("_h")[0] for n in output_name_order if "_h" in n})
+        raise ValueError(
+            "Could not find channels named 'geopotential_h<level>' in output_name_order. "
+            f"Detected variable prefixes: {prefixes}"
+        )
+
+    pairs.sort(key=lambda t: t[0])  # sort by numeric pressure
+    p_levels_hpa = torch.tensor([p for p, _ in pairs], dtype=torch.float32)
+    idx = [i for _, i in pairs]
+    return idx, p_levels_hpa
+
+def dphi_dp(phi: torch.Tensor, p_levels: torch.Tensor, dim: int = 1) -> torch.Tensor:
+    """
+    ∂phi/∂p along axis 'dim' with non-uniform spacing.
+    phi: (..., L, ...) e.g. (B, L, H, W)
+    p_levels: (L,)
+    """
+    # Move pressure-level axis to dim=1
+    perm = list(range(phi.ndim))
+    if dim != 1:
+        perm[dim], perm[1] = perm[1], perm[dim]
+        phi = phi.permute(*perm)
+
+    L = phi.shape[1]
+    p = p_levels.to(phi.device, phi.dtype).view(1, L, *([1] * (phi.ndim - 2)))
+
+    dp   = p[:, 1:, ...] - p[:, :-1, ...]
+    dphi = phi[:, 1:, ...] - phi[:, :-1, ...]
+    slope = dphi / dp
+
+    out = torch.empty_like(phi)
+    out[:, 0,  ...] = slope[:, 0,  ...]       # forward at top
+    out[:, -1, ...] = slope[:, -1, ...]       # backward at bottom
+    if L > 2:
+        out[:, 1:-1, ...] = 0.5 * (slope[:, 1:, ...] + slope[:, :-1, ...])  # centered
+
+    if dim != 1:
+        inv = [0]*len(perm)
+        for i, j in enumerate(perm): inv[j] = i
+        out = out.permute(*inv)
+    return out
+
+
+
 
 class LitParadis(L.LightningModule):
     """Lightning module for Paradis model training."""
@@ -37,6 +97,8 @@ class LitParadis(L.LightningModule):
         self.model = Paradis(datamodule, cfg)
         self.cfg = cfg
         self.n_inputs = cfg.dataset.n_time_inputs
+        
+        
 
         if self.global_rank == 0:
             logging.info(
@@ -78,13 +140,16 @@ class LitParadis(L.LightningModule):
         # Initialize reordered weights tensor
         num_features = len(atmospheric_weights) * num_levels + len(surface_weights)
         var_loss_weights_reordered = torch.zeros(num_features, dtype=torch.float32)
-
+        
         # Reorder based on self.output_name_order
         for i, var in enumerate(self.output_name_order):
             # Get the variable name without the level
             var_name = re.sub(r"_h\d+$", "", var)
             if var_name in var_name_to_weight:
                 var_loss_weights_reordered[i] = var_name_to_weight[var_name]
+                
+        self.geopotential_idx, self.p_levels_hpa = find_geopotential_channels(self.output_name_order)
+        self.lambda_geopotential_dp = float(getattr(self.cfg.training.loss_function, "lambda_geopotential_dp", 0.0))
 
         # Initialize loss function with delta schedule parameters
         self.loss_fn = ParadisLoss(
@@ -335,8 +400,27 @@ class LitParadis(L.LightningModule):
         for step in range(num_steps):
             # Forward pass
             output_data = self(input_data[:, step])
+            
+            # Extract geopotential across levels -> (B, L, H, W)
+            phi_pred = output_data[:, self.geopotential_idx, ...]
+            phi_true = true_data[:, step][:, self.geopotential_idx, ...]
 
+            # Derivative along level axis (dim=1). Using hPa is fine (consistent units).
+            dphi_dp_pred = dphi_dp(phi_pred, self.p_levels_hpa, dim=1)
+            dphi_dp_true = dphi_dp(phi_true, self.p_levels_hpa, dim=1)
+            
+            lat_w  = self.loss_fn.lat_weights.view(1, 1, -1, 1).to(dphi_dp_pred.device, dphi_dp_pred.dtype)
+            lat_wn = lat_w / lat_w.mean()
+            diff = dphi_dp_pred - dphi_dp_true
+            grad_loss = (diff.abs() * lat_wn).mean()
+
+            # Base loss
             loss = self.loss_fn(output_data, true_data[:, step])
+
+            # Combine
+            # loss = (1-self.lambda_geopotential_dp) * base_loss + self.lambda_geopotential_dp * grad_loss
+
+            # loss = self.loss_fn(output_data, true_data[:, step])
 
             # Compute loss (data is already transformed by dataset)
             train_loss += loss
@@ -381,8 +465,27 @@ class LitParadis(L.LightningModule):
 
             # Forward pass
             output_data = self(input_data[:, step])
+            
+            # Extract geopotential across levels -> (B, L, H, W)
+            phi_pred = output_data[:, self.geopotential_idx, ...]
+            phi_true = true_data[:, step][:, self.geopotential_idx, ...]
 
+            # Derivative along level axis (dim=1). Using hPa is fine (consistent units).
+            dphi_dp_pred = dphi_dp(phi_pred, self.p_levels_hpa, dim=1)
+            dphi_dp_true = dphi_dp(phi_true, self.p_levels_hpa, dim=1)
+            
+            lat_w  = self.loss_fn.lat_weights.view(1, 1, -1, 1).to(dphi_dp_pred.device, dphi_dp_pred.dtype)
+            lat_wn = lat_w / lat_w.mean()
+            diff = dphi_dp_pred - dphi_dp_true
+            grad_loss = (diff.abs() * lat_wn).mean()
+            
+            # Base loss
             loss = self.loss_fn(output_data, true_data[:, step])
+
+            # Combine
+            # loss = (1-self.lambda_geopotential_dp)*base_loss + self.lambda_geopotential_dp * grad_loss
+
+            # loss = self.loss_fn(output_data, true_data[:, step])
 
             # Log requested scaled RMSE losses for validation
             report_loss += self._get_report_rmse(output_data, true_data[:, step])
