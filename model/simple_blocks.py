@@ -249,6 +249,76 @@ class NormedConv(nn.Module):
         return x
 
 
+## LowRankBias -- low-rank factorized bias operator
+class LowRankBias(nn.Module):
+    """
+    LowRankBias -- construct a low-rank factorized bias operator that reduces
+    the number of parameters while maintaining expressiveness through separable 
+    rank-K decomposition.
+    
+    Uses factors:
+    - A ∈ R^{C_in×K} (per-channel coefficients)  
+    - U ∈ R^{K×H} (latitudinal factors)
+    - V ∈ R^{K×W} (longitudinal factors)
+    
+    The bias map is computed as: y_c = ∑_{k=1}^K A_{ck} u_k v_k^T
+    With optional projection to output channels.
+    
+    Parameters: K*(C_in + H + W) vs C_in*H*W for GlobalBias
+    """
+    
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        *,
+        bias: bool = True,  # Not used (would be redundant)
+        kernel_size: int = 0,  # Not used
+        mesh_size: Tuple[int, int],  # required
+        rank: int = 8,  # K - rank of the factorization
+    ):
+        super().__init__()
+        
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.rank = rank
+        self.height, self.width = mesh_size
+        
+        # Factor matrices
+        self.A = nn.Parameter(torch.randn(input_dim, rank) * 0.01, requires_grad=True)
+        self.U = nn.Parameter(torch.randn(rank, self.height) * 0.01, requires_grad=True)  
+        self.V = nn.Parameter(torch.randn(rank, self.width) * 0.01, requires_grad=True)
+        
+        # Optional projection to output channels
+        if input_dim != output_dim:
+            self.projection = nn.Linear(input_dim, output_dim, bias=False)
+        else:
+            self.projection = None
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Compute Kronecker products z_k = v_k ⊗ u_k for each rank k
+        # Stack into Z ∈ R^{HW×K}
+        Z = torch.zeros(self.height * self.width, self.rank, device=x.device, dtype=x.dtype)
+        for k in range(self.rank):
+            z_k = torch.kron(self.V[k], self.U[k])  # v_k ⊗ u_k
+            Z[:, k] = z_k
+        
+        # Compute bias maps Y = A Z^T ∈ R^{C_in×HW}
+        Y = torch.mm(self.A, Z.t())  # Shape: (input_dim, height*width)
+        
+        # Reshape to spatial form
+        bias_maps = Y.view(self.input_dim, self.height, self.width)
+        
+        # Apply projection if needed
+        if self.projection is not None:
+            # Project using einsum: y_out[o,i,j] = ∑_c W_proj[o,c] * bias_maps[c,i,j]
+            bias_maps = torch.einsum("oc,chw->ohw", self.projection.weight, bias_maps)
+        
+        # Add bias to input
+        x = x + bias_maps
+        return x
+
+
 ## GlobalBias -- learned bias operator
 class GlobalBias(nn.Module):
     """

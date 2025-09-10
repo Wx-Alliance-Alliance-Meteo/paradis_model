@@ -118,15 +118,15 @@ class GMBlock(nn.Sequential):
             blocks.append((layer_name, layer_obj))
 
             if idx == 0 and bias_channels > 0:  # Add optional bias after first layer
-                # The GlobalBias block is constructed a bit specially, where input_dim refers to the fundamental
-                # number of bias channels rather than the size of (x) given to .forward(x).  When invoked, GlobalBias
+                # The Bias block is constructed a bit specially, where input_dim refers to the fundamental
+                # number of bias channels rather than the size of (x) given to .forward(x).  When invoked,
                 # just adds the bias factor to (x), so #channels(x) == output_dim.  The construction used here effectively
                 # acts like appending #bias channels to the input, then expanding the first (input) layer to input_dim+bias_channels.
 
                 blocks.append(
                     (
-                        f"0-GlobalBias",
-                        model.simple_blocks.GlobalBias(
+                        f"0-LowRankBias",
+                        model.simple_blocks.LowRankBias(
                             input_dim=bias_channels,
                             output_dim=layer_out_size,
                             mesh_size=mesh_size,
