@@ -150,6 +150,9 @@ class LitParadis(L.LightningModule):
                 
         self.geopotential_idx, self.p_levels_hpa = find_geopotential_channels(self.output_name_order)
         self.lambda_geopotential_dp = float(getattr(self.cfg.training.loss_function, "lambda_geopotential_dp", 0.0))
+        val = getattr(self.cfg.training.loss_function, "lambda_geopotential_dp_warmup_frac", None)
+        if val is not None:
+            self.lambda_geopotential_dp_warmup_frac = float(val)  # only set if provided
 
         # Initialize loss function with delta schedule parameters
         self.loss_fn = ParadisLoss(
@@ -415,12 +418,18 @@ class LitParadis(L.LightningModule):
             grad_loss = (diff.abs() * lat_wn).mean()
 
             # Base loss
-            loss = self.loss_fn(output_data, true_data[:, step])
+            base_loss = self.loss_fn(output_data, true_data[:, step])
+            # warmup for lambda
+            if hasattr(self, "lambda_geopotential_dp_warmup_frac"):
+                total = max(1, int(self.trainer.estimated_stepping_batches))
+                r = min(1.0, self.trainer.global_step / (self.lambda_geopotential_dp_warmup_frac * total))
+                lam = self.lambda_geopotential_dp * r
+            else:
+                lam = self.lambda_geopotential_dp
 
-            # Combine
-            # loss = (1-self.lambda_geopotential_dp) * base_loss + self.lambda_geopotential_dp * grad_loss
+            # -------- combine additively --------
+            loss = base_loss + lam * grad_loss
 
-            # loss = self.loss_fn(output_data, true_data[:, step])
 
             # Compute loss (data is already transformed by dataset)
             train_loss += loss
@@ -480,12 +489,18 @@ class LitParadis(L.LightningModule):
             grad_loss = (diff.abs() * lat_wn).mean()
             
             # Base loss
-            loss = self.loss_fn(output_data, true_data[:, step])
+            base_loss = self.loss_fn(output_data, true_data[:, step])
 
-            # Combine
-            # loss = (1-self.lambda_geopotential_dp)*base_loss + self.lambda_geopotential_dp * grad_loss
+            # warmup for lambda
+            if hasattr(self, "lambda_geopotential_dp_warmup_frac"):
+                total = max(1, int(self.trainer.estimated_stepping_batches))
+                r = min(1.0, self.trainer.global_step / (self.lambda_geopotential_dp_warmup_frac * total))
+                lam = self.lambda_geopotential_dp * r
+            else:
+                lam = self.lambda_geopotential_dp
 
-            # loss = self.loss_fn(output_data, true_data[:, step])
+            # -------- combine additively --------
+            loss = base_loss + lam * grad_loss
 
             # Log requested scaled RMSE losses for validation
             report_loss += self._get_report_rmse(output_data, true_data[:, step])

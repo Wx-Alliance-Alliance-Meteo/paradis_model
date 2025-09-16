@@ -90,8 +90,8 @@ training:
     type: "reversed_huber"                    # mse or reversed_huber loss function
     delta_loss: 1.0                # Threshold parameter for huber loss
     lat_weights: false             # Integrate loss with spherical metrics
-    lambda_geopotential_dp: 0.1   # Set 0 to turn off penalty for hydrostatic balance
-    
+    lambda_geopotential_dp: 0.1    # Set 0 to turn off penalty for hydrostatic balance
+    lambda_geopotential_dp_warmup_frac: 0.3 
   # Scheduler configuration - Choose ONE of the following scheduler types by
   # setting enable to true in the appropriate section:
 
