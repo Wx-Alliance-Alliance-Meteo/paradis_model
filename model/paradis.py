@@ -24,7 +24,10 @@ class NeuralSemiLagrangian(nn.Module):
         super().__init__()
 
         # For cubic interpolation
-        self.padding = 2
+        self.padding = 1
+        if interpolation == "bicubic":
+            self.padding = 2
+
         self.padding_interp = GeoCyclicPadding(self.padding)
         self.hidden_dim = hidden_dim
 
@@ -65,8 +68,12 @@ class NeuralSemiLagrangian(nn.Module):
         H, W = mesh_size
 
         # Store for later use
-        self.register_buffer("lat_grid", lat_grid.unsqueeze(0).unsqueeze(0))
-        self.register_buffer("lon_grid", lon_grid.unsqueeze(0).unsqueeze(0))
+        self.register_buffer(
+            "lat_grid", lat_grid.unsqueeze(0).unsqueeze(0).contiguous().clone()
+        )
+        self.register_buffer(
+            "lon_grid", lon_grid.unsqueeze(0).unsqueeze(0).contiguous().clone()
+        )
 
         # Buffers: normalization constants
         self.register_buffer("Hf", torch.tensor(float(H)))
@@ -434,28 +441,22 @@ class Paradis(nn.Module):
             bias_channels=bias_channels,
         )
 
+    def _step(self, z, i):
+        # Lie with RK2 on diffusion and reaction layers
+        zadv = self.advection[i](z, self.dt)
+        k1 = self.diffusion[i](zadv) + self.reaction[i](zadv)
+        zmid = zadv + 0.5 * self.dt * k1
+        k2 = self.diffusion[i](zmid) + self.reaction[i](zmid)
+        return zadv + self.dt * k2
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-
-        # No gradients on lat/lon, ever
-        x_static = x[:, self.dynamic_channels :].detach()
-
         # Project features to latent space
         z = self.input_proj(x)
+        z0 = z.clone()
 
-        # Compute advection and diffusion-reaction
         # Compute advection and diffusion-reaction
         for i in range(self.num_layers):
-            # Advect the features in latent space using a Semi-Lagrangian step
-            dz_adv = self.advection[i](z, self.dt)
-
-            # Compute the diffusion residual
-            dz_diffusion = self.diffusion[i](z)
-
-            # Compute the reaction residual
-            dz_reaction = self.reaction[i](z)
-
-            # Update the latent space features
-            z = z + (dz_adv + dz_diffusion + dz_reaction) * self.dt
+            z = self._step(z, i)
 
         # Return a scaled residual formulation
         return x[
@@ -463,4 +464,4 @@ class Paradis(nn.Module):
             (self.n_inputs - 1)
             * self.num_common_features : self.n_inputs
             * self.num_common_features,
-        ] + self.output_proj(z)
+        ] + self.output_proj(z - z0)
