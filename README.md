@@ -42,3 +42,9 @@ This project draws significant inspiration from the paper ["Advection Augmented 
 
 The Geocyclic Padding method is inspired from the paper ["Karina: An efficient deep learning model for global weather forecast"](https://arxiv.org/abs/2403.10555) by
 Minjong Cheon, Yo-Hwan Choi, Seon-Yu Kang, Yumi Choi, Jeong-Gil Lee and Daehyun Kang.
+
+#### Attention version 1
+
+This version will include an input projection layer that will use Attention mecanisme to provide global information to the advective layer. 
+However other version will explore alternative way to incorporate attention, namely in the advective network, the diffusion-reaction network 
+and the decoding layer.  
