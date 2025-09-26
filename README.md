@@ -47,4 +47,4 @@ Minjong Cheon, Yo-Hwan Choi, Seon-Yu Kang, Yumi Choi, Jeong-Gil Lee and Daehyun 
 
 This version will include an input projection layer that will use Attention mecanisme to provide global information to the advective layer. 
 However other version will explore alternative way to incorporate attention, namely in the advective network, the diffusion-reaction network 
-and the decoding layer.  
+and the decoding layer.
