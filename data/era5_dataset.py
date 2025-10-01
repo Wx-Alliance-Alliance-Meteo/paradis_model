@@ -88,6 +88,9 @@ class ERA5Dataset(torch.utils.data.Dataset):
             time_interval = int(time_interval[:-1])
 
         self.interval_steps = time_interval // time_resolution
+        self.prediction_shift = (
+            int(cfg.dataset.prediction_delta[:-1]) // time_resolution - 1
+        ) * self.interval_steps
 
         # Get the number of additional time instances needed in data for autoregression
         hours = time_resolution * self.forecast_steps
@@ -105,10 +108,14 @@ class ERA5Dataset(torch.utils.data.Dataset):
                 end_date += "T23:59:59"
 
             end_date_dt = numpy.datetime64(end_date)
-            adjusted_end_date = end_date_dt + time_delta * self.interval_steps
+            adjusted_end_date = end_date_dt + time_delta * (
+                self.interval_steps + self.prediction_shift
+            )
         else:
             start_date_dt = numpy.datetime64(start_date)
-            adjusted_end_date = start_date_dt + time_delta * self.interval_steps
+            adjusted_end_date = start_date_dt + time_delta * (
+                self.interval_steps + self.prediction_shift
+            )
 
         # Select the time range needed to process this dataset
         ds = ds.sel(time=slice(adjusted_start_date, adjusted_end_date))
@@ -274,7 +281,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         # is no future data
         return (
             self.length - self.forecast_steps - (self.n_time_inputs - 1)
-        ) // self.interval_steps
+        ) // self.interval_steps - self.prediction_shift
 
     def __getitem__(self, ind: int):
         ind = ind * self.interval_steps
@@ -287,8 +294,9 @@ class ERA5Dataset(torch.utils.data.Dataset):
         input_end = input_ini + steps + self.n_time_inputs - 1
         input_data = self.ds_input.isel(time=slice(input_ini, input_end))
 
-        output_ini = input_ini + self.n_time_inputs
-        output_end = ind + steps + self.n_time_inputs
+        output_ini = input_ini + self.n_time_inputs + self.prediction_shift
+        output_end = ind + steps + self.n_time_inputs + self.prediction_shift
+
         true_data = self.ds_output.isel(time=slice(output_ini, output_end))
 
         # Load arrays into CPU memory

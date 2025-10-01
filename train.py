@@ -46,7 +46,7 @@ def main(cfg: DictConfig):
         gradient_clip_algorithm="norm",
         log_every_n_steps=cfg.training.log_every_n_steps,
         callbacks=callbacks,
-        precision="16-mixed" if cfg.compute.use_amp else "32-true",
+        precision="bf16-mixed" if cfg.compute.use_amp else "32-true",
         enable_progress_bar=cfg.training.progress_bar and not cfg.training.print_losses,
         enable_model_summary=True,
         logger=True,

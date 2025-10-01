@@ -33,8 +33,11 @@ class LitParadis(L.LightningModule):
         super().__init__()
 
         # Instantiate the model
+        self.min_dt = 1e10
         self.datamodule = datamodule
-        self.model = Paradis(datamodule, cfg)
+        lat_grid = datamodule.dataset.lat_rad_grid
+        lon_grid = datamodule.dataset.lon_rad_grid
+        self.model = Paradis(datamodule, cfg, lat_grid, lon_grid)
         self.cfg = cfg
         self.n_inputs = cfg.dataset.n_time_inputs
 
@@ -475,8 +478,17 @@ class LitParadis(L.LightningModule):
 
         # After the optimzier step, comptue and log how long the step took
         toc = datetime.datetime.now()
+        dt = (toc - self.tic).total_seconds()
         self.log(
             "dt",
-            (toc - self.tic).total_seconds(),
+            dt,
+            on_step=True,
+        )
+
+        # Keep track of the minimum time
+        self.min_dt = min(dt, self.min_dt)
+        self.log(
+            "min_dt",
+            self.min_dt,
             on_step=True,
         )

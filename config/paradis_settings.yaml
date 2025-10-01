@@ -8,6 +8,7 @@ model:
   bias_channels: 4                 # Number of bias channels
   velocity_vectors: 84             # Number of velocity layers (if latent_multiplier is -1)
   diffusion_size: 672              # Latent size for the diffusion operator
+  reaction_size: 672               # Latent size for the reaction operator
   adv_interpolation: bicubic       # Choose between bilinear or bicubic
 
 # Initialization settings (seeding)
@@ -22,6 +23,7 @@ dataset:
   time_resolution: 6h              # Dataset original resolution
   n_time_inputs: 2                 # Number inputs (For example, n_time_inputs: 2 feeds [tn-1, tn])
   sampling_interval: 6h            # Sample dataset feeds at this time interval
+  prediction_delta: 6h             # Prediction will be done at t+prediction_delta
 
 normalization:
   standard: False                  # (True = z-score normalization to all variables, False = custom norms)
@@ -129,7 +131,6 @@ training:
       mean_sea_level_pressure: 1.0
       surface_pressure: 1.0
       total_column_water: 1.0
-      total_precipitation_6hr: 1.0
 
   reports:
     enable: true
@@ -169,7 +170,6 @@ features:
       - mean_sea_level_pressure
       - surface_pressure
       - total_column_water
-      - total_precipitation_6hr
 
   input:
     atmospheric: ${features.base.atmospheric}
@@ -186,6 +186,9 @@ features:
       - slope_of_sub_gridscale_orography
       - standard_deviation_of_orography
       - lon_spacing
+      - cos_latitude
+      - cos_longitude
+      - sin_longitude
       - latitude
       - longitude
 
