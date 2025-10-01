@@ -8,9 +8,8 @@ model:
   bias_channels: 4                 # Number of bias channels
   velocity_vectors: 84             # Number of velocity layers (if latent_multiplier is -1)
   diffusion_size: 672              # Latent size for the diffusion operator
-  reaction_size: 672
+  reaction_size: 672               # Latent size for the reaction operator
   adv_interpolation: bicubic       # Choose between bilinear or bicubic
-  angular: false                   # Whether to use angular or cartesian velocities in network
 
 # Initialization settings (seeding)
 init:
@@ -132,7 +131,6 @@ training:
       mean_sea_level_pressure: 1.0
       surface_pressure: 1.0
       total_column_water: 1.0
-      total_precipitation_6hr: 1.0
 
   reports:
     enable: true
@@ -172,7 +170,6 @@ features:
       - mean_sea_level_pressure
       - surface_pressure
       - total_column_water
-      - total_precipitation_6hr
 
   input:
     atmospheric: ${features.base.atmospheric}
