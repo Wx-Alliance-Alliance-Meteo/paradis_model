@@ -2,6 +2,7 @@
 checkpoints/
 outputs/
 logs*/
+tmp/
 *.fst
 
 # Byte-compiled / optimized / DLL files

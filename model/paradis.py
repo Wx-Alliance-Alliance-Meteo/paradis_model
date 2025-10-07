@@ -294,7 +294,7 @@ class Paradis(nn.Module):
 
         # Project features to latent space
         z = self.input_proj(x)
-
+        
         # Compute advection and diffusion-reaction
         for i in range(self.num_layers):
             # Advect the features in latent space using a Semi-Lagrangian step

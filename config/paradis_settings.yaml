@@ -18,7 +18,7 @@ init:
 
 # Input dataset
 dataset:
-  root_dir: /path/to/dataset/
+  root_dir: /home/cap003/hall6/weatherbench_paradis/era5_5.625deg_13level_compressed
   time_resolution: 6h              # Dataset original resolution
   n_time_inputs: 2                 # Number inputs (For example, n_time_inputs: 2 feeds [tn-1, tn])
   sampling_interval: 6h            # Sample dataset feeds at this time interval
@@ -39,7 +39,7 @@ compute:
 # Forecast parameters
 forecast:
   enable: false                    # Set model to forecast mode
-  start_date: 2019-12-31           # Time to generate forecast from (YYYY-MM-DD) or (YYYY-MM-DDTHH:MM:SS)
+  start_date: 1990-12-31           # Time to generate forecast from (YYYY-MM-DD) or (YYYY-MM-DDTHH:MM:SS)
   end_date: null                   # OPTIONAL, for validation purposes (YYYY-MM-DD) or null
   output_frequency: 1              # Store to file every output_frequency forecast steps
   generate_plots: false            # Generate a plot for each time instance
@@ -47,7 +47,7 @@ forecast:
 
 # Training parameters
 training:
-  max_epochs: -1                   # Maximum number of epochs the training is allowed (-1 to disable and use steps)
+  max_epochs: 6                   # Maximum number of epochs the training is allowed (-1 to disable and use steps)
   max_steps: -1                    # Maximum number of steps to use for training (-1 to disable and use epochs)
   progress_bar: true               # Enable progress bar
   gradient_clip_val: null          # Gradient clipping value, set to null to disable
@@ -57,12 +57,12 @@ training:
 
   dataset:
     start_date: 2010-01-01         # Start date for the training dataset (YYYY-MM-DD)
-    end_date: 2019-12-31           # End date for the training dataset (YYYY-MM-DD)
+    end_date: 2012-12-31           # End date for the training dataset (YYYY-MM-DD)
     preload: false                 # If true, load the full dataset from disk into memory to speed training
 
   validation_dataset:
-    start_date: 2008-01-01         # Start date for the validation dataset (YYYY-MM-DD)
-    end_date: 2009-12-31           # End date for the validation dataset (YYYY-MM-DD)
+    start_date: 2020-01-01         # Start date for the validation dataset (YYYY-MM-DD)
+    end_date: 2020-12-31           # End date for the validation dataset (YYYY-MM-DD)
     preload: false                 # If true, load the full dataset from disk into memory to speed validation
     validation_every_n_steps: null # Run validation every N steps (null once per epoch)
     validation_batches: null       # If non-null, use N batches rather than all for validation (0 disables val)
@@ -78,7 +78,7 @@ training:
     patience: 8                    # Number of epochs with no improvement after which training will stop
 
   loss_function:
-    type: "reversed_huber"                    # mse or reversed_huber loss function
+    type: "reversed_huber"         # mse or reversed_huber loss function
     delta_loss: 1.0                # Threshold parameter for huber loss
     lat_weights: false             # Integrate loss with spherical metrics
 
