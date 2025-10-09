@@ -148,7 +148,9 @@ that the difference in not significant. If the box is red it means that the expe
 
 Inspecting the figures, the experiment has a better bias overall than the control.
 
+Though the above steps are done with PARADIS 5 degree inference files, these remain the same for other resolutions.
 
+`zarrtofst.py` could be improved (using python multi-processing, for example) to make the conversion from zarr to FST faster.
 
 Documentation about ARCAD,
 
