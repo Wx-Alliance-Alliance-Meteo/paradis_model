@@ -1,9 +1,12 @@
+import copy
 import torch 
 import torch.nn as nn
-from   scipy                  import ndimage
+
 from   torch.nn.modules.utils import _pair
 from   torch.nn               import CrossEntropyLoss, Dropout, Softmax, Linear, Conv2d, LayerNorm
-  
+from   scipy                  import ndimage
+
+
 class Attention(nn.Module):
     def __init__(self, config, vis):
         super(Attention, self).__init__()
@@ -95,11 +98,13 @@ class Block(nn.Module):
         return x, weights
 
 class Embeddings(nn.Module):
-    def __init__(self, config, img_size, in_channels=3):
+    def __init__(self, config, img_size=(32,64), in_channels=672):
+        #z.shape ~ something like [32, 672, 32, 64]
         super(Embeddings, self).__init__()
         self.hybrid = None
         self.config = config
-        img_size    = _pair(img_size)
+        # img_size    = _pair(img_size)
+        img_size    = img_size
 
         if config.patches.get("grid") is not None:   # ResNet
             grid_size       = config.patches["grid"]
@@ -112,9 +117,9 @@ class Embeddings(nn.Module):
             n_patches   = (img_size[0] // patch_size[0]) * (img_size[1] // patch_size[1])
             self.hybrid = False
 
-        if self.hybrid:
-            self.hybrid_model    = ResNetV2(block_units=config.resnet.num_layers, width_factor=config.resnet.width_factor)
-            in_channels          = self.hybrid_model.width * 16
+        # if self.hybrid:
+        #     self.hybrid_model    = ResNetV2(block_units=config.resnet.num_layers, width_factor=config.resnet.width_factor)
+        #     in_channels          = self.hybrid_model.width * 16
         self.patch_embeddings    = Conv2d(in_channels=in_channels,out_channels=config.hidden_size,kernel_size=patch_size,stride=patch_size)
         self.position_embeddings = nn.Parameter(torch.zeros(1, n_patches, config.hidden_size))
         self.dropout             = Dropout(config.transformer["dropout_rate"])
@@ -238,23 +243,29 @@ class SegmentationHead(nn.Sequential):
         upsampling = nn.UpsamplingBilinear2d(scale_factor=upsampling) if upsampling > 1 else nn.Identity()
         super().__init__(conv2d, upsampling)
 
+
+
 class VisionTransformer(nn.Module):
     def __init__(self, config, img_size=224, num_classes=21843, zero_head=False, vis=False):
         super(VisionTransformer, self).__init__()
-        #self.num_classes = num_classes
-        self.zero_head   = zero_head
-        #self.classifier  = config.classifier
+        self.num_classes = num_classes
+        self.zero_head = zero_head
+        self.classifier = config.classifier
         self.transformer = Transformer(config, img_size, vis)
-        self.decoder     = DecoderCup(config)
-        #self.segmentation_head = SegmentationHead(in_channels=config['decoder_channels'][-1],out_channels=config['n_classes'],kernel_size=3,)
-        self.config            = config
+        self.decoder = DecoderCup(config)
+        self.segmentation_head = SegmentationHead(
+            in_channels=config['decoder_channels'][-1],
+            out_channels=config['n_classes'],
+            kernel_size=3,
+        )
+        self.config = config
 
     def forward(self, x):
         if x.size()[1] == 1:
             x = x.repeat(1,3,1,1)
         x, attn_weights, features = self.transformer(x)  # (B, n_patch, hidden)
         x = self.decoder(x, features)
-        # logits = self.segmentation_head(x)
+        logits = self.segmentation_head(x)
         return logits
 
     def load_from(self, weights):
@@ -268,8 +279,8 @@ class VisionTransformer(nn.Module):
             self.transformer.encoder.encoder_norm.bias.copy_(np2th(weights["Transformer/encoder_norm/bias"]))
 
             posemb = np2th(weights["Transformer/posembed_input/pos_embedding"])
-            posemb_new = self.transformer.embeddings.position_embeddings
 
+            posemb_new = self.transformer.embeddings.position_embeddings
             if posemb.size() == posemb_new.size():
                 self.transformer.embeddings.position_embeddings.copy_(posemb)
             elif posemb.size()[1]-1 == posemb_new.size()[1]:
@@ -284,10 +295,10 @@ class VisionTransformer(nn.Module):
                 gs_new = int(np.sqrt(ntok_new))
                 print('load_pretrained: grid-size from %s to %s' % (gs_old, gs_new))
                 posemb_grid = posemb_grid.reshape(gs_old, gs_old, -1)
-                zoom = (gs_new / gs_old, gs_new / gs_old, 1)
+                zoom        = (gs_new / gs_old, gs_new / gs_old, 1)
                 posemb_grid = ndimage.zoom(posemb_grid, zoom, order=1)  # th2np
                 posemb_grid = posemb_grid.reshape(1, gs_new * gs_new, -1)
-                posemb = posemb_grid
+                posemb      = posemb_grid
                 self.transformer.embeddings.position_embeddings.copy_(np2th(posemb))
 
             # Encoder whole
@@ -305,3 +316,82 @@ class VisionTransformer(nn.Module):
                 for bname, block in self.transformer.embeddings.hybrid_model.body.named_children():
                     for uname, unit in block.named_children():
                         unit.load_from(res_weight, n_block=bname, n_unit=uname)
+
+
+class Cnn_Vit_Hybrid_Embeddings(nn.Module):
+    def __init__(self, config, img_size=(32,64), in_channels=672):
+        super().__init__()
+        self.config     = config
+        out_channels    = config.hidden_size
+        grid_size       = config.patches["grid"]
+
+        patch_size      = (img_size[0] // 16 // grid_size[0]  , img_size[1] // 16 // grid_size[1])
+        patch_size_real = (patch_size[0] * 16, patch_size[1]  * 16)
+        n_patches       = (img_size[0] // patch_size_real[0]) * (img_size[1] // patch_size_real[1])  
+   
+        self.patch_embeddings    = Conv2d(in_channels =in_channels,
+                                          out_channels=out_channels,
+                                          kernel_size =patch_size,
+                                          stride      =patch_size)
+        self.position_embeddings = nn.Parameter(torch.zeros(1, n_patches, out_channels))
+        self.dropout             = Dropout(config.transformer["dropout_rate"])
+
+    def forward(self, x):
+        x = self.patch_embeddings(x)                       # (B, hidden, n_patches[0], n_patches[1])
+        x = x.flatten(2)
+        x = x.transpose(-1, -2)                            # (B, n_patches[0], hidden)
+        embeddings = x + self.position_embeddings
+        embeddings = self.dropout(embeddings)
+        return embeddings, x
+
+class Cnn_Vit_Hybrid_Encoder(nn.Module):
+    def __init__(self, config, vis):
+        super().__init__()
+        self.vis = vis
+        self.layer = nn.ModuleList()
+        self.encoder_norm = LayerNorm(config.hidden_size, eps=1e-6)
+        for _ in range(config.transformer["num_layers"]):
+            layer = Block(config, vis)
+            self.layer.append(copy.deepcopy(layer))
+
+    def forward(self, hidden_states):
+        attn_weights = []
+        for layer_block in self.layer:
+            hidden_states, weights = layer_block(hidden_states)
+            if self.vis:
+                attn_weights.append(weights)
+        encoded = self.encoder_norm(hidden_states)
+        return encoded, attn_weights
+
+class Cnn_Vit_Hybrid_Up_Sampler(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config      = config
+        # self.conv_more   = Conv2dReLU(config.hidden_size,head_channels,kernel_size=3,padding=1,use_batchnorm=True,)
+        decoder_channels = config.decoder_channels
+        head_channels    = config.head_channels
+
+        in_channels      = [head_channels] + list(decoder_channels[:-1])
+        out_channels     = decoder_channels
+        skip_channels    = [0,0,0,0]
+        if self.config.n_skip != 0:
+            skip_channels = self.config.skip_channels
+            for i in range(4-self.config.n_skip):
+                skip_channels[3-i]=0
+
+        blocks = [DecoderBlock(in_ch, out_ch, sk_ch) for in_ch, out_ch, sk_ch in zip(in_channels, out_channels, skip_channels)]
+        self.blocks = nn.ModuleList(blocks)
+
+    def forward(self, hidden_states, features=None):
+        B, n_patch, hidden = hidden_states.size()  # reshape from (B, n_patch, hidden) to (B, h, w, hidden)
+        h, w = int(np.sqrt(n_patch)), int(np.sqrt(n_patch))
+        x = hidden_states.permute(0, 2, 1)
+        x = x.contiguous().view(B, hidden, h, w)
+        # x = self.conv_more(x)
+        for i, decoder_block in enumerate(self.blocks):
+            if features is not None:
+                skip = features[i] if (i < self.config.n_skip) else None
+            else:
+                skip = None
+            x = decoder_block(x, skip=skip)
+        return x

@@ -5,7 +5,10 @@ from torch import nn
 
 from model.padding import GeoCyclicPadding
 from model.gmblock import GMBlock
-
+#################################################
+# from model.attentionblock import Cnn_Vit_Hybrid_Encoder  as HCV_Encoder
+# from model.attentionblock import Cnn_Vit_Hybrid_psampler as HCV_Upsampler
+#################################################
 
 class NeuralSemiLagrangian(nn.Module):
     """Implements the semi-Lagrangian advection."""
@@ -193,6 +196,7 @@ class Paradis(nn.Module):
     def __init__(self, datamodule, cfg):
         super().__init__()
 
+      
         # Extract dimensions from config
         output_dim = datamodule.num_out_features
         mesh_size = (datamodule.lat_size, datamodule.lon_size)
@@ -283,6 +287,13 @@ class Paradis(nn.Module):
             bias_channels=bias_channels,
         )
 
+        #################################################
+        #self.global_features = HCV_Encoder(..................)
+        #self.up_sampling     = HCV_Upsampler(..................)
+        #################################################
+
+
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         # No gradients on lat/lon, ever
@@ -294,7 +305,13 @@ class Paradis(nn.Module):
 
         # Project features to latent space
         z = self.input_proj(x)
-        
+        #################################################
+        #print('z.shape:', z.shape)
+        #       z.shape ~ something like [32, 672, 32, 64]
+        # global_z = self.global_features(z)
+        # z        = self.up_sampling(global_z,z)
+        #################################################
+
         # Compute advection and diffusion-reaction
         for i in range(self.num_layers):
             # Advect the features in latent space using a Semi-Lagrangian step

@@ -53,6 +53,7 @@ def main(cfg: DictConfig):
         val_check_interval=cfg.training.validation_dataset.validation_every_n_steps,
         limit_val_batches=cfg.training.validation_dataset.validation_batches,
         enable_checkpointing=cfg.training.checkpointing.enabled,
+        num_sanity_val_steps=0
     )
 
     # Keep track of configuration parameters in logging directory

@@ -47,7 +47,7 @@ forecast:
 
 # Training parameters
 training:
-  max_epochs: 6                   # Maximum number of epochs the training is allowed (-1 to disable and use steps)
+  max_epochs: 2                   # Maximum number of epochs the training is allowed (-1 to disable and use steps)
   max_steps: -1                    # Maximum number of steps to use for training (-1 to disable and use epochs)
   progress_bar: true               # Enable progress bar
   gradient_clip_val: null          # Gradient clipping value, set to null to disable
