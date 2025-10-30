@@ -6,8 +6,9 @@ from torch import nn
 from model.padding import GeoCyclicPadding
 from model.gmblock import GMBlock
 #################################################
-# from model.attentionblock import Cnn_Vit_Hybrid_Encoder  as HCV_Encoder
-# from model.attentionblock import Cnn_Vit_Hybrid_psampler as HCV_Upsampler
+from model.attentionblock import Paradis_Hybrid_Transformer as ParaHTrans
+from model.attentionblock import get_cvh_Ix16_config        as CTHconfig
+
 #################################################
 
 class NeuralSemiLagrangian(nn.Module):
@@ -210,6 +211,9 @@ class Paradis(nn.Module):
         # Get the number of time inputs
         self.n_inputs = datamodule.dataset.n_time_inputs
 
+        config=CTHconfig()
+        self.proj_layer_attention = ParaHTrans(config=config, img_size=(32,64),vis=True)
+
         # Specify hidden dimension based on multiplier or fixed size,
         # following configuration file
         if cfg.model.latent_multiplier > 0:
@@ -305,10 +309,12 @@ class Paradis(nn.Module):
 
         # Project features to latent space
         z = self.input_proj(x)
+        z_ = z
         #################################################
-        #print('z.shape:', z.shape)
+        print('z_.shape:', z_.shape)
         #       z.shape ~ something like [32, 672, 32, 64]
-        # global_z = self.global_features(z)
+        global_z = self.proj_layer_attention(z_)
+        print('global_z.shape:', global_z.shape)
         # z        = self.up_sampling(global_z,z)
         #################################################
 

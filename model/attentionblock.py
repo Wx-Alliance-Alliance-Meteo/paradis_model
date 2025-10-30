@@ -1,11 +1,90 @@
-import copy
 import torch 
 import torch.nn as nn
-
 from   torch.nn.modules.utils import _pair
 from   torch.nn               import CrossEntropyLoss, Dropout, Softmax, Linear, Conv2d, LayerNorm
 from   scipy                  import ndimage
 
+import ml_collections
+# from __future__ import absolute_import
+# from __future__ import division
+# from __future__ import print_function
+
+import copy
+import logging
+import math
+from os.path import join as pjoin
+import numpy as np
+
+
+
+ATTENTION_Q = "MultiHeadDotProductAttention_1/query"
+ATTENTION_K = "MultiHeadDotProductAttention_1/key"
+ATTENTION_V = "MultiHeadDotProductAttention_1/value"
+ATTENTION_OUT = "MultiHeadDotProductAttention_1/out"
+FC_0 = "MlpBlock_3/Dense_0"
+FC_1 = "MlpBlock_3/Dense_1"
+ATTENTION_NORM = "LayerNorm_0"
+MLP_NORM = "LayerNorm_2"
+
+def np2th(weights, conv=False):
+    """Possibly convert HWIO to OIHW."""
+    if conv:
+        weights = weights.transpose([3, 2, 0, 1])
+    return torch.from_numpy(weights)
+
+def swish(x):
+    return x * torch.sigmoid(x)
+
+ACT2FN = {"gelu": torch.nn.functional.gelu, "relu": torch.nn.functional.relu, "swish": swish}
+
+
+def get_cvh_Ix16_config():
+    """"""
+    config                        = ml_collections.ConfigDict()
+    config.patches                = ml_collections.ConfigDict({'grid': (1, 1)})
+    config.hidden_size            = 672*16
+    config.transformer            = ml_collections.ConfigDict()
+    config.transformer.mlp_dim    = 3072
+    config.transformer.num_heads  = 12
+    config.transformer.num_layers = 2
+    config.head_channels          = 512
+    config.transformer.attention_dropout_rate = 0.0
+    config.transformer.dropout_rate           = 0.1
+    config.classifier                         = None
+    config.representation_size                = None
+    config.resnet_pretrained_path             = None
+    config.pretrained_path                    = None
+    config.patch_size                         = 16
+    config.decoder_channels                   = (256, 128, 64, 16)
+    config.n_skip                             = 1
+    config.skip_channels                      = (2,2,2,2)
+    config.n_classes                          = None
+    config.activation                         = 'softmax'
+    return config
+
+class Conv2dReLU(nn.Sequential):
+    def __init__(
+            self,
+            in_channels,
+            out_channels,
+            kernel_size,
+            padding=0,
+            stride=1,
+            use_batchnorm=True,
+    ):
+        conv = nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride=stride,
+            padding=padding,
+            bias=not (use_batchnorm),
+        )
+        relu = nn.ReLU(inplace=True)
+
+        bn = nn.BatchNorm2d(out_channels)
+
+        super(Conv2dReLU, self).__init__(conv, bn, relu)
 
 class Attention(nn.Module):
     def __init__(self, config, vis):
@@ -243,8 +322,6 @@ class SegmentationHead(nn.Sequential):
         upsampling = nn.UpsamplingBilinear2d(scale_factor=upsampling) if upsampling > 1 else nn.Identity()
         super().__init__(conv2d, upsampling)
 
-
-
 class VisionTransformer(nn.Module):
     def __init__(self, config, img_size=224, num_classes=21843, zero_head=False, vis=False):
         super(VisionTransformer, self).__init__()
@@ -318,6 +395,9 @@ class VisionTransformer(nn.Module):
                         unit.load_from(res_weight, n_block=bname, n_unit=uname)
 
 
+######################################################################Our version 
+
+
 class Cnn_Vit_Hybrid_Embeddings(nn.Module):
     def __init__(self, config, img_size=(32,64), in_channels=672):
         super().__init__()
@@ -329,6 +409,7 @@ class Cnn_Vit_Hybrid_Embeddings(nn.Module):
         patch_size_real = (patch_size[0] * 16, patch_size[1]  * 16)
         n_patches       = (img_size[0] // patch_size_real[0]) * (img_size[1] // patch_size_real[1])  
    
+        
         self.patch_embeddings    = Conv2d(in_channels =in_channels,
                                           out_channels=out_channels,
                                           kernel_size =patch_size,
@@ -364,12 +445,14 @@ class Cnn_Vit_Hybrid_Encoder(nn.Module):
         return encoded, attn_weights
 
 class Cnn_Vit_Hybrid_Up_Sampler(nn.Module):
+    
     def __init__(self, config):
         super().__init__()
         self.config      = config
-        # self.conv_more   = Conv2dReLU(config.hidden_size,head_channels,kernel_size=3,padding=1,use_batchnorm=True,)
-        decoder_channels = config.decoder_channels
         head_channels    = config.head_channels
+        decoder_channels = config.decoder_channels
+
+        self.conv_more   = Conv2dReLU(config.hidden_size,head_channels,kernel_size=3,padding=1,use_batchnorm=True,)
 
         in_channels      = [head_channels] + list(decoder_channels[:-1])
         out_channels     = decoder_channels
@@ -387,7 +470,7 @@ class Cnn_Vit_Hybrid_Up_Sampler(nn.Module):
         h, w = int(np.sqrt(n_patch)), int(np.sqrt(n_patch))
         x = hidden_states.permute(0, 2, 1)
         x = x.contiguous().view(B, hidden, h, w)
-        # x = self.conv_more(x)
+        x = self.conv_more(x)
         for i, decoder_block in enumerate(self.blocks):
             if features is not None:
                 skip = features[i] if (i < self.config.n_skip) else None
@@ -395,3 +478,77 @@ class Cnn_Vit_Hybrid_Up_Sampler(nn.Module):
                 skip = None
             x = decoder_block(x, skip=skip)
         return x
+    
+class Cnn_Vit_Hybrid_Transformer(nn.Module):
+    def __init__(self, config, img_size, vis):
+        super().__init__()
+        self.embeddings = Cnn_Vit_Hybrid_Embeddings(config, img_size=img_size)
+        self.encoder    = Cnn_Vit_Hybrid_Encoder(config,vis)
+
+    def forward(self, input_ids):
+        embedding_output, features = self.embeddings(input_ids)
+        encoded, attn_weights      = self.encoder(embedding_output)  # (B, n_patch, hidden)
+        return encoded, attn_weights, features
+
+
+class Paradis_Hybrid_Transformer(nn.Module):
+
+    def __init__(self, config, img_size=(32,64), vis=True):
+        super().__init__()
+        print("####################################")
+        print("It is a start !")
+        self.transformer = Cnn_Vit_Hybrid_Transformer(config, img_size, vis)
+        #self.decoder     = Cnn_Vit_Hybrid_Up_Sampler(config)        
+        self.config      = config
+        print("####################################")
+
+
+    def forward(self, x):
+        x, attn_weights, features = self.transformer(x)  # (B, n_patch, hidden)
+        #x = self.decoder(x, features)
+        return x
+        # z = ... 
+        # return z
+       
+
+    # def load_from(self, weights):
+    #     with torch.no_grad():
+
+    #         res_weight = weights
+    #         self.transformer.embeddings.patch_embeddings.weight.copy_(np2th(weights["embedding/kernel"], conv=True))
+    #         self.transformer.embeddings.patch_embeddings.bias.copy_(np2th(weights["embedding/bias"]))
+
+    #         self.transformer.encoder.encoder_norm.weight.copy_(np2th(weights["Transformer/encoder_norm/scale"]))
+    #         self.transformer.encoder.encoder_norm.bias.copy_(np2th(weights["Transformer/encoder_norm/bias"]))
+
+    #         posemb = np2th(weights["Transformer/posembed_input/pos_embedding"])
+
+    #         posemb_new = self.transformer.embeddings.position_embeddings
+    #         if posemb.size() == posemb_new.size():
+    #             self.transformer.embeddings.position_embeddings.copy_(posemb)
+    #         else posemb.size()[1]-1 == posemb_new.size()[1]:
+    #             posemb = posemb[:, 1:]
+    #             self.transformer.embeddings.position_embeddings.copy_(posemb)
+
+    #         # Encoder whole
+    #         for bname, block in self.transformer.encoder.named_children():
+    #             for uname, unit in block.named_children():
+    #                 unit.load_from(weights, n_block=uname)
+
+
+            # here there is something to change because we wont use a resnet 
+            # if self.transformer.embeddings.hybrid:
+            #     self.transformer.embeddings.hybrid_model.root.conv.weight.copy_(np2th(res_weight["conv_root/kernel"], conv=True))
+            #     gn_weight = np2th(res_weight["gn_root/scale"]).view(-1)
+            #     gn_bias   = np2th(res_weight["gn_root/bias"]).view(-1)
+            #     self.transformer.embeddings.hybrid_model.root.gn.weight.copy_(gn_weight)
+            #     self.transformer.embeddings.hybrid_model.root.gn.bias.copy_(gn_bias)
+
+            #     for bname, block in self.transformer.embeddings.hybrid_model.body.named_children():
+            #         for uname, unit in block.named_children():
+            #             unit.load_from(res_weight, n_block=bname, n_unit=uname)
+
+
+# CONFIGS = {
+#     'Cnn_Vit_Hybrid_Ix16': configs.get_cvh_Ix16_config(),   
+# }
