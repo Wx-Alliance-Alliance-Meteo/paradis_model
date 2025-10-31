@@ -15,16 +15,38 @@ import math
 from os.path import join as pjoin
 import numpy as np
 
-
-
-ATTENTION_Q = "MultiHeadDotProductAttention_1/query"
-ATTENTION_K = "MultiHeadDotProductAttention_1/key"
-ATTENTION_V = "MultiHeadDotProductAttention_1/value"
-ATTENTION_OUT = "MultiHeadDotProductAttention_1/out"
-FC_0 = "MlpBlock_3/Dense_0"
-FC_1 = "MlpBlock_3/Dense_1"
+ATTENTION_Q    = "MultiHeadDotProductAttention_1/query"
+ATTENTION_K    = "MultiHeadDotProductAttention_1/key"
+ATTENTION_V    = "MultiHeadDotProductAttention_1/value"
+ATTENTION_OUT  = "MultiHeadDotProductAttention_1/out"
+FC_0           = "MlpBlock_3/Dense_0"
+FC_1           = "MlpBlock_3/Dense_1"
 ATTENTION_NORM = "LayerNorm_0"
-MLP_NORM = "LayerNorm_2"
+MLP_NORM       = "LayerNorm_2"
+
+def get_cvh_Ix16_config():
+    """"""
+    config                        = ml_collections.ConfigDict()
+    config.patches                = ml_collections.ConfigDict({'grid': (1, 1)})
+    config.transformer            = ml_collections.ConfigDict()
+    config.hidden_size            = 672*16
+    config.transformer.mlp_dim    = 3072
+    config.transformer.num_heads  = 12
+    config.transformer.num_layers = 2
+    config.head_channels          = 672 #512
+    config.transformer.attention_dropout_rate = 0.0
+    config.transformer.dropout_rate           = 0.1
+    config.classifier                         = None
+    config.representation_size                = None
+    config.resnet_pretrained_path             = None
+    config.pretrained_path                    = None
+    config.patch_size                         = 16
+    config.decoder_channels                   = (256, 128, 64, 16) #(256, 128, 64, 16)
+    config.n_skip                             = 1
+    config.skip_channels                      = [672, 256, 64, 16] #[672, 256, 64, 16]
+    config.n_classes                          = None
+    config.activation                         = 'softmax'
+    return config
 
 def np2th(weights, conv=False):
     """Possibly convert HWIO to OIHW."""
@@ -36,31 +58,6 @@ def swish(x):
     return x * torch.sigmoid(x)
 
 ACT2FN = {"gelu": torch.nn.functional.gelu, "relu": torch.nn.functional.relu, "swish": swish}
-
-
-def get_cvh_Ix16_config():
-    """"""
-    config                        = ml_collections.ConfigDict()
-    config.patches                = ml_collections.ConfigDict({'grid': (1, 1)})
-    config.hidden_size            = 672*16
-    config.transformer            = ml_collections.ConfigDict()
-    config.transformer.mlp_dim    = 3072
-    config.transformer.num_heads  = 12
-    config.transformer.num_layers = 2
-    config.head_channels          = 512
-    config.transformer.attention_dropout_rate = 0.0
-    config.transformer.dropout_rate           = 0.1
-    config.classifier                         = None
-    config.representation_size                = None
-    config.resnet_pretrained_path             = None
-    config.pretrained_path                    = None
-    config.patch_size                         = 16
-    config.decoder_channels                   = (256, 128, 64, 16)
-    config.n_skip                             = 1
-    config.skip_channels                      = (2,2,2,2)
-    config.n_classes                          = None
-    config.activation                         = 'softmax'
-    return config
 
 class Conv2dReLU(nn.Sequential):
     def __init__(
@@ -394,10 +391,7 @@ class VisionTransformer(nn.Module):
                     for uname, unit in block.named_children():
                         unit.load_from(res_weight, n_block=bname, n_unit=uname)
 
-
 ######################################################################Our version 
-
-
 class Cnn_Vit_Hybrid_Embeddings(nn.Module):
     def __init__(self, config, img_size=(32,64), in_channels=672):
         super().__init__()
@@ -428,8 +422,8 @@ class Cnn_Vit_Hybrid_Embeddings(nn.Module):
 class Cnn_Vit_Hybrid_Encoder(nn.Module):
     def __init__(self, config, vis):
         super().__init__()
-        self.vis = vis
-        self.layer = nn.ModuleList()
+        self.vis          = vis
+        self.layer        = nn.ModuleList()
         self.encoder_norm = LayerNorm(config.hidden_size, eps=1e-6)
         for _ in range(config.transformer["num_layers"]):
             layer = Block(config, vis)
@@ -452,7 +446,8 @@ class Cnn_Vit_Hybrid_Up_Sampler(nn.Module):
         head_channels    = config.head_channels
         decoder_channels = config.decoder_channels
 
-        self.conv_more   = Conv2dReLU(config.hidden_size,head_channels,kernel_size=3,padding=1,use_batchnorm=True,)
+        self.conv_more   = Conv2dReLU(config.hidden_size,head_channels,
+                                      kernel_size=3,padding=1,use_batchnorm=True,)
 
         in_channels      = [head_channels] + list(decoder_channels[:-1])
         out_channels     = decoder_channels
@@ -490,8 +485,7 @@ class Cnn_Vit_Hybrid_Transformer(nn.Module):
         encoded, attn_weights      = self.encoder(embedding_output)  # (B, n_patch, hidden)
         return encoded, attn_weights, features
 
-
-class Paradis_Hybrid_Transformer(nn.Module):
+class Paradis_Global_Feature_Extraction_Layer(nn.Module):
 
     def __init__(self, config, img_size=(32,64), vis=True):
         super().__init__()

@@ -6,9 +6,8 @@ from torch import nn
 from model.padding import GeoCyclicPadding
 from model.gmblock import GMBlock
 #################################################
-from model.attentionblock import Paradis_Hybrid_Transformer as ParaHTrans
-from model.attentionblock import get_cvh_Ix16_config        as CTHconfig
-
+from model.attentionblock import Paradis_Global_Feature_Extraction_Layer as Global_Feature_Layer
+from model.attentionblock import get_cvh_Ix16_config                      as CTHconfig
 #################################################
 
 class NeuralSemiLagrangian(nn.Module):
@@ -187,7 +186,6 @@ class NeuralSemiLagrangian(nn.Module):
 
         return interpolated
 
-
 class Paradis(nn.Module):
     """Weather forecasting model main class."""
 
@@ -212,7 +210,7 @@ class Paradis(nn.Module):
         self.n_inputs = datamodule.dataset.n_time_inputs
 
         config=CTHconfig()
-        self.proj_layer_attention = ParaHTrans(config=config, img_size=(32,64),vis=True)
+        self.proj_layer_attention = Global_Feature_Layer(config=config, img_size=(32,64),vis=True)
 
         # Specify hidden dimension based on multiplier or fixed size,
         # following configuration file
@@ -296,8 +294,6 @@ class Paradis(nn.Module):
         #self.up_sampling     = HCV_Upsampler(..................)
         #################################################
 
-
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         # No gradients on lat/lon, ever
@@ -313,6 +309,7 @@ class Paradis(nn.Module):
         #################################################
         print('z_.shape:', z_.shape)
         #       z.shape ~ something like [32, 672, 32, 64]
+        # you need to do export TORCH_COMPILE_DISABLE=1 in order to print during training
         global_z = self.proj_layer_attention(z_)
         print('global_z.shape:', global_z.shape)
         # z        = self.up_sampling(global_z,z)
