@@ -29,21 +29,22 @@ def get_cvh_Ix16_config():
     config                        = ml_collections.ConfigDict()
     config.patches                = ml_collections.ConfigDict({'grid': (1, 1)})
     config.transformer            = ml_collections.ConfigDict()
-    config.hidden_size            = 672*16
+    config.hidden_size            = 672
     config.transformer.mlp_dim    = 3072
     config.transformer.num_heads  = 12
-    config.transformer.num_layers = 2
-    config.head_channels          = 672 #512
+    config.transformer.num_layers = 1
+    config.head_channels          = 672
+    config.input_size             = (32,64,672)
+    config.patch_size             = (4,4) #16
     config.transformer.attention_dropout_rate = 0.0
     config.transformer.dropout_rate           = 0.1
     config.classifier                         = None
     config.representation_size                = None
     config.resnet_pretrained_path             = None
     config.pretrained_path                    = None
-    config.patch_size                         = 16
-    config.decoder_channels                   = (256, 128, 64, 16) #(256, 128, 64, 16)
-    config.n_skip                             = 1
-    config.skip_channels                      = [672, 256, 64, 16] #[672, 256, 64, 16]
+    config.decoder_channels                   = (672,672)
+    config.n_skip                             = 0
+    config.skip_channels                      = [0,0]
     config.n_classes                          = None
     config.activation                         = 'softmax'
     return config
@@ -212,7 +213,7 @@ class Embeddings(nn.Module):
         embeddings = x + self.position_embeddings
         embeddings = self.dropout(embeddings)
         return embeddings, features
-
+    
 class Encoder(nn.Module):
     def __init__(self, config, vis):
         super(Encoder, self).__init__()
@@ -247,7 +248,7 @@ class DecoderCup(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config      = config
-        head_channels    = 512
+        head_channels    = config.head_channels
         self.conv_more   = Conv2dReLU(config.hidden_size,head_channels,kernel_size=3,padding=1,use_batchnorm=True,)
         decoder_channels = config.decoder_channels
         in_channels      = [head_channels] + list(decoder_channels[:-1])
@@ -288,6 +289,11 @@ class DecoderBlock(nn.Module):
             use_batchnorm=True,
     ):
         super().__init__()
+
+        print( 'in_channels + skip_channels,out_channels,')
+        print(in_channels)
+        print(skip_channels)
+        print(out_channels)
         self.conv1 = Conv2dReLU(
             in_channels + skip_channels,
             out_channels,
@@ -305,9 +311,13 @@ class DecoderBlock(nn.Module):
         self.up = nn.UpsamplingBilinear2d(scale_factor=2)
 
     def forward(self, x, skip=None):
+        print('avant up x.shape',x.shape)
         x = self.up(x)
+        print('x.shape',x.shape)
+        #print('skip.shape',skip.shape)
         if skip is not None:
             x = torch.cat([x, skip], dim=1)
+            print('concat[x,skip]:',x.shape)
         x = self.conv1(x)
         x = self.conv2(x)
         return x
@@ -399,10 +409,15 @@ class Cnn_Vit_Hybrid_Embeddings(nn.Module):
         out_channels    = config.hidden_size
         grid_size       = config.patches["grid"]
 
-        patch_size      = (img_size[0] // 16 // grid_size[0]  , img_size[1] // 16 // grid_size[1])
-        patch_size_real = (patch_size[0] * 16, patch_size[1]  * 16)
-        n_patches       = (img_size[0] // patch_size_real[0]) * (img_size[1] // patch_size_real[1])  
-   
+        # patch_size      = (img_size[0] // 16 // grid_size[0]  , img_size[1] // 16 // grid_size[1])
+        # patch_size_real = (patch_size[0] * 16, patch_size[1]  * 16)
+        # n_patches       = (img_size[0] // patch_size_real[0]) * (img_size[1] // patch_size_real[1])  
+        
+        patch_size      = config.patch_size
+        n_patches       = (img_size[0] // patch_size[0]) * (img_size[1] // patch_size[1])  
+
+
+
         
         self.patch_embeddings    = Conv2d(in_channels =in_channels,
                                           out_channels=out_channels,
@@ -412,12 +427,32 @@ class Cnn_Vit_Hybrid_Embeddings(nn.Module):
         self.dropout             = Dropout(config.transformer["dropout_rate"])
 
     def forward(self, x):
+        features = []
+        features.append(x)
         x = self.patch_embeddings(x)                       # (B, hidden, n_patches[0], n_patches[1])
+        print('self.patch_embeddings(x)',x.shape)
         x = x.flatten(2)
+        print('flatten',x.shape)
+
         x = x.transpose(-1, -2)                            # (B, n_patches[0], hidden)
         embeddings = x + self.position_embeddings
         embeddings = self.dropout(embeddings)
-        return embeddings, x
+        print('embedding.shape',embeddings.shape)
+        return embeddings, features
+
+
+    # def forward(self, x):
+    #     if self.hybrid:
+    #         x, features = self.hybrid_model(x)
+    #     else:
+    #         features = None
+    #     x = self.patch_embeddings(x)  # (B, hidden. n_patches^(1/2), n_patches^(1/2))
+    #     x = x.flatten(2)
+    #     x = x.transpose(-1, -2)  # (B, n_patches, hidden)
+
+    #     embeddings = x + self.position_embeddings
+    #     embeddings = self.dropout(embeddings)
+    #     return embeddings, features
 
 class Cnn_Vit_Hybrid_Encoder(nn.Module):
     def __init__(self, config, vis):
@@ -439,33 +474,40 @@ class Cnn_Vit_Hybrid_Encoder(nn.Module):
         return encoded, attn_weights
 
 class Cnn_Vit_Hybrid_Up_Sampler(nn.Module):
-    
     def __init__(self, config):
         super().__init__()
         self.config      = config
         head_channels    = config.head_channels
         decoder_channels = config.decoder_channels
-
-        self.conv_more   = Conv2dReLU(config.hidden_size,head_channels,
-                                      kernel_size=3,padding=1,use_batchnorm=True,)
-
+        self.conv_more   = Conv2dReLU(config.hidden_size,head_channels,kernel_size=3,padding=1,use_batchnorm=True,)
         in_channels      = [head_channels] + list(decoder_channels[:-1])
         out_channels     = decoder_channels
-        skip_channels    = [0,0,0,0]
+        skip_channels    = [0,0]
         if self.config.n_skip != 0:
             skip_channels = self.config.skip_channels
-            for i in range(4-self.config.n_skip):
-                skip_channels[3-i]=0
-
+            for i in range(2-self.config.n_skip):
+                skip_channels[1-i]=0
+        ###config.decoder_channels                   = (256, 128, 64, 16)
+        ### config.skip_channels                      = [512, 256, 64, 16]
+        # skip_channels    = [0,0,0,0]
+        # if self.config.n_skip != 0:
+        #     skip_channels = self.config.skip_channels
+        #     for i in range(4-self.config.n_skip):
+        #         skip_channels[3-i]=0
         blocks = [DecoderBlock(in_ch, out_ch, sk_ch) for in_ch, out_ch, sk_ch in zip(in_channels, out_channels, skip_channels)]
         self.blocks = nn.ModuleList(blocks)
-
+    
     def forward(self, hidden_states, features=None):
         B, n_patch, hidden = hidden_states.size()  # reshape from (B, n_patch, hidden) to (B, h, w, hidden)
-        h, w = int(np.sqrt(n_patch)), int(np.sqrt(n_patch))
+        h = self.config.input_size[0]//self.config.patch_size[0]
+        w = self.config.input_size[1]//self.config.patch_size[1]
+        # h, w = int(np.sqrt(n_patch)), int(np.sqrt(n_patch))
         x = hidden_states.permute(0, 2, 1)
         x = x.contiguous().view(B, hidden, h, w)
+        print('x_shape before conv_more',x.shape)
         x = self.conv_more(x)
+        print('x_shape after conv_more',x.shape)     
+
         for i, decoder_block in enumerate(self.blocks):
             if features is not None:
                 skip = features[i] if (i < self.config.n_skip) else None
@@ -473,7 +515,7 @@ class Cnn_Vit_Hybrid_Up_Sampler(nn.Module):
                 skip = None
             x = decoder_block(x, skip=skip)
         return x
-    
+
 class Cnn_Vit_Hybrid_Transformer(nn.Module):
     def __init__(self, config, img_size, vis):
         super().__init__()
@@ -492,14 +534,14 @@ class Paradis_Global_Feature_Extraction_Layer(nn.Module):
         print("####################################")
         print("It is a start !")
         self.transformer = Cnn_Vit_Hybrid_Transformer(config, img_size, vis)
-        #self.decoder     = Cnn_Vit_Hybrid_Up_Sampler(config)        
+        self.decoder     = Cnn_Vit_Hybrid_Up_Sampler(config) 
         self.config      = config
         print("####################################")
 
 
     def forward(self, x):
-        x, attn_weights, features = self.transformer(x)  # (B, n_patch, hidden)
-        #x = self.decoder(x, features)
+        x, attn_weights, features = self.transformer(x)  # (B, n_patch, hidden)       
+        x = self.decoder(hidden_states=x)
         return x
         # z = ... 
         # return z

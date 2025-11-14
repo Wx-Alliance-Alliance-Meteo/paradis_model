@@ -304,14 +304,15 @@ class Paradis(nn.Module):
         lon_grid = x_static[:, -1, :, :]
 
         # Project features to latent space
-        z = self.input_proj(x)
-        z_ = z
+        z_ = self.input_proj(x)
+        z = self.proj_layer_attention(z_)
+        #z_ = z
         #################################################
-        print('z_.shape:', z_.shape)
+        #print('z_.shape:', z_.shape)
         #       z.shape ~ something like [32, 672, 32, 64]
         # you need to do export TORCH_COMPILE_DISABLE=1 in order to print during training
-        global_z = self.proj_layer_attention(z_)
-        print('global_z.shape:', global_z.shape)
+        # global_z = self.proj_layer_attention(z_)
+        # print('global_z.shape:', global_z.shape)
         # z        = self.up_sampling(global_z,z)
         #################################################
 
