@@ -121,12 +121,12 @@ class ParadisLoss(torch.nn.Module):
         delta_lat = torch.abs(torch.tensor(self._check_uniform_spacing(grid_lat)))
 
         # Check if grid includes poles
-        has_poles = torch.any(
-            torch.isclose(torch.abs(grid_lat), torch.tensor(90.0, dtype=grid_lat.dtype))
-        )
-
-        if has_poles:
-            raise ValueError("Grid must not contain poles!")
+        #        has_poles = torch.any(
+        #            torch.isclose(torch.abs(grid_lat), torch.tensor(90.0, dtype=grid_lat.dtype))
+        #        )
+        #
+        #        if has_poles:
+        #            raise ValueError("Grid must not contain poles!")
         # else:
         #     # Validate grid endpoints
         #     if not (

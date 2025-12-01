@@ -1,10 +1,9 @@
 import torch
 from torch import nn
+from torch_harmonics import DiscreteContinuousConvS2
 
-from model.padding import GeoCyclicPadding
-
-from typing import Any  # For optional/unused parameters
-from typing import Tuple  # For mesh_size when used
+from typing import Any, Tuple
+import math
 
 """
     simple_blocks: Wrapper file to consolidate simple NN layers, defined as those that do
@@ -27,9 +26,27 @@ from typing import Tuple  # For mesh_size when used
 """
 
 
-class FullConv(nn.Conv2d):
+def _compute_cutoff_radius(nlat, kernel_size, basis_type="morlet"):
+    theta_cutoff_factor = {
+        "piecewise linear": 0.5,
+        "morlet": 0.5,
+        "zernike": math.sqrt(2.0),
+    }
+    if isinstance(kernel_size, int):
+        kernel_shape = kernel_size
+    else:
+        kernel_shape = kernel_size if isinstance(kernel_size, int) else kernel_size
+    return (
+        (kernel_shape + 1)
+        * theta_cutoff_factor.get(basis_type, 0.5)
+        * math.pi
+        / float(nlat - 1)
+    )
+
+
+class FullConv(nn.Module):
     """Wrapper function for a full 2D convolution, acting across all channels.  This
-    creates C_out×C_in×(kernel)×(kernel) weight parameters and C bias parameters.  Includes
+    creates C_out?C_in?(kernel)?(kernel) weight parameters and C bias parameters.  Includes
     GeoCyclic padding.
     """
 
@@ -40,25 +57,40 @@ class FullConv(nn.Conv2d):
         *,
         kernel_size: int,  # Required
         bias: bool = True,  # Optional
-        mesh_size: Any = None,  # Not used
+        mesh_size: Tuple[int, int],  # Required
+        grid_type: str = "equiangular",
+        basis_type: str = "morlet",
     ):
+        super().__init__()
+
+        if mesh_size is None:
+            raise ValueError("mesh_size is required for DISCO convolutions")
 
         self._kernel_size = kernel_size
+        self.mesh_size = mesh_size
 
-        super().__init__(input_dim, output_dim, kernel_size=kernel_size, bias=bias)
+        theta_cutoff = _compute_cutoff_radius(mesh_size[0], kernel_size, basis_type)
 
-        if self._kernel_size > 1:
-            self._padding = GeoCyclicPadding(kernel_size // 2)
+        self.conv = DiscreteContinuousConvS2(
+            in_channels=input_dim,
+            out_channels=output_dim,
+            in_shape=mesh_size,
+            out_shape=mesh_size,
+            kernel_shape=kernel_size,
+            basis_type=basis_type,
+            grid_in=grid_type,
+            grid_out=grid_type,
+            bias=bias,
+            theta_cutoff=theta_cutoff,
+        )
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        if self._kernel_size > 1:
-            input = self._padding(input)
-        return super().forward(input)
+        return self.conv(input)
 
 
-class FlatConv(nn.Conv2d):
+class FlatConv(nn.Module):
     """Wrapper class for a limited 2D convolution, acting on each channel independently.
-    This creates C×1x(kernel)x(kernel) paremeters and C bias parameters.  Includes
+    This creates C?1x(kernel)x(kernel) paremeters and C bias parameters.  Includes
     GeoCyclic padding and cannot change the number of channels.
     """
 
@@ -69,26 +101,43 @@ class FlatConv(nn.Conv2d):
         *,
         kernel_size: int,  # Required
         bias: bool = True,  # Optional
-        mesh_size: Any = None,  # Not used
+        mesh_size: Tuple[int, int],  # Required
+        grid_type: str = "equiangular",
+        basis_type: str = "morlet",
     ):
-        assert input_dim == output_dim
-        dim = input_dim
+        super().__init__()
+
+        if input_dim != output_dim:
+            raise ValueError("FlatConv requires input_dim == output_dim")
+
+        if mesh_size is None:
+            raise ValueError("mesh_size is required for DISCO convolutions")
 
         self._kernel_size = kernel_size
+        self.mesh_size = mesh_size
 
-        super().__init__(dim, dim, kernel_size=kernel_size, groups=dim, bias=bias)
+        theta_cutoff = _compute_cutoff_radius(mesh_size[0], kernel_size, basis_type)
 
-        if self._kernel_size > 1:
-            self._padding = GeoCyclicPadding(kernel_size // 2)
+        self.conv = DiscreteContinuousConvS2(
+            in_channels=input_dim,
+            out_channels=output_dim,
+            in_shape=mesh_size,
+            out_shape=mesh_size,
+            kernel_shape=kernel_size,
+            basis_type=basis_type,
+            grid_in=grid_type,
+            grid_out=grid_type,
+            groups=input_dim,
+            bias=bias,
+            theta_cutoff=theta_cutoff,
+        )
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        if self._kernel_size > 1:
-            input = self._padding(input)
-        return super().forward(input)
+        return self.conv(input)
 
 
-class CLinear(nn.Conv2d):
-    """Linear layer that acts across the channel dimension, having C_out × C_in weight
+class CLinear(nn.Module):
+    """Linear layer that acts across the channel dimension, having C_out ? C_in weight
     parameters and C_out bias parameters."""
 
     def __init__(
@@ -96,16 +145,40 @@ class CLinear(nn.Conv2d):
         input_dim: int,
         output_dim: int,
         *,
-        kernel_size: int = 1,  # Not used (linear always has a kernel size of 1)
+        kernel_size: int = 1,  # Not used (always 1x1)
         bias: bool = True,  # Optional
-        mesh_size: Any = None,  # Not used
+        mesh_size: Tuple[int, int],  # Required
+        grid_type: str = "equiangular",
+        basis_type: str = "morlet",
     ):
-        super().__init__(input_dim, output_dim, kernel_size=1, bias=bias)
+        super().__init__()
+
+        if mesh_size is None:
+            raise ValueError("mesh_size is required for DISCO convolutions")
+
+        self.mesh_size = mesh_size
+
+        # Use kernel_shape=1 for point-wise (1x1) convolution
+        # No theta_cutoff needed for 1x1 convolutions
+        self.conv = DiscreteContinuousConvS2(
+            in_channels=input_dim,
+            out_channels=output_dim,
+            in_shape=mesh_size,
+            out_shape=mesh_size,
+            kernel_shape=1,
+            basis_type=basis_type,
+            grid_in=grid_type,
+            grid_out=grid_type,
+            bias=bias,
+        )
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        return self.conv(input)
 
 
 class SepConv(nn.Module):
     """Wrapper class for a "separated" convolution, which acts first in 2D (across channels)
-    and then applies a CLinear operator.  Has C_in×1×K×K + C_out×C_in weight parameters and
+    and then applies a CLinear operator.  Has C_in?1?K?K + C_out?C_in weight parameters and
     C_out bias parameters (no bias applied during the 2D convolution)
     """
 
@@ -116,23 +189,46 @@ class SepConv(nn.Module):
         *,
         kernel_size: int,  # Required
         bias: bool = True,  # Optional
-        mesh_size: Any = None,  # Not used
+        mesh_size: Tuple[int, int],  # Required
+        grid_type: str = "equiangular",
+        basis_type: str = "morlet",
     ):
         super().__init__()
 
+        if mesh_size is None:
+            raise ValueError("mesh_size is required for DISCO convolutions")
+
         self.kernel_size = kernel_size
+        self.mesh_size = mesh_size
 
-        if kernel_size > 1:
-            self.padding = GeoCyclicPadding(kernel_size // 2)
+        theta_cutoff = _compute_cutoff_radius(mesh_size[0], kernel_size, basis_type)
 
-        self.conv = nn.Conv2d(
-            input_dim, input_dim, kernel_size, groups=input_dim, bias=False
+        # Depthwise convolution (no bias)
+        self.conv = DiscreteContinuousConvS2(
+            in_channels=input_dim,
+            out_channels=input_dim,
+            in_shape=mesh_size,
+            out_shape=mesh_size,
+            kernel_shape=kernel_size,
+            basis_type=basis_type,
+            grid_in=grid_type,
+            grid_out=grid_type,
+            groups=input_dim,
+            bias=False,
+            theta_cutoff=theta_cutoff,
         )
-        self.linear = CLinear(input_dim, output_dim, bias=bias)
+
+        # Pointwise convolution (1x1)
+        self.linear = CLinear(
+            input_dim,
+            output_dim,
+            bias=bias,
+            mesh_size=mesh_size,
+            grid_type=grid_type,
+            basis_type=basis_type,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.kernel_size > 1:
-            x = self.padding(x)
         x = self.conv(x)
         x = self.linear(x)
         return x
@@ -140,11 +236,11 @@ class SepConv(nn.Module):
 
 ## GlobalNorm -- full 3D normalization
 class GlobalNorm(nn.LayerNorm):
-    """Performs a "global normalization" using the pytorch LayerNorm infrasturcture.
+    """Performs a "global normalization" using the pytorch LayerNorm infrastructure.
 
     LayerNorm is defined to act over the last several dimensions of a tensor, and in our
-    ordering that means (channel,lat,lon).  A three-dimensional layer norm thus normalizes
-    the model *globally*.  As a result, this module creates 2*C*lat*lon parameters, for the
+    ordering that means (channel,lat,lon). A three-dimensional layer norm thus normalizes
+    the model *globally*. As a result, this module creates 2*C*lat*lon parameters, for the
     scale and bias of each point separately.
     """
 
@@ -153,11 +249,12 @@ class GlobalNorm(nn.LayerNorm):
         input_dim: int,
         output_dim: int,
         *,
-        bias: bool = True,  # passed to LayerNorm
+        bias: bool = True,
         kernel_size: int = 1,  # Not used
         mesh_size: Tuple[int, int],  # required
     ):
-        assert input_dim == output_dim
+        if input_dim != output_dim:
+            raise ValueError("GlobalNorm requires input_dim == output_dim")
         super().__init__(list((input_dim,) + mesh_size), bias=bias)
 
 
@@ -169,9 +266,9 @@ class ChannelNorm(nn.Module):
     graph neural networks.
 
     Unlike GlobalNorm above, this module is defined to normalize along the channel
-    dimension (dim -3 or +1) only.  This is more consistent to standard practice in
-    attention-based models, whereby each token's latent spae is normalized separately;
-    it is also used throughout Graphcast in a similar way.  Unlike GlobalNorm, this
+    dimension (dim -3 or +1) only. This is more consistent to standard practice in
+    attention-based models, whereby each token's latent space is normalized separately;
+    it is also used throughout Graphcast in a similar way. Unlike GlobalNorm, this
     module only creates 2*C parameters.
     """
 
@@ -184,7 +281,8 @@ class ChannelNorm(nn.Module):
         bias: bool = True,  # Optional
         mesh_size: Any = None,  # Not used
     ):
-        assert input_dim == output_dim
+        if input_dim != output_dim:
+            raise ValueError("ChannelNorm requires input_dim == output_dim")
         super().__init__()
 
         self.eps = 1e-5  # Fudge factor for standard deviation, copied from LayerNorm
@@ -237,10 +335,20 @@ class NormedConv(nn.Module):
         bias: bool = True,  # passed to GlobalNorm
         kernel_size: int,  # required
         mesh_size: Tuple[int, int],  # required
+        grid_type: str = "equiangular",
+        basis_type: str = "morlet",
     ):
         super().__init__()
 
-        self.conv = FullConv(input_dim, output_dim, kernel_size=kernel_size, bias=True)
+        self.conv = FullConv(
+            input_dim,
+            output_dim,
+            kernel_size=kernel_size,
+            bias=True,
+            mesh_size=mesh_size,
+            grid_type=grid_type,
+            basis_type=basis_type,
+        )
         self.norm = GlobalNorm(output_dim, output_dim, mesh_size=mesh_size, bias=bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

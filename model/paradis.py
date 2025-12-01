@@ -3,6 +3,8 @@
 import torch
 from torch import nn
 
+from torch_harmonics import DiscreteContinuousConvS2
+
 from model.padding import GeoCyclicPadding
 from model.gmblock import GMBlock
 
@@ -19,6 +21,8 @@ class NeuralSemiLagrangian(nn.Module):
         lon_grid: torch.Tensor,
         interpolation: str = "bicubic",
         bias_channels: int = 4,
+        grid_type: str = "equiangular",
+        basis_type: str = "morlet",
     ):
         super().__init__()
 
@@ -38,6 +42,8 @@ class NeuralSemiLagrangian(nn.Module):
             output_dim=num_vels,
             mesh_size=mesh_size,
             layers=["CLinear"],
+            grid_type=grid_type,
+            basis_type=basis_type,
         )
 
         self.up_projection = GMBlock(
@@ -45,6 +51,8 @@ class NeuralSemiLagrangian(nn.Module):
             output_dim=hidden_dim,
             mesh_size=mesh_size,
             layers=["CLinear"],
+            grid_type=grid_type,
+            basis_type=basis_type,
         )
 
         self.interpolation = interpolation
@@ -61,6 +69,8 @@ class NeuralSemiLagrangian(nn.Module):
             bias_channels=bias_channels,
             activation=False,
             pre_normalize=True,
+            grid_type=grid_type,
+            basis_type=basis_type,
         )
 
         H, W = mesh_size
@@ -86,7 +96,6 @@ class NeuralSemiLagrangian(nn.Module):
 
         self.register_buffer("d_lon", self.max_lon - self.min_lon)
         self.register_buffer("d_lat", self.max_lat - self.min_lat)
-
 
     def _transform_to_latlon(
         self,
@@ -214,6 +223,9 @@ class Paradis(nn.Module):
     def __init__(self, datamodule, cfg, lat_grid, lon_grid):
         super().__init__()
 
+        grid_type = "equiangular"
+        basis_type = "morlet"
+
         # Extract dimensions from config
         output_dim = datamodule.num_out_features
         mesh_size = (datamodule.lat_size, datamodule.lon_size)
@@ -257,6 +269,8 @@ class Paradis(nn.Module):
             mesh_size=mesh_size,
             activation=False,
             pre_normalize=True,
+            grid_type=grid_type,
+            basis_type=basis_type,
         )
 
         # Rescale the time step to a fraction of a synoptic time scale
@@ -274,6 +288,8 @@ class Paradis(nn.Module):
                     lon_grid=lon_grid,
                     interpolation=adv_interpolation,
                     bias_channels=bias_channels,
+                    grid_type=grid_type,
+                    basis_type=basis_type,
                 )
                 for _ in range(self.num_layers)
             ]
@@ -291,6 +307,8 @@ class Paradis(nn.Module):
                     activation=False,
                     pre_normalize=True,
                     bias_channels=bias_channels,
+                    grid_type=grid_type,
+                    basis_type=basis_type,
                 )
                 for _ in range(self.num_layers)
             ]
@@ -307,6 +325,8 @@ class Paradis(nn.Module):
                     activation=False,
                     pre_normalize=True,
                     bias_channels=bias_channels,
+                    grid_type=grid_type,
+                    basis_type=basis_type,
                 )
                 for _ in range(self.num_layers)
             ]
@@ -321,6 +341,8 @@ class Paradis(nn.Module):
             mesh_size=mesh_size,
             activation=False,
             bias_channels=bias_channels,
+            grid_type=grid_type,
+            basis_type=basis_type,
         )
 
     def _DR(self, z: torch.Tensor, i: int) -> torch.Tensor:
