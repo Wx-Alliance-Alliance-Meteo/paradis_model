@@ -7,7 +7,9 @@ from model.padding import GeoCyclicPadding
 from model.gmblock import GMBlock
 #################################################
 from model.attentionblock import Paradis_Global_Feature_Extraction_Layer as Global_Feature_Layer
-from model.attentionblock import get_cvh_Ix16_config                      as CTHconfig
+from model.attentionblock import Multi_Scale_Skip_Connection_Layer       as MSSC_Layer
+from model.attentionblock import Multi_Scale_Skip_Connection_Block       as MSSC_Block
+from model.attentionblock import get_cvh_Ix16_config                     as CTHconfig
 #################################################
 
 class NeuralSemiLagrangian(nn.Module):
@@ -210,7 +212,8 @@ class Paradis(nn.Module):
         self.n_inputs = datamodule.dataset.n_time_inputs
 
         config=CTHconfig()
-        self.proj_layer_attention = Global_Feature_Layer(config=config, img_size=(32,64),vis=True)
+        self.proj_layer_attention      = Global_Feature_Layer(config=config, img_size=(32,64),vis=True)
+        # self.multi_scale_conv_and_skip = MSSC_Layer(MSSC_Block)
 
         # Specify hidden dimension based on multiplier or fixed size,
         # following configuration file
@@ -304,8 +307,11 @@ class Paradis(nn.Module):
         lon_grid = x_static[:, -1, :, :]
 
         # Project features to latent space
-        z_ = self.input_proj(x)
-        z = self.proj_layer_attention(z_)
+        z_   = self.input_proj(x)
+        # skip = self.multiscale_Conv_and_Skip(z_)
+        print('z_.shape:',z_.shape)
+        z    = self.proj_layer_attention(z_)
+        print('z.shape:',z.shape)
         #z_ = z
         #################################################
         #print('z_.shape:', z_.shape)
