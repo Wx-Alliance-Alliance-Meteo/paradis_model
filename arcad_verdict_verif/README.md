@@ -1,16 +1,26 @@
 
+The PARADIS output files have to be first converted to the FST format.
+
+`zarrtofst_deet_mproc.py` converts the zarr files to FST format files. I have modified the code originally written by Carlos.
+I parallelized the conversion using python's `multiprocessing` library.
+
+This code which uses 40 cpus on ppp5 with 50G memory converts 3760 files
+(94 initial dates x 40) in about 5.5 minutes. The sequential version (which does not use multiprocessing) takes about 10
+minutes to convert 400 files (10 initial dates x 40) using the same ord_soumet.
+
+Change the `zarr_path` to point to the input
+directory paths in the python script. In `drive_zarr2ft.sh` modify the start and end indices of the initiation files and also
+the name of the output directory.
+Then execute the following.
+
+`ordsoument_zarr2fst.sh -> drive_zarr2fst.sh -> zarrtofst_deet_mproc.py`
+
 
 The creation and display of ARCAD scrores is explained with the help of inference files provided by Shoyon Pandey
 for the month of June, 2022. He trained two versions of PARADIS models. He modified the basic version of
 PARADIS to include a hydrostatic constrain. Please get in touch with him for more informaiton. 
 He provided zarr inferences files corresponding to these experiments. `nohydros` is the control and `hydros` is the experiment to be compared against the control..
 
-The PARADIS output files have to be converted to the FST format.
-
-In `zarrtofst.py` change the `zarr_path` and `output_dir` variables to point to the input and output
-directory paths respectively. Then execute the following.
-
-`ordsoument_zarr2fst.sh -> drive_zarr2fst.sh -> zarrtofst.py`
 
 The steps involved in generating the ARCAD scores are as follows. The ARCAD scores typically compare two experiments
 called the `control` and the `experiment`.
