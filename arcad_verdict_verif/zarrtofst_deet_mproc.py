@@ -49,9 +49,7 @@ def write_fst_for_forecast(npas, t_val, init_time, forecast_hh, use_base, pred_i
     yyyymmddhh = init_time.strftime("%Y%m%d%H")
     hhh = f"{forecast_hh:03d}"
     fst_file_name = os.path.join(output_dir, f"{yyyymmddhh}_{hhh}.fst")
-    print('^^^^vikram : fst_file_name = ',fst_file_name)
-    print('^^^npas = ',npas)
-    
+
     # Remove existing file if present
     if os.path.exists(fst_file_name):
         os.remove(fst_file_name)
@@ -71,7 +69,6 @@ def write_fst_for_forecast(npas, t_val, init_time, forecast_hh, use_base, pred_i
     hhmmsshh = int(init_time.strftime("%H%M%S") + "00")
     dateo = rmn.newdate(rmn.NEWDATE_PRINT2STAMP, yyyymmdd, hhmmsshh)
 
-    #print('vikram looping over variables\n')
     # Loop over variables
     for var_name in ds.data_vars:
         var_mapping = variable_mappings.get(var_name, {})
@@ -263,9 +260,9 @@ if __name__=="__main__":
     t2 = args.time_step_end
     outdir = args.outdir
     
-    print('\n\tvikram t1, t2 = ',t1,t2)
+    print('\n\tt1, t2 = ',t1,t2)
 
-    print('\n\tvikram outdir = ',outdir)    
+    print('\n\toutdir = ',outdir)    
 
     assert t2>t1, "t2 should be higher than t1."
     
@@ -306,7 +303,7 @@ if __name__=="__main__":
     levels = ds.level.values if "level" in ds.coords else [0]
     time_steps = ds.time.values if "time" in ds.coords else [0]
 
-    print('vikram : time_steps = ',time_steps)
+    print('time_steps = ',time_steps)
 
     # Forecast hours from prediction_timedelta
     if "prediction_timedelta" in ds.coords:
@@ -337,12 +334,25 @@ if __name__=="__main__":
     print('\nExecuting main loop now. len(time_steps[t1:t2]) = ',len(time_steps[t1:t2]))
 
 
-    for t_idx, t_val in enumerate(time_steps[t1:t2]):
-        init_time = pd.to_datetime(t_val)
-        print('\n init_time, forecast_hours = ',init_time, forecast_hours)
-        print('\n t_idx, t_val = ',t_idx, t_val)
 
-        output = convert_one_date(t_val, init_time, forecast_hours, deet)
+    arg_list = [
+        (
+            t_val,
+            pd.to_datetime(t_val),
+            forecast_hours,
+            deet
+        )
+        for t_val in time_steps[t1:t2]
+    ]
 
+    print('\n\n\n\targ_list = ',arg_list,'\n\n\n')
+
+    # Parallelize with starmap
+    with multiprocessing.Pool() as pool:
+        results = pool.starmap(convert_one_date, arg_list)
+
+    print('\n\tMake sure that each worker is converting a different file :')    
+    for i, output in enumerate(results):
+        print(f"Worker {i}: {output}\n{'-'*40}")    
 
 
