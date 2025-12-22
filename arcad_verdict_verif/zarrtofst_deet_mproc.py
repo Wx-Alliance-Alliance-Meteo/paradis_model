@@ -6,6 +6,7 @@ import pandas as pd
 import sys
 import yaml
 import multiprocessing
+import argparse
 
 
 def build_metadata(new_var_name, ni, nj, ig1234, dateo, deet, npas, ip1, ip2, ip3=0):
@@ -217,6 +218,8 @@ def write_fst_for_forecast(npas, t_val, init_time, forecast_hh, use_base, pred_i
 
 # convert all forecast files corresponding to a particular date.
 def convert_one_date(t_val, init_time, forecast_hours, deet):
+
+        output = f"t_val: {t_val}, init_time: {init_time}, forecast_hours: {forecast_hours}, deet: {deet}"
     
         # 1) Forecast step 0: copy data from base ERA5 dataset (ds_base)
         npas = 0
@@ -232,7 +235,7 @@ def convert_one_date(t_val, init_time, forecast_hours, deet):
         # 2) All positive forecast steps: use model output (ds) with prediction_timedelta
         for fh_idx, forecast_hh in enumerate(forecast_hours):
 
-            print('\nfh_idx, forecast_hh = ',fh_idx, forecast_hh)
+            #print('\nfh_idx, forecast_hh = ',fh_idx, forecast_hh)
             
             npas = forecast_hh * (3600 // deet)
             write_fst_for_forecast(
@@ -244,9 +247,28 @@ def convert_one_date(t_val, init_time, forecast_hours, deet):
                 pred_idx=fh_idx,
             )
 
+        return output  
 
 if __name__=="__main__":
 
+
+    parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter,prog='zarrtofst_deet_mproc.py',description='Converts the output from PARADIS which is in zarr format to fst format. Several forecast files exist corresponding to any given initial date.')
+    parser.add_argument('time_step_start',type=int,help='Index of the first initial file to be processed.')
+    parser.add_argument('time_step_end',type=int,help='Index of the last initial file to be processed.')
+    parser.add_argument('outdir',type=str,help='A writable path where the converted FST files are written.')
+    
+    args = parser.parse_args()
+
+    t1 = args.time_step_start
+    t2 = args.time_step_end
+    outdir = args.outdir
+    
+    print('\n\tvikram t1, t2 = ',t1,t2)
+
+    print('\n\tvikram outdir = ',outdir)    
+
+    assert t2>t1, "t2 should be higher than t1."
+    
     yaml_file_path = "variable_mappings.yaml"
 
     # Load variable mappings from the YAML file
@@ -265,7 +287,7 @@ if __name__=="__main__":
     )
     output_dir = (
         #"/home/cap003/hall6/paradis-logs/verification/latcorrectionv21e5fs12/summer_fst"
-        "/fs/homeu2/eccc/cmd/cmda/vmk001/data/ppp5/PARADIS/five_degree/tmp/"
+       outdir
     )
     os.makedirs(output_dir, exist_ok=True)
 
@@ -312,14 +334,15 @@ if __name__=="__main__":
         raise
 
 
-    print('vikram : Executing main loop now')
+    print('\nExecuting main loop now. len(time_steps[t1:t2]) = ',len(time_steps[t1:t2]))
 
-    # Main loop
 
-    #for t_idx, t_val in enumerate(time_steps):
-    for t_idx, t_val in enumerate(time_steps[0:2]):
+    for t_idx, t_val in enumerate(time_steps[t1:t2]):
         init_time = pd.to_datetime(t_val)
-        print('\nvikram : init_time = ',init_time)
-        print('\nvikram : t_idx, t_val = ',t_idx, t_val)
+        print('\n init_time, forecast_hours = ',init_time, forecast_hours)
+        print('\n t_idx, t_val = ',t_idx, t_val)
 
-        convert_one_date(t_val, init_time, forecast_hours, deet)
+        output = convert_one_date(t_val, init_time, forecast_hours, deet)
+
+
+
