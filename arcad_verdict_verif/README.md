@@ -5,8 +5,9 @@ The PARADIS output files have to be first converted to the FST format.
 I parallelized the conversion using python's `multiprocessing` library.
 
 This code which uses 40 cpus on ppp5 with 50G memory converts 3760 files
-(94 initial dates x 40) in about 5.5 minutes. The sequential version (which does not use multiprocessing) takes about 10
-minutes to convert 400 files (10 initial dates x 40) using the same ord_soumet.
+(94 initial dates x 40) in about 5.5 minutes. The sequential version (which does not use multiprocessing) takes about 93
+minutes to convert the same number of files using the same ord_soumet. The performance of the multiprocessing version could be
+further optimized by changing the cpus and memory requested in the ord_soumet.
 
 Change the `zarr_path` to point to the input
 directory paths in the python script. In `drive_zarr2ft.sh` modify the start and end indices of the initiation files and also
