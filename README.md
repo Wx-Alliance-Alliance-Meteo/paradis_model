@@ -10,7 +10,7 @@
 Necessary python packages can be installed using **pip**:
 
 ```
-pip install -r requirements.txt --break-system-packages
+pip install -r requirements.txt
 ```
 
 #### Usage
@@ -21,6 +21,12 @@ python train.py [override_args]
 ```
 where `[override_args]` can override the inputs in the config file.
 
+
+##### Inference
+For inference, use `forecast.py` and provide the appropriate config file as a first argument, for example
+```
+python forecast.py config/paradis_settings.yaml
+```
 
 #### Dataset
 

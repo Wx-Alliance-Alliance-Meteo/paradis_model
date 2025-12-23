@@ -1,4 +1,4 @@
-"""Paradis neural architecture adapted for shallow water equations."""
+"""Paradis neural architecture."""
 
 import math
 
