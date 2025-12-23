@@ -1,15 +1,17 @@
 # Model architecture
 model:
   latent_multiplier: -1            # Scale the dynamic inputs in hidden dimension with the number of input channels
-  latent_size: 672                 # Set a fixed size of the latent space (if latent_multiplier is -1)
+  latent_size: 1024                # Set a fixed size of the latent space (if latent_multiplier is -1)
   forecast_steps: 1                # Number of autoregressive steps
   base_dt: 21600                   # Data time resolution in seconds (6 hours * 3600 seconds)
-  num_layers: 4                    # Model depth
+  num_layers: 8                    # Model depth
   bias_channels: 4                 # Number of bias channels
-  velocity_vectors: 84             # Number of velocity layers (if latent_multiplier is -1)
-  diffusion_size: 672              # Latent size for the diffusion operator
-  reaction_size: 672               # Latent size for the reaction operator
+  velocity_vectors: 256            # Number of velocity layers (if latent_multiplier is -1)
+  diffusion_size: 1024             # Latent size for the diffusion operator
+  reaction_size: 1024              # Size for the reaction operator
   adv_interpolation: bicubic       # Choose between bilinear or bicubic
+  projected_advection: true        # Whether to project the advection layers to velocity_vectors space
+  num_encoder_layers: 1            # Number of input encoding layers
 
 # Initialization settings (seeding)
 init:
@@ -44,33 +46,33 @@ forecast:
   start_date: 2019-12-31           # Time to generate forecast from (YYYY-MM-DD) or (YYYY-MM-DDTHH:MM:SS)
   end_date: null                   # OPTIONAL, for validation purposes (YYYY-MM-DD) or null
   output_frequency: 1              # Store to file every output_frequency forecast steps
-  generate_plots: false            # Generate a plot for each time instance
   output_file: null                # Name of output forecast file
 
 # Training parameters
 training:
   max_epochs: -1                   # Maximum number of epochs the training is allowed (-1 to disable and use steps)
-  max_steps: -1                    # Maximum number of steps to use for training (-1 to disable and use epochs)
+  max_steps: 300000                # Maximum number of steps to use for training (-1 to disable and use epochs)
   progress_bar: true               # Enable progress bar
   gradient_clip_val: null          # Gradient clipping value, set to null to disable
   print_losses: false              # Manually print losses to screen (removes progress bar)
-  log_every_n_steps: 50            # Write to log every n steps
+  log_every_n_steps: 100           # Write to log every n steps
   log_dir: logs
+  experiment_name: null            # Optional: Custom name for log directory (replaces version_xxx), set to null for default versioning
 
   dataset:
-    start_date: 2010-01-01         # Start date for the training dataset (YYYY-MM-DD)
+    start_date: 1990-01-01         # Start date for the training dataset (YYYY-MM-DD)
     end_date: 2019-12-31           # End date for the training dataset (YYYY-MM-DD)
     preload: false                 # If true, load the full dataset from disk into memory to speed training
 
   validation_dataset:
-    start_date: 2008-01-01         # Start date for the validation dataset (YYYY-MM-DD)
-    end_date: 2009-12-31           # End date for the validation dataset (YYYY-MM-DD)
+    start_date: 2020-01-01         # Start date for the validation dataset (YYYY-MM-DD)
+    end_date: 2020-12-31           # End date for the validation dataset (YYYY-MM-DD)
     preload: false                 # If true, load the full dataset from disk into memory to speed validation
     validation_every_n_steps: null # Run validation every N steps (null once per epoch)
     validation_batches: null       # If non-null, use N batches rather than all for validation (0 disables val)
 
   optimizer:
-    lr: 3.0e-3                     # Learning rate (LR) for the optimizer
+    lr: 2.5e-4                     # Learning rate (LR) for the optimizer
     weight_decay: 1.e-2            # Weight decay coefficient for regularization
     beta1: 0.9                     # Exponential decay rate for the first moment (gradient) estimates
     beta2: 0.95                    # Exponential decay rate for the second moment (squared gradient) estimates
@@ -80,9 +82,10 @@ training:
     patience: 8                    # Number of epochs with no improvement after which training will stop
 
   loss_function:
-    type: "reversed_huber"                    # mse or reversed_huber loss function
+    type: "reversed_huber"         # mse, reversed_huber or dyn_reversed_huber loss functions
     delta_loss: 1.0                # Threshold parameter for huber loss
-    lat_weights: false             # Integrate loss with spherical metrics
+    lat_weights: true             # Integrate loss with spherical metrics
+    validation_loss: null          # Specify if a different score should be used for validation
 
   checkpointing:
     enabled: true                  # Enable checkpointing
@@ -111,7 +114,7 @@ training:
     # 3. LambdaLR with initial warmup, steady learning rate and final cooldown
     wsd:
       enabled: true
-      warmup: 0.05                 # ≥1 : number of warmup steps, else fraction
+      warmup: 1000                 # ≥1 : number of warmup steps, else fraction
       decay: 0.2                   # ≥1 : number of decay steps, else fraction
 
   variable_loss_weights:

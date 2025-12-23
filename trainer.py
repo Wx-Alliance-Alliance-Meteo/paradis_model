@@ -1,19 +1,35 @@
 """Model training implementation."""
 
 import datetime
-import time
-import re
 import logging
+import re
+import time
+from collections import defaultdict
 
-import torch
 import lightning as L
+import omegaconf.dictconfig
+import torch
+import torch.distributed as dist
+from lightning.pytorch.utilities import rank_zero_only
 
+from data.datamodule import Era5DataModule
 from model.paradis import Paradis
 from utils.loss import ParadisLoss
 from utils.normalization import denormalize_humidity, denormalize_precipitation
-from data.datamodule import Era5DataModule
 
-import omegaconf.dictconfig
+
+def _allreduce_scalar(x: torch.Tensor, op: str):
+    if not (dist.is_available() and dist.is_initialized()):
+        return x
+    y = x.detach().clone()
+    if op == "max":
+        dist.all_reduce(y, op=dist.ReduceOp.MAX)
+    elif op == "min":
+        dist.all_reduce(y, op=dist.ReduceOp.MIN)
+    else:  # mean
+        dist.all_reduce(y, op=dist.ReduceOp.SUM)
+        y /= dist.get_world_size()
+    return y
 
 
 class LitParadis(L.LightningModule):
@@ -41,12 +57,13 @@ class LitParadis(L.LightningModule):
         self.cfg = cfg
         self.n_inputs = cfg.dataset.n_time_inputs
 
+        # Log metrics
+        num_parameters = sum(
+            p.numel() for p in self.model.parameters() if p.requires_grad
+        )
+
         if self.global_rank == 0:
-            logging.info(
-                "Number of trainable parameters: {:,}".format(
-                    sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-                )
-            )
+            logging.info("Number of trainable parameters: {:,}".format(num_parameters))
 
         # Access output_name_order from configuration
         self.output_name_order = datamodule.output_name_order
@@ -104,7 +121,26 @@ class LitParadis(L.LightningModule):
             apply_latitude_weights=cfg.training.loss_function.lat_weights,
         )
 
-        self.forecast_steps = cfg.model.forecast_steps
+        # Possibly use a different loss for validation
+        validation_loss_type = cfg.training.loss_function.get("validation_loss", None)
+        if validation_loss_type is not None:
+
+            self.val_loss_fn = ParadisLoss(
+                loss_function=validation_loss_type,
+                lat_grid=datamodule.lat,
+                pressure_levels=torch.tensor(
+                    cfg.features.pressure_levels, dtype=torch.float32
+                ),
+                num_features=datamodule.num_out_features,
+                num_surface_vars=len(cfg.features.output.surface),
+                var_loss_weights=var_loss_weights_reordered,
+                output_name_order=datamodule.output_name_order,
+                delta_loss=cfg.training.loss_function.delta_loss,
+                apply_latitude_weights=cfg.training.loss_function.lat_weights,
+            )
+
+        else:
+            self.val_loss_fn = self.loss_fn
 
         self.num_common_features = datamodule.num_common_features
         self.print_losses = cfg.training.print_losses
@@ -124,7 +160,8 @@ class LitParadis(L.LightningModule):
             checkpoint = torch.load(
                 cfg.init.checkpoint_path, weights_only=True, map_location="cpu"
             )
-            self.load_state_dict(checkpoint["state_dict"])
+
+            self.load_state_dict(checkpoint, strict=False)
 
         self.epoch_start_time = None
 
@@ -139,7 +176,7 @@ class LitParadis(L.LightningModule):
             self.report_mean = torch.from_numpy(datamodule.dataset.report_stats["mean"])
             self.report_std = torch.from_numpy(datamodule.dataset.report_stats["std"])
 
-            self.custom_norms = not cfg.normalization.standard
+        self.custom_norms = not cfg.normalization.standard
 
     def _autoregression_input_from_output(
         self,
@@ -153,31 +190,18 @@ class LitParadis(L.LightningModule):
         # Common features have been previously sorted to ensure they are first
         # and hence simplify adding them
 
+        new_input_data = input_data.clone()
+
         # Update future inputs with the current output
-        input_data = input_data.clone()
         steps_left = num_steps - step - 1
         for i in range(min(steps_left, self.n_inputs)):
             beg_i = self.num_common_features * (self.n_inputs - i - 1)
             end_i = self.num_common_features * (self.n_inputs - i)
-            input_data[:, step + i + 1, beg_i:end_i] = output_data[
+            new_input_data[:, step + i + 1, beg_i:end_i] = output_data[
                 :, : self.num_common_features
             ]
 
-        return input_data
-
-    def _get_persistence_loss(
-        self, input_data: torch.Tensor, pred_data: torch.Tensor
-    ) -> torch.Tensor:
-        import torch
-
-        p_loss = torch.tensor(0.0)
-        num_steps = input_data.size(1)
-        for step in range(num_steps):
-            loss = self.loss_fn(
-                input_data[:, step, : self.num_common_features], pred_data[:, step]
-            )
-            p_loss += loss
-        return p_loss.detach()
+        return new_input_data
 
     def _get_report_rmse(self, output_data, pred_data):
 
@@ -253,6 +277,7 @@ class LitParadis(L.LightningModule):
             }
 
         elif cfg.scheduler.reduce_lr.enabled:
+
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer,
                 mode="min",
@@ -325,6 +350,14 @@ class LitParadis(L.LightningModule):
                     f'Unknown schedule activated: {", ".join(active_schedulers)}'
                 )
 
+    @rank_zero_only
+    def on_fit_start(self):
+        total = sum(p.numel() for p in self.parameters())
+
+        if self.logger and hasattr(self.logger, "experiment"):
+            tb = self.logger.experiment
+            tb.add_scalar("model/num_parameters", total, global_step=0)
+
     def on_train_epoch_start(self):
         """Record the start time of the epoch."""
         if self.print_losses:
@@ -349,10 +382,14 @@ class LitParadis(L.LightningModule):
                 input_data, output_data, step, num_steps
             )
 
+        batch_loss = train_loss / num_steps
+        # cache the numeric value for per-batch scheduling
+        self._last_train_loss_value = float(batch_loss.detach().item())
+
         # Log metrics
         self.log(
             "train_loss",
-            train_loss / num_steps,
+            batch_loss,
             on_step=True,
             on_epoch=False,
             prog_bar=True,
@@ -370,7 +407,7 @@ class LitParadis(L.LightningModule):
             sync_dist=True,
         )
 
-        return train_loss / num_steps
+        return batch_loss
 
     def validation_step(self, batch, batch_idx):
         """Validation step."""
@@ -386,7 +423,7 @@ class LitParadis(L.LightningModule):
             # Forward pass
             output_data = self(input_data[:, step])
 
-            loss = self.loss_fn(output_data, true_data[:, step])
+            loss = self.val_loss_fn(output_data, true_data[:, step])
 
             # Log requested scaled RMSE losses for validation
             report_loss += self._get_report_rmse(output_data, true_data[:, step])
@@ -448,23 +485,78 @@ class LitParadis(L.LightningModule):
         logging.info(f"Training completed after {self.current_epoch + 1} epochs")
 
     def on_before_optimizer_step(self, optimizer):
-        import torch
 
-        gradmag = (
-            sum(
-                torch.sum(v.grad**2) if v.grad is not None else 0
-                for (k, v) in self.named_parameters()
-                if torch.is_tensor(v)
-            )
-            ** 0.5
+        grad_sq = defaultdict(lambda: torch.zeros((), device=self.device))
+        param_sq = defaultdict(lambda: torch.zeros((), device=self.device))
+        momentum_sq = defaultdict(lambda: torch.zeros((), device=self.device))
+        dot_product_total = defaultdict(lambda: torch.zeros((), device=self.device))
+
+        for name, p in self.named_parameters():
+            if p is None or p.data is None:
+                continue
+            key = name.split(".")[1]
+
+            # param norm (for grad/param ratio)
+            param_sq[key] = param_sq[key] + (p.detach().float() ** 2).sum()
+
+            # grad norm
+            if p.grad is not None:
+                g = p.grad.detach()
+                if g.dtype != torch.float32:
+                    g = g.float()
+                grad_sq[key] = grad_sq[key] + (g**2).sum()
+
+                # Compute grad-momentum alignment (cosine similarity)
+                if p in optimizer.state and "exp_avg" in optimizer.state[p]:
+                    m = optimizer.state[p]["exp_avg"].detach()
+                    if m.dtype != torch.float32:
+                        m = m.float()
+
+                    # Accumulate for cosine similarity computation
+                    dot_product_total[key] = dot_product_total[key] + (g * m).sum()
+                    momentum_sq[key] = momentum_sq[key] + (m**2).sum()
+
+        total_grad = (
+            torch.stack(list(grad_sq.values()) or [torch.zeros((), device=self.device)])
+            .sum()
+            .sqrt()
         )
 
-        self.log(
-            "gradmag",
-            gradmag,
-            on_step=True,
-        )
+        metrics = {"grad/total": total_grad}
+        eps = 1e-12
+        total_dot = torch.zeros((), device=self.device)
+        total_grad_sq = torch.zeros((), device=self.device)
+        total_momentum_sq = torch.zeros((), device=self.device)
 
+        for k in sorted(grad_sq.keys()):
+            gnorm = grad_sq[k].sqrt()
+            pnorm = param_sq[k].sqrt().clamp_min(eps)
+            metrics[f"grad/{k}"] = gnorm
+            metrics[f"gradratio/{k}"] = gnorm / pnorm
+            metrics[f"pnorm/{k}"] = pnorm
+
+            # Add grad-momentum alignment metrics (per-layer cosine similarity)
+            if momentum_sq[k] > 0:
+                g_norm = grad_sq[k].sqrt()
+                m_norm = momentum_sq[k].sqrt()
+                per_layer_alignment = dot_product_total[k] / (g_norm * m_norm + eps)
+                metrics[f"grad_alignment/{k}"] = per_layer_alignment
+
+            # Accumulate for total cosine similarity
+            total_dot = total_dot + dot_product_total[k]
+            total_grad_sq = total_grad_sq + grad_sq[k]
+            total_momentum_sq = total_momentum_sq + momentum_sq[k]
+
+        # Compute overall grad-momentum alignment (true cosine similarity)
+        if total_momentum_sq > 0:
+            total_grad_norm = total_grad_sq.sqrt()
+            total_momentum_norm = total_momentum_sq.sqrt()
+            total_alignment = total_dot / (total_grad_norm * total_momentum_norm + eps)
+            metrics["grad_alignment/total"] = total_alignment
+
+        self.log_dict(
+            metrics, on_step=True, logger=True, prog_bar=False, sync_dist=True
+        )
         return super().on_before_optimizer_step(optimizer)
 
     def on_train_batch_start(self, batch, batch_idx):
@@ -473,10 +565,13 @@ class LitParadis(L.LightningModule):
 
         return super().on_train_batch_start(batch, batch_idx)
 
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        return super().on_train_batch_end(outputs, batch, batch_idx)
+
     def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure=None):
         super().optimizer_step(epoch, batch_idx, optimizer, optimizer_closure)
 
-        # After the optimzier step, comptue and log how long the step took
+        # After the optimizer step, compute and log how long the step took
         toc = datetime.datetime.now()
         dt = (toc - self.tic).total_seconds()
         self.log(

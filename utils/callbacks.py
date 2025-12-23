@@ -137,22 +137,22 @@ def enable_callbacks(cfg):
         # Stop epochs when validation loss is not decreasing during a coupe of epochs
         callbacks.append(
             EarlyStopping(
-                monitor="geopotential_h500",
+                monitor="val_loss",
                 mode="min",
                 patience=cfg.training.early_stopping.patience,
                 check_finite=True,  # Make sure validation has not gone to nan
-                divergence_threshold=1e4,
+                divergence_threshold=1.5,
             )
         )
 
     if cfg.training.checkpointing.enabled:
-        # Keep the last 10 checkpoints
+        # Keep all epoch checkpoints
         callbacks.append(
             ModelCheckpoint(
                 filename="{epoch:02d}",
                 monitor="step",
                 mode="max",
-                save_top_k=10,
+                save_top_k=-1,
                 save_last=True,
                 every_n_epochs=1,
                 save_on_train_epoch_end=True,

@@ -4,9 +4,12 @@ import dask
 import numpy
 import xarray
 
+from utils.mhuaes import mhuaes3
+
 
 def save_results_to_zarr(
     data,
+    ds_input_data,
     atmospheric_vars,
     surface_vars,
     constant_vars,
@@ -20,12 +23,23 @@ def save_results_to_zarr(
     data_vars = {}
     num_levels = len(pressure_levels)
 
+    input_data = ds_input_data.sel(time=init_times).sortby("time")["data"].values
+
     # Prepare atmospheric variables
     atm_dims = ["time", "prediction_timedelta", "level", "latitude", "longitude"]
     for i, feature in enumerate(atmospheric_vars):
+        beg_ind = i * num_levels
+        end_ind = (i + 1) * num_levels
+
         data_vars[feature] = (
             atm_dims,
-            data[:, :, i * num_levels : (i + 1) * num_levels],
+            numpy.concatenate(
+                (
+                    input_data[..., beg_ind:end_ind].transpose(0, 3, 1, 2)[:, None],
+                    data[:, :, beg_ind:end_ind],
+                ),
+                axis=1,
+            ),
         )
 
     # Prepare surface variables
@@ -35,7 +49,13 @@ def save_results_to_zarr(
             continue
         data_vars[feature] = (
             sur_dims,
-            data[:, :, len(atmospheric_vars) * num_levels + i],
+            numpy.concatenate(
+                (
+                    input_data[..., len(atmospheric_vars) * num_levels + i][:, None],
+                    data[:, :, len(atmospheric_vars) * num_levels + i],
+                ),
+                axis=1,
+            ),
         )
 
     if ind == 0:
@@ -52,7 +72,7 @@ def save_results_to_zarr(
         "longitude": dataset.lon,
         "time": init_times,
         "level": pressure_levels,
-        "prediction_timedelta": (numpy.arange(data.shape[1]) + 1)
+        "prediction_timedelta": (numpy.arange(data.shape[1] + 1))
         * numpy.timedelta64(6 * 3600 * 10**9, "ns"),
     }
 
@@ -60,18 +80,49 @@ def save_results_to_zarr(
     if ind == 0 and os.path.exists(filename):
         shutil.rmtree(filename)
 
+    # Create dataset
+    ds = xarray.Dataset(data_vars=data_vars, coords=coords)
+
+    # Add dewpoint depression to files
+    hu = ds.specific_humidity
+    tt = ds.temperature
+    ps = ds.level * 100
+    ds = ds.assign(dewpoint_depression=mhuaes3(hu, tt, ps))
+
     with dask.config.set(scheduler="threads"):
 
         # Save to Zarr
         if ind == 0:
-            ds = xarray.Dataset(data_vars=data_vars, coords=coords)
-            ds["time"].encoding = {"dtype": "float64"}
+
+            # Set encoding with chunking for efficient storage
+            encoding = {
+                "time": {"dtype": "float64"},
+            }
+
+            # Set reasonable chunk sizes for all variables
+            for var in ds.data_vars:
+                if "time" in ds[var].dims:
+                    var_shape = ds[var].shape
+
+                    # Set the chunks to time=1, full size for other dims
+                    encoding[var] = {
+                        "chunks": (
+                            1,
+                            *var_shape[1:],
+                        ),
+                    }
+
             ds.to_zarr(
                 filename,
                 consolidated=True,
                 zarr_format=2,
+                encoding=encoding,
             )
         else:
-            xarray.Dataset(data_vars=data_vars, coords=coords).to_zarr(
-                filename, consolidated=True, append_dim="time", zarr_format=2,
+
+            ds.to_zarr(
+                filename,
+                consolidated=True,
+                append_dim="time",
+                zarr_format=2,
             )

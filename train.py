@@ -1,10 +1,10 @@
 """Training script for the model."""
 
-import gc
 import logging
 
 import hydra
 import lightning as L
+from lightning.pytorch.loggers import TensorBoardLogger
 from omegaconf import DictConfig
 
 from data.datamodule import Era5DataModule
@@ -33,6 +33,13 @@ def main(cfg: DictConfig):
     # Prepare callbacks
     callbacks = enable_callbacks(cfg)
 
+    # Configure logger with optional experiment name
+    logger = TensorBoardLogger(
+        save_dir=cfg.training.log_dir,
+        name="lightning_logs",
+        version=cfg.training.get("experiment_name", None),
+    )
+
     # Instantiate lightning trainer with options
     trainer = L.Trainer(
         default_root_dir=cfg.training.log_dir,
@@ -49,10 +56,12 @@ def main(cfg: DictConfig):
         precision="bf16-mixed" if cfg.compute.use_amp else "32-true",
         enable_progress_bar=cfg.training.progress_bar and not cfg.training.print_losses,
         enable_model_summary=True,
-        logger=True,
+        logger=logger,
         val_check_interval=cfg.training.validation_dataset.validation_every_n_steps,
         limit_val_batches=cfg.training.validation_dataset.validation_batches,
         enable_checkpointing=cfg.training.checkpointing.enabled,
+        num_sanity_val_steps=0,
+        accumulate_grad_batches=cfg.training.get("accumulate_grad_batches", 1),
     )
 
     # Keep track of configuration parameters in logging directory

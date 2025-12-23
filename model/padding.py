@@ -1,16 +1,8 @@
-"""Cyclic padding
-
-The implementation assumes:
-- The grid has an even number of longitude points
-- Longitude points are evenly spaced
-- The grid does not include poles
-"""
-
 import torch
 
 
 class GeoCyclicPadding(torch.nn.Module):
-    """Cyclic padding layer for regular lat-lon grids."""
+    """Cyclic padding layer for equiangular grids with poles."""
 
     def __init__(self, pad_width):
         super().__init__()
@@ -18,29 +10,30 @@ class GeoCyclicPadding(torch.nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply cyclic padding to the input tensor."""
-        # Validate input dimensions
+        if self.pad_width == 0:
+            return x
+
         assert (
             len(x.shape) == 4
         ), "Input must be 4-dimensional [batch, channels, lat, lon]"
         batch_size, channels, height, width = x.shape
+
         assert width % 2 == 0, "Number of longitude points must be even"
 
-        # For latitude padding, we need to rotate by 180° and account for longitude padding
         middle_index = width // 2
 
-        # Apply 180° shift
-        top_padding = torch.roll(
-            x[:, :, : self.pad_width, :], shifts=middle_index, dims=3
-        )
-        bottom_padding = torch.roll(
-            x[:, :, -self.pad_width :, :], shifts=middle_index, dims=3
-        )
+        # Apply 180 degree roll to top and bottom rows
+        top_source = x[:, :, 1 : self.pad_width + 1, :]
+        bottom_source = x[:, :, -(self.pad_width + 1) : -1, :]
+
+        top_padding = torch.roll(top_source, shifts=middle_index, dims=3)
+        bottom_padding = torch.roll(bottom_source, shifts=middle_index, dims=3)
+
         x = torch.cat([top_padding.flip(2), x, bottom_padding.flip(2)], dim=2)
 
-        # Longitude periodic padding
+        # Apply periodic padding
         x_padded = torch.cat(
             [x[:, :, :, -self.pad_width :], x, x[:, :, :, : self.pad_width]], dim=3
         )
 
-        # Combine padded regions
         return x_padded

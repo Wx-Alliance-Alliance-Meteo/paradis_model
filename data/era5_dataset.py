@@ -98,7 +98,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         time_delta = numpy.timedelta64(int(time_delta.total_seconds()), "s")
 
         start_date_dt = numpy.datetime64(start_date, "s")
-        step = numpy.timedelta64(6, "h")
+        step = numpy.timedelta64(time_resolution, "h")
         adjusted_start_date = start_date_dt - (self.n_time_inputs - 1) * step
 
         # Convert end_date to a datetime object and adjust end date
@@ -117,6 +117,14 @@ class ERA5Dataset(torch.utils.data.Dataset):
                 self.interval_steps + self.prediction_shift
             )
 
+        # Store a lazy dataset that contains the requested dates only
+        ds_loader = ds.sel(time=slice(start_date, end_date, self.interval_steps))
+        self.ds_loader = ds_loader
+
+        # The number of time instances in the dataset represents its length
+        self.time = ds_loader.time.values
+        self.length = ds_loader.time.size
+
         # Select the time range needed to process this dataset
         ds = ds.sel(time=slice(adjusted_start_date, adjusted_end_date))
 
@@ -126,10 +134,6 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.lat_size = len(self.lat)
         self.lon_size = len(self.lon)
         self.pressure_levels = features_cfg.pressure_levels
-
-        # The number of time instances in the dataset represents its length
-        self.time = ds.time.values
-        self.length = ds.time.size
 
         # Store the size of the grid (lat * lon)
         self.grid_size = ds.latitude.size * ds.longitude.size
@@ -233,6 +237,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
         ds_input = ds.sel(features=self.dyn_input_features)
         ds_output = ds.sel(features=self.dyn_output_features)
+        self.ds_loader = self.ds_loader.sel(features=self.dyn_input_features)
 
         # Pre-select the features in the right order
         if self.preload:
@@ -279,9 +284,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
     def __len__(self):
         # Do not yield a value for the last time in the dataset since there
         # is no future data
-        return (
-            self.length - self.forecast_steps - (self.n_time_inputs - 1)
-        ) // self.interval_steps - self.prediction_shift
+        return self.length
 
     def __getitem__(self, ind: int):
         ind = ind * self.interval_steps
@@ -300,7 +303,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         true_data = self.ds_output.isel(time=slice(output_ini, output_end))
 
         # Load arrays into CPU memory
-        input_data, true_data = dask.compute(input_data, true_data)  # type: ignore -- dask.compute is really dask.base.compute
+        input_data, true_data = dask.compute(input_data, true_data, scheduler="synchronous", traverse=False)
 
         # Convert to tensors - data comes in [time, lat, lon, features]
         x = torch.tensor(input_data.data, dtype=self.dtype)
@@ -351,7 +354,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
         assert (
             self.cfg.features.input.constants[-1] == "longitude"
-        ), "Latitude must be the last feature in constants!"
+        ), "Longitude must be the last feature in constants!"
 
     def _prepare_normalization(
         self, ds_input: xarray.Dataset, ds_output: xarray.Dataset

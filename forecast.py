@@ -1,12 +1,14 @@
 """Forecast script for the model."""
 
+import sys
 from datetime import datetime
 import logging
 
 import hydra
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 import torch
 from tqdm import tqdm
+import numpy
 
 from trainer import LitParadis
 from data.datamodule import Era5DataModule
@@ -19,10 +21,19 @@ from utils.postprocessing import (
 from utils.visualization import plot_forecast_map
 
 
-@hydra.main(version_base=None, config_path="config/", config_name="paradis_settings")
-def main(cfg: DictConfig):
-    """Generate forecasts using a trained model."""
+def main():
+    """Generate forecasts using a trained model.
+    Usage: python forecast.py path/to/config_file.yaml
+    """
 
+    cfg = OmegaConf.load(sys.argv[1])
+
+    """
+    Core forecast execution logic.
+
+    Args:
+        cfg: Fully configured DictConfig with all necessary parameters set
+    """
     # Set device
     device = torch.device(
         "cuda"
@@ -53,8 +64,6 @@ def main(cfg: DictConfig):
 
     output_features = list(dataset.dyn_output_features)
 
-    n_inputs = cfg.dataset.n_time_inputs
-
     # Load model
     litmodel = LitParadis(datamodule, cfg)
     if not cfg.init.checkpoint_path:
@@ -83,14 +92,18 @@ def main(cfg: DictConfig):
     )
 
     # Compute initialization times from dataset
-    init_times = dataset.time[n_inputs - 1 :: dataset.interval_steps]
+    init_times = dataset.time
+
+    logging.info(f"Number of forecasts to generate: {len(init_times)}")
 
     # Run forecast
     logging.info("Generating forecast...")
     ind = 0
     with torch.inference_mode(), torch.no_grad():
         time_start_ind = 0
-        for input_data, ground_truth in tqdm(datamodule.predict_dataloader()):
+        for input_data, ground_truth in tqdm(
+            datamodule.predict_dataloader()
+        ):
 
             batch_size = input_data.shape[0]
 
@@ -106,8 +119,11 @@ def main(cfg: DictConfig):
             )
 
             frequency_counter = 0
+
             for step in range(num_forecast_steps):
-                output_data = litmodel(input_data[:, step].to(device))
+                output_data = litmodel(
+                    input_data[:, step].to(device),
+                )
 
                 input_data = litmodel._autoregression_input_from_output(
                     input_data, output_data, step, num_forecast_steps
@@ -129,6 +145,10 @@ def main(cfg: DictConfig):
 
             # Post-process cartesian winds to spherical
             convert_cartesian_to_spherical_winds(
+                dataset.lat, dataset.lon, cfg, ground_truth, output_features
+            )
+
+            convert_cartesian_to_spherical_winds(
                 dataset.lat, dataset.lon, cfg, output_forecast, output_features
             )
 
@@ -136,6 +156,7 @@ def main(cfg: DictConfig):
             if cfg.forecast.output_file is not None:
                 save_results_to_zarr(
                     output_forecast,
+                    dataset.ds_loader,
                     atmospheric_vars,
                     surface_vars,
                     constant_vars,
@@ -148,85 +169,6 @@ def main(cfg: DictConfig):
 
             ind += 1
             time_start_ind += batch_size
-
-            if not cfg.forecast.generate_plots:
-                continue
-
-            # Plot results for the first time instance only
-            time_ind = 0
-
-            if time_ind != ind - 1:
-                continue
-
-            # Prepare ground truth for plots
-            ground_truth = ground_truth.numpy()
-
-            # Make sure ground truth has the same frequency as output_forecast
-            ground_truth = ground_truth[:, :: cfg.forecast.output_frequency]
-
-            convert_cartesian_to_spherical_winds(
-                dataset.lat, dataset.lon, cfg, ground_truth, output_features
-            )
-
-            # Generate plots for different variables
-            logging.info("Generating forecast plots...")
-
-            # Generate a plot for each forecast step
-            for forecast_ind in range(output_num_forecast_steps):
-
-                # Generate a string for the input and output times
-                time_in = dataset.ds_input.time.values[time_ind]
-                time_out = dataset.ds_input.time.values[
-                    time_ind + forecast_ind * output_frequency + 1
-                ]
-                dt_in = time_in.astype("datetime64[s]").astype(datetime)
-                dt_out = time_out.astype("datetime64[s]").astype(datetime)
-                date_in = dt_in.strftime("%Y-%m-%d %H:%M")
-                date_out = dt_out.strftime("%Y-%m-%d %H:%M")
-
-                # Extract data for this forecast step and time index
-                output_data = output_forecast[time_ind, forecast_ind]
-                true_data = ground_truth[time_ind, forecast_ind]
-
-                # Plot geopotential at 500 hPa
-                plot_forecast_map(
-                    date_in,
-                    date_out,
-                    output_data,
-                    true_data,
-                    dataset,
-                    "geopotential",
-                    cfg,
-                    level=500,
-                    ind=forecast_ind,
-                )
-
-                # Plot 2m temperature with Celsius conversion
-                plot_forecast_map(
-                    date_in,
-                    date_out,
-                    output_data,
-                    true_data,
-                    dataset,
-                    "2m_temperature",
-                    cfg,
-                    temp_offset=273.15,
-                    ind=forecast_ind,
-                )
-
-                # Plot precipitations
-                plot_forecast_map(
-                    date_in,
-                    date_out,
-                    output_data,
-                    true_data,
-                    dataset,
-                    "total_precipitation_6hr",
-                    cfg,
-                    ind=forecast_ind,
-                )
-
-            logging.info("Forecast plots generated successfully")
 
     logging.info("Saved output files successfuly")
 
