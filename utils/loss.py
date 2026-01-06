@@ -177,7 +177,7 @@ class ParadisLoss(torch.nn.Module):
         if self.apply_pressure_weights:
             # Compute proper integration weights along pressure coordinate
             pressure_weights = torch.where(
-                self.pressure_levels / 1000 > 0.2, 0.2, self.pressure_levels / 1000
+                self.pressure_levels / 1000 > 0.2, self.pressure_levels / 1000, 0.2
             )
         else:
             pressure_weights = torch.ones(
