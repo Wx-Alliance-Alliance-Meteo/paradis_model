@@ -38,7 +38,7 @@ compute:
   use_amp: true                    # Enable AMP (Automatic Mixed Precision)
   batch_size: 32                   # Number of samples per batch
   num_workers: 8                   # Number of parallel processes for data preloading
-  compile: true                    # Whether to compile the model
+  compile: false                    # Whether to compile the model
 
 # Forecast parameters
 forecast:

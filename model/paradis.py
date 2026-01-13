@@ -5,7 +5,7 @@ import math
 import torch
 from torch import nn
 
-from model.advection import NeuralSemiLagrangian
+from model.advection import NeuralEulerianUpwind
 from model.blocks import GMBlock
 
 
@@ -98,13 +98,12 @@ class Paradis(nn.Module):
 
         self.advection = nn.ModuleList(
             [
-                NeuralSemiLagrangian(
+                NeuralEulerianUpwind(
                     hidden_dim,
                     mesh_size,
                     num_vels=self.num_vels,
                     lat_grid=lat_grid,
                     lon_grid=lon_grid,
-                    interpolation=adv_interpolation,
                     project_advection=cfg.model.get("projected_advection", True),
                 )
                 for _ in range(self.num_layers)

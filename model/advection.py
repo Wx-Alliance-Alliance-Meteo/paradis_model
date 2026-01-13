@@ -1,11 +1,13 @@
 import torch
+import torch.nn.functional as F
+from torch import nn
 
 from model.blocks import GMBlock
 from model.padding import GeoCyclicPadding
 
 
-class NeuralSemiLagrangian(torch.nn.Module):
-    """Neural semi-Lagrangian advection operator."""
+class NeuralEulerianUpwind(nn.Module):
+    """Eulerian advection operator using 5th-order upwind finite differences."""
 
     def __init__(
         self,
@@ -14,19 +16,17 @@ class NeuralSemiLagrangian(torch.nn.Module):
         num_vels: int,
         lat_grid: torch.Tensor,
         lon_grid: torch.Tensor,
-        interpolation: str = "bicubic",
         project_advection=True,
+        epi_tolerance=1e-5,
     ):
         super().__init__()
 
-        self.padding = 1
-        if interpolation == "bicubic":
-            self.padding = 2
-
-        self.padding_interp = GeoCyclicPadding(self.padding)
+        self.padding = 3
+        self.padding_layer = GeoCyclicPadding(self.padding)
         self.hidden_dim = hidden_dim
         self.num_vels = num_vels
         self.mesh_size = mesh_size
+        self.epi_tolerance = epi_tolerance
 
         if project_advection:
             self.down_projection = GMBlock(
@@ -46,10 +46,8 @@ class NeuralSemiLagrangian(torch.nn.Module):
             )
         else:
             self.num_vels = hidden_dim
-            self.down_projection = lambda x: x
-            self.up_projection = lambda x: x
-
-        self.interpolation = interpolation
+            self.down_projection = nn.Identity()
+            self.up_projection = nn.Identity()
 
         H, W = mesh_size
 
@@ -60,56 +58,97 @@ class NeuralSemiLagrangian(torch.nn.Module):
             "lon_grid", lon_grid.unsqueeze(0).unsqueeze(0).contiguous().clone()
         )
 
-        self.register_buffer("Hf", torch.tensor(float(H)))
-        self.register_buffer("Wf", torch.tensor(float(W)))
-        self.register_buffer("min_lat", torch.min(lat_grid))
-        self.register_buffer("max_lat", torch.max(lat_grid))
-        self.register_buffer("min_lon", torch.min(lon_grid))
-        self.register_buffer("max_lon", torch.max(lon_grid))
-        self.register_buffer("d_lon", self.max_lon - self.min_lon)
-        self.register_buffer("d_lat", self.max_lat - self.min_lat)
+        dlat = torch.diff(lat_grid[:, 0])[0]
+        dlon = torch.diff(lon_grid[0, :])[0]
+        
+        self.register_buffer("dlat", dlat)
+        self.register_buffer("dlon", dlon)
 
-    def _transform_to_latlon(
-        self,
-        lat_prime: torch.Tensor,
-        lon_prime: torch.Tensor,
-        lat_p: torch.Tensor,
-        lon_p: torch.Tensor,
-    ) -> tuple:
-        """Transform from local rotated coordinates back to standard latlon coordinates."""
-        sin_lat_prime = torch.sin(lat_prime)
-        cos_lat_prime = torch.cos(lat_prime)
-        sin_lon_prime = torch.sin(lon_prime)
-        cos_lon_prime = torch.cos(lon_prime)
-        sin_lat_p = torch.sin(lat_p)
-        cos_lat_p = torch.cos(lat_p)
+        # Positive velocity: stencil [i-3, i-2, i-1, i, i+1, i+2]
+        self.register_buffer(
+            "coeff_pos",
+            torch.tensor([-2.0, 15.0, -60.0, 20.0, 30.0, -3.0], dtype=lat_grid.dtype) / 60.0
+        )
+        # Negative velocity: stencil [i-2, i-1, i, i+1, i+2, i+3]
+        self.register_buffer(
+            "coeff_neg",
+            torch.tensor([3.0, -30.0, -20.0, 60.0, -15.0, 2.0], dtype=lat_grid.dtype) / 60.0
+        )
 
-        sin_lat = sin_lat_prime * cos_lat_p + cos_lat_prime * cos_lon_prime * sin_lat_p
-        lat = torch.arcsin(torch.clamp(sin_lat, -1 + 1e-7, 1 - 1e-7))
+    def _compute_derivative_vectorized(self, q_padded, velocity, dx, dim):
+        """Compute 5th-order upwind derivative."""
+        B, C, H, W = velocity.shape
+        q_reshaped = q_padded.reshape(B * C, 1, q_padded.shape[2], q_padded.shape[3])
+        
+        if dim == 3:  # Longitude direction
+            k_pos = self.coeff_pos.view(1, 1, 1, 6)
+            k_neg = self.coeff_neg.view(1, 1, 1, 6)
+            
+            # Apply convolution - output will have shape (B*C, 1, H_pad, W_pad-5)
+            d_pos_all = F.conv2d(q_reshaped, k_pos)
+            d_neg_all = F.conv2d(q_reshaped, k_neg)
+            
+            # Extract the correct columns
+            # For positive: stencil starts at padded_i-3, so output column k corresponds to original column k
+            # For negative: stencil starts at padded_i-2, so output column k corresponds to original column k-1
+            d_pos = d_pos_all[:, :, self.padding:-self.padding, :][:, :, :, :W]
+            d_neg = d_neg_all[:, :, self.padding:-self.padding, :][:, :, :, 1:W+1]
+            
+            d_pos = d_pos.reshape(B, C, H, W)
+            d_neg = d_neg.reshape(B, C, H, W)
+            
+            mask_pos = (velocity > 0).float()
+            dq_dx = (mask_pos * d_pos + (1 - mask_pos) * d_neg) / dx
 
-        num = cos_lat_prime * sin_lon_prime
-        den = cos_lat_prime * cos_lon_prime * cos_lat_p - sin_lat_prime * sin_lat_p
-        lon = lon_p + torch.atan2(num, den)
+        else:  # Latitude direction
+            k_pos = self.coeff_pos.view(1, 1, 6, 1)
+            k_neg = self.coeff_neg.view(1, 1, 6, 1)
+            
+            d_pos_all = F.conv2d(q_reshaped, k_pos)
+            d_neg_all = F.conv2d(q_reshaped, k_neg)
+            
+            # Extract the correct rows
+            d_pos = d_pos_all[:, :, :, self.padding:-self.padding][:, :, :H, :]
+            d_neg = d_neg_all[:, :, :, self.padding:-self.padding][:, :, 1:H+1, :]
+            
+            d_pos = d_pos.reshape(B, C, H, W)
+            d_neg = d_neg.reshape(B, C, H, W)
+            
+            mask_pos = (velocity > 0).float()
+            dq_dx = (mask_pos * d_pos + (1 - mask_pos) * d_neg) / dx
+            
+        return dq_dx
 
-        lon = torch.remainder(lon + 2 * torch.pi, 2 * torch.pi)
+    def _compute_rhs(self, q, u, v):
+        """Compute RHS: -u * dq/dlambda - v * dq/dtheta"""
+        q_padded = self.padding_layer(q)
+        
+        dq_dlon = self._compute_derivative_vectorized(q_padded, u, self.dlon, dim=3)
+        dq_dlat = self._compute_derivative_vectorized(q_padded, v, self.dlat, dim=2)
+        
+        rhs = -u * dq_dlon - v * dq_dlat
+        
+        return rhs
 
-        return lat, lon
-
-    def enforce_pole_continuity(self, x):
+    def _phi1_times_vector(self, dt, jacobian_fn, vector, q):
         """
-        Forces the South Pole (row 0) and North Pole (row -1) to have
-        a single scalar value (mean of the row).
+        Compute phi_1(dt * J) * vector using Taylor series.
+        phi_1(z) = (exp(z) - 1) / z = 1 + z/2! + z^2/3! + z^3/4! + ...
         """
-        # Calculate global mean for South Pole (Row 0)
-        # x: [B, C, H, W]
-        south_mean = x[:, :, 0:1, :].mean(dim=3, keepdim=True)
-        north_mean = x[:, :, -1:, :].mean(dim=3, keepdim=True)
-
-        # Overwrite the pole rows with the broadcasted mean
-        x_fixed = x.clone()
-        x_fixed[:, :, 0, :] = south_mean.squeeze(-1)
-        x_fixed[:, :, -1, :] = north_mean.squeeze(-1)
-        return x_fixed
+        result = vector.clone()
+        term = vector.clone()
+        
+        for k in range(1, 20): # TODO : mettre dans la config
+            J_term = jacobian_fn(term, q)
+            term = J_term * (dt / (k + 1))
+            
+            term_norm = torch.max(torch.abs(term))
+            if term_norm < self.epi_tolerance:
+                break
+                
+            result = result + term
+        
+        return result
 
     def forward(
         self,
@@ -118,55 +157,19 @@ class NeuralSemiLagrangian(torch.nn.Module):
         v: torch.Tensor,
         dt: float,
     ) -> torch.Tensor:
-        """Compute advection using rotated coordinate system."""
-        batch_size = hidden_features.shape[0]
-        H, W = self.mesh_size
-
-        hidden_features = self.enforce_pole_continuity(hidden_features)
-
+        """Compute advection using EPI2 time integration."""
+        
         projected_inputs = self.down_projection(hidden_features)
-
-        lon_prime = -u * dt
-        lat_prime = -v * dt
-
-        lat_dep, lon_dep = self._transform_to_latlon(
-            lat_prime, lon_prime, self.lat_grid, self.lon_grid
-        )
-
-        pix_x = (lon_dep - self.min_lon) / self.d_lon * (self.Wf - 1.0)
-        pix_y = (lat_dep - self.min_lat) / self.d_lat * (self.Hf - 1.0)
-
-        projected_padded = self.padding_interp(projected_inputs)
-
-        pix_x_pad = pix_x + self.padding
-        pix_y_pad = pix_y + self.padding
-
-        H_pad = H + 2 * self.padding
-        W_pad = W + 2 * self.padding
-
-        grid_x = 2.0 * (pix_x_pad / float(W_pad - 1)) - 1.0
-        grid_y = 2.0 * (pix_y_pad / float(H_pad - 1)) - 1.0
-
-        grid_x = grid_x.reshape(batch_size * self.num_vels, H, W)
-        grid_y = grid_y.reshape(batch_size * self.num_vels, H, W)
-
-        grid = torch.stack([grid_x, grid_y], dim=-1)
-
-        projected_padded = projected_padded.reshape(
-            batch_size * self.num_vels, 1, H_pad, W_pad
-        )
-
-        interpolated = torch.nn.functional.grid_sample(
-            projected_padded,
-            grid,
-            align_corners=True,
-            mode=self.interpolation,
-            padding_mode="zeros",
-        )
-
-        interpolated = self.up_projection(
-            interpolated.reshape(batch_size, self.num_vels, H, W)
-        )
-
-        interpolated = self.enforce_pole_continuity(interpolated)
-        return interpolated
+        
+        F_n = self._compute_rhs(projected_inputs, u, v)
+        
+        def jacobian_action(vec, state):
+            return self._compute_rhs(vec, u, v)
+        
+        phi1_F = self._phi1_times_vector(dt, jacobian_action, F_n, projected_inputs)
+        
+        updated = projected_inputs + phi1_F * dt
+        
+        result = self.up_projection(updated)
+        
+        return result
