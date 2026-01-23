@@ -2,15 +2,16 @@
 
 import torch
 from torch import nn
-
 from model.padding import GeoCyclicPadding
 from model.gmblock import GMBlock
 #################################################
-from model.attentionblock import Paradis_Global_Feature_Extraction_Layer as Global_Feature_Layer
-from model.attentionblock import Multi_Scale_Skip_Connection_Layer       as MSSC_Layer
-from model.attentionblock import Multi_Scale_Skip_Connection_Block       as MSSC_Block
-from model.attentionblock import get_cvh_Ix16_config                     as CTHconfig
+from model.Cnn_Trans_hybrid_layer import Paradis_Global_Feature_Extraction_Layer as Global_Feature_Layer
+from model.Cnn_Trans_hybrid_layer import Multi_Scale_Skip_Connection_Layer_essai as MSSC_Layer
+from model.Cnn_Trans_hybrid_layer import Multi_Scale_Skip_Connection_Block_essai as MSSC_Block
+from model.Cnn_Trans_hybrid_layer import get_CNN_VIT_Hyb_config                  as CTHconfig
 #################################################
+
+
 
 class NeuralSemiLagrangian(nn.Module):
     """Implements the semi-Lagrangian advection."""
@@ -292,10 +293,6 @@ class Paradis(nn.Module):
             bias_channels=bias_channels,
         )
 
-        #################################################
-        #self.global_features = HCV_Encoder(..................)
-        #self.up_sampling     = HCV_Upsampler(..................)
-        #################################################
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
@@ -308,19 +305,7 @@ class Paradis(nn.Module):
 
         # Project features to latent space
         z_   = self.input_proj(x)
-        # skip = self.multiscale_Conv_and_Skip(z_)
-        print('z_.shape:',z_.shape)
-        z    = self.proj_layer_attention(z_)
-        print('z.shape:',z.shape)
-        #z_ = z
-        #################################################
-        #print('z_.shape:', z_.shape)
-        #       z.shape ~ something like [32, 672, 32, 64]
-        # you need to do export TORCH_COMPILE_DISABLE=1 in order to print during training
-        # global_z = self.proj_layer_attention(z_)
-        # print('global_z.shape:', global_z.shape)
-        # z        = self.up_sampling(global_z,z)
-        #################################################
+        z    = self.proj_layer_attention(z_)        
 
         # Compute advection and diffusion-reaction
         for i in range(self.num_layers):

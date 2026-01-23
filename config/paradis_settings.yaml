@@ -1,13 +1,13 @@
 # Model architecture
 model:
   latent_multiplier: -1            # Scale the dynamic inputs in hidden dimension with the number of input channels
-  latent_size: 672                 # Set a fixed size of the latent space (if latent_multiplier is -1)
+  latent_size: 512 #672                 # Set a fixed size of the latent space (if latent_multiplier is -1)
   forecast_steps: 1                # Number of autoregressive steps
   base_dt: 21600                   # Data time resolution in seconds (6 hours * 3600 seconds)
   num_layers: 4                    # Model depth
   bias_channels: 4                 # Number of bias channels
   velocity_vectors: 84             # Number of velocity layers (if latent_multiplier is -1)
-  diffusion_size: 672              # Latent size for the diffusion operator
+  diffusion_size: 512              # Latent size for the diffusion operator
   adv_interpolation: bicubic       # Choose between bilinear or bicubic
 
 # Initialization settings (seeding)
@@ -32,7 +32,7 @@ compute:
   num_devices: 1                   # Number of GPUS/CPU devices per node
   accelerator: gpu                 # CPU/GPU
   use_amp: true                    # Enable AMP (Automatic Mixed Precision)
-  batch_size: 32                   # Number of samples per batch
+  batch_size: 16 #32                   # Number of samples per batch
   num_workers: 8                   # Number of parallel processes for data preloading
   compile: true                    # Whether to compile the model
 

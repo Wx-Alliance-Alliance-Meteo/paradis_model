@@ -29,29 +29,80 @@ def get_cvh_Ix16_config():
     config                        = ml_collections.ConfigDict()
     config.patches                = ml_collections.ConfigDict({'grid': (1, 1)})
     config.transformer            = ml_collections.ConfigDict()
-    config.hidden_output_trans    = 672
-    config.transformer.mlp_dim    = 2048
-    config.transformer.num_heads  = 12
+    config.hidden_output_trans    = 512  #672
+    config.transformer.mlp_dim    = 1024 #2048
+    config.transformer.num_heads  = 16
     config.transformer.num_layers = 1
-    config.head_channels          = 672
-    config.input_size             = (32,64,672)
+    config.head_channels          = 512 #672
+    config.input_size             = (32,64,512)
     config.input_channel_scale1   = config.input_size[2]
-    config.p_size                 = 16
+    config.p_size                 = 8 #16
     config.patch_size             = (config.p_size,config.p_size) 
     config.transformer.attention_dropout_rate = 0.0
     config.transformer.dropout_rate           = 0.1
-    config.classifier                         = None
+    #config.classifier                         = None
     config.representation_size                = None
     config.resnet_pretrained_path             = None
     config.pretrained_path                    = None    
-    config.n_scales                           = int(np.log2(config.p_size) + 1)
-    config.n_skip                             = config.n_scales - 2 
-    config.scales                             = [i for i in range(config.n_scales)]
-    config.downward_in_channels               = {0:None                       , 1:config.input_channel_scale1, 2:config.head_channels, 3:config.head_channels , 4:None}
-    config.upward_in_channels                 = {0:config.input_channel_scale1, 1:config.head_channels       , 2:config.head_channels, 3:config.head_channels , 4:None}
-    config.skip_channels_size                 = {0:config.input_channel_scale1, 1:config.head_channels       , 2:config.head_channels, 3:config.head_channels , 4:None}
-    config.decoder_out_channels               = {0:config.input_channel_scale1, 1:config.input_channel_scale1, 2:config.head_channels, 3:config.head_channels , 4:None}
-    config.n_classes                          = None
+    # config.n_scales                           = int(np.log2(config.p_size) + 1)
+    # config.n_skip                             = config.n_scales - 2 
+    # config.scales                             = [i for i in range(config.n_scales)]
+
+
+    config.n_scales                           = int(np.log2(config.p_size))
+    config.n_skip                             = config.n_scales
+    config.scales                             = [i for i in range(1,config.n_scales)]
+
+
+    #################################################################
+    starting_length        = config.input_size[0]
+    starting_heigth        = config.input_size[1]
+    starting_input_channel = config.input_size[2]
+    Deph                   = config.head_channels
+    LDS_Transformer        = config.hidden_output_trans
+    patch_size             = config.p_size
+
+    Final_length           = starting_heigth/patch_size
+    Final_heigth           = starting_length/patch_size
+    
+    downward_in_channels   = {1:config.input_channel_scale1, 2:config.input_channel_scale1, 3:config.input_channel_scale1, 4:config.input_channel_scale1, 5:config.input_channel_scale1}
+
+    config.downward_dim          = {'in': {},'out': {}}   
+    config.upward_dim            = {'in': {},'out': {}}
+    config.skip_dim              = {}
+    D = int(np.log2(config.p_size))
+    L = starting_length
+    H = starting_heigth 
+
+    for s in range(1,D):
+            print(s)    
+            print(downward_in_channels[s+1])    
+            config.downward_dim["in"].update( {s:[L        , H        , downward_in_channels[s  ] ]})  
+            config.downward_dim["out"].update({s:[L//(2**s), H//(2**s), downward_in_channels[s+1] ]})
+            config.skip_dim.update(           {s:[L//(2**s), H//(2**s), downward_in_channels[s+1] ]})         
+            config.upward_dim["out"].update(  {s:[L        , H        , downward_in_channels[s  ] ]})
+            config.upward_dim["in"].update(   {s:[    None ,     None ,                     None  ]})
+            if s==D-1: 
+                config.downward_dim["out"].update({s:[None, None, None]})
+
+    for s in range(1,D):
+        if s==D-1: 
+            config.upward_dim["in"][s]=[Final_length, Final_length, LDS_Transformer]
+        else:
+            config.upward_dim["in"][s]=config.upward_dim["out"][s+1]
+
+
+    # config.downward_in_channels               = {0:None                       , 1:config.input_channel_scale1, 2:config.head_channels, 3:config.head_channels , 4:None}
+    # config.upward_in_channels                 = {0:config.input_channel_scale1, 1:config.head_channels       , 2:config.head_channels, 3:config.head_channels , 4:None}
+    # config.skip_channels_size                 = {0:config.input_channel_scale1, 1:config.head_channels       , 2:config.head_channels, 3:config.head_channels , 4:None}
+    # config.decoder_out_channels               = {0:config.input_channel_scale1, 1:config.input_channel_scale1, 2:config.head_channels, 3:config.head_channels , 4:None}
+
+
+    # config.downward_dim                       = {'in': {},'out': {}}   
+    # config.upward_dim                         = {'in': {},'out': {}}
+    # config.skip_dim                           = {}
+
+    #config.n_classes                         = None
     config.activation                         = 'softmax'
     return config
 
@@ -131,7 +182,11 @@ class Attention(nn.Module):
         context_layer    = torch.matmul(attention_probs, value_layer)
         context_layer    = context_layer.permute(0, 2, 1, 3).contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
+        print("                    new_context_layer_shape ", new_context_layer_shape)
         context_layer    = context_layer.view(*new_context_layer_shape)
+        #print("Forward attention : context_layer ", context_layer)
+        print("                    context_layer.shape ", context_layer.shape)
+
         attention_output = self.out(context_layer)
         attention_output = self.proj_dropout(attention_output)
         return attention_output, weights
@@ -242,7 +297,7 @@ class Encoder(nn.Module):
 class Transformer(nn.Module):
     def __init__(self, config, img_size, vis):
         super(Transformer, self).__init__()
-        self.embeddings = Embeddings(config, img_size=img_size)
+        self.embeddings = Embeddings(config, img_size=img_size,)
         self.encoder    = Encoder(config, vis)
 
     def forward(self, input_ids):
@@ -309,15 +364,15 @@ class DecoderBlock(nn.Module):
         print('in_channels + skip_channels')
         print(in_channels ,  skip_channels)
         self.conv1 = Conv2dReLU(
-            in_channels + skip_channels,
-            out_channels,
+            self.in_ch + self.skip_ch,
+            self.out_ch,
             kernel_size=3,
             padding=1,
             use_batchnorm=use_batchnorm,
         )
         self.conv2 = Conv2dReLU(
-            out_channels,
-            out_channels,
+            self.out_ch,
+            self.out_ch,
             kernel_size=3,
             padding=1,
             use_batchnorm=use_batchnorm,
@@ -465,6 +520,232 @@ class Multi_Scale_Skip_Connection_Layer(nn.Module):
             skip.update({scale:x})
         return skip
 
+class Multi_Scale_Skip_Connection_Layer_essai(nn.Module):
+    def __init__(self, config):
+        super(Multi_Scale_Skip_Connection_Layer_essai, self).__init__() 
+        # starting_length        = config.input_size[0]
+        # starting_heigth        = config.input_size[1]
+        # starting_input_channel = config.input_size[2]
+        # downward_in_channels   = config.downward_in_channels
+        # Deph                   = config.head_channels
+        # LDS_Transformer        = config.hidden_output_trans
+        # patch_size             = config.p_size
+
+        # Final_length           = starting_heigth/patch_size
+        # Final_heigth           = starting_length/patch_size
+        # self.downward_dim          = {'in': {},'out': {}}   
+        # self.upward_dim            = {'in': {},'out': {}}
+        # self.skip_dim              = {}
+        # D = np.log2(config.p_size)
+        # L = starting_length
+        # H = starting_heigth 
+
+        # for s in range(1,D):        
+        #     self.downward_dim["in"].update( {s:[L       , H       , downward_in_channels[s  ] ]})
+        #     self.downward_dim["out"].update({s:[L/(2**s), H/(2**s), downward_in_channels[s+1] ]})
+        #     self.skip_dim.update(           {s:[L/(2**s), H/(2**s), downward_in_channels[s+1] ]})
+        #     self.upward_dim["out"].update(  {s:[L       , H       , downward_in_channels[s  ] ]})
+        #     self.upward_dim["in"].update(   {s:[    None,     None,                       None]})
+        #     if s==D-1: 
+        #         self.downward_dim["out"]={s:[None, None, None]}
+        # for s in range(1,D):
+        #     if s==D-1: 
+        #         self.upward_dim["in"][s]=[Final_length,Final_length,LDS_Transformer]
+        #     else:
+        #         self.upward_dim["in"][s]=self.upward_dim["out"][s+1]
+
+        # scales={}
+        D            = config.n_scales
+        downward_dim = config.downward_dim
+        skip_dim     = config.skip_dim
+
+
+        blocks=[]
+        for s in range(1,D):
+            blocks.append(Multi_Scale_Skip_Connection_Block_essai(downward_dim['in'][s][2],skip_dim[s][2],s))
+        self.blocks = nn.ModuleList(blocks)
+
+    def forward(self, x):
+        skip={}
+        print('******************')
+        print('Multi_Scale_Skip_Connection_Layer X.shape',x.shape)
+        skip.update({0:x})
+        for i, mssc_block in enumerate(self.blocks):
+            scale = mssc_block.scale
+            x = mssc_block(x)
+            print('Multi_Scale_Skip_Connection_Layer Skip connection block scale',scale)
+            print('Multi_Scale_Skip_Connection_Layer Skip connection block skip.shape',x.shape)
+            skip.update({scale:x})
+        return skip
+
+class Multi_Scale_Skip_Connection_Block_essai(nn.Module):
+    def __init__(self,in_ch,skip_ch,scale):
+        super().__init__()
+        self.scale        =scale 
+        self.in_channels  =in_ch
+        self.skip_channels=skip_ch
+        self.conv   = nn.Sequential(nn.Conv2d(in_channels =in_ch,
+                                              out_channels=skip_ch,kernel_size =3,
+                                              padding=1,stride=2,bias=False),
+                                    nn.BatchNorm2d(skip_ch),
+                                    nn.ReLU())
+    def forward(self, x):
+        print('Multi_Scale_Skip_Connection_Block self.in_channels'  ,self.in_channels)
+        print('Multi_Scale_Skip_Connection_Block self.skip_channels',self.skip_channels)
+        print('Multi_Scale_Skip_Connection_Block x.shape',x.shape)
+        print('Multi_Scale_Skip_Connection_Block Scale',self.scale)
+        x = self.conv(x)
+        return x
+
+# class Cnn_Vit_Hybrid_Up_Sampler_essai(nn.Module):
+#     def __init__(self, config):
+#         super().__init__()
+#         self.config      = config
+#         head_channels    = config.head_channels       
+#         self.conv_more   = Conv2dReLU(config.hidden_output_trans,head_channels,kernel_size=3,padding=1,use_batchnorm=True,)
+
+#         # in_channels      = config.upward_in_channels
+#         # out_channels     = config.decoder_out_channels 
+#         # skip_channels    = config.skip_channels_size
+
+#         in_channels      = config.upward_in_channels
+#         out_channels     = config.decoder_out_channels 
+#         skip_channels    = config.skip_channels_size
+
+#         blocks     = []
+#         self.scale = []
+#         for scale in config.scales[::-1]:
+#             in_ch   = in_channels[scale]   
+#             out_ch  = out_channels[scale]    
+#             sk_ch   = skip_channels[scale]   
+#             if (in_ch is not None) and (out_ch is not None):
+#                 blocks.append(DecoderBlock(in_ch, out_ch, sk_ch))
+#                 self.scale.append(scale)
+
+#         self.Blocks = nn.ModuleList(blocks)
+#         self.blocks  = {scale:self.Blocks[i] for i,scale in enumerate(self.scale)}
+#         print('Cnn_Vit_Hybrid_Up_Sampler  self.blocks:',self.blocks)
+    
+#     def forward(self, hidden_states, features=None):
+#         B, n_patch, hidden = hidden_states.size()  # reshape from (B, n_patch, hidden) to (B, h, w, hidden)
+#         h = self.config.input_size[0]//self.config.patch_size[0]
+#         w = self.config.input_size[1]//self.config.patch_size[1]
+#         # h, w = int(np.sqrt(n_patch)), int(np.sqrt(n_patch))
+#         x = hidden_states.permute(0, 2, 1)
+#         x = x.contiguous().view(B, hidden, h, w)
+#         # print('x_shape before conv_more',x.shape)
+#         x = self.conv_more(x)
+#         # print('x_shape after conv_more',x.shape)     
+
+
+#         # for i, decoder_block in enumerate(self.blocks):
+#         for scale in self.blocks.keys():
+#             decoder_block = self.blocks[scale]
+#             if features is not None:
+#                 skip = features[scale] #if (i < self.config.n_skip) else None
+#             else:
+#                 skip = None
+#             # print(i,'decoder x.shape', x.shape)
+#             # if skip is not None:
+#             print('decoder decoder_block.scale ', scale)
+#             x = decoder_block(x, skip=skip)
+
+
+#         # for i, decoder_block in enumerate(self.blocks):
+#         #     # print("Cnn_Vit_Hybrid_Up_Sampler i decoder:",i)
+#         #     print('i, decoder_block', i)
+#         #     print('scale', decoder_block.scale)
+#         #     if features is not None:
+#         #         skip = features[i] if (i < self.config.n_skip) else None
+#         #     else:
+#         #         skip = None
+#         #     # print(i,'decoder x.shape', x.shape)
+#         #     # if skip is not None:
+#         #     print('decoder skip.scale ', skip.scale)
+#         #     x = decoder_block(x, skip=skip)
+        
+#         return x
+
+
+class Cnn_Vit_Hybrid_Up_Sampler_essai(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config      = config
+        head_channels    = config.head_channels       
+        self.conv_more   = Conv2dReLU(config.hidden_output_trans,head_channels,kernel_size=3,padding=1,use_batchnorm=True,)
+
+        # in_channels      = config.upward_in_channels
+        # out_channels     = config.decoder_out_channels 
+        # skip_channels    = config.skip_channels_size
+        in_channels      = {s:v[2] for s,v in config.upward_dim['in'].items()}
+        out_channels     = {s:v[2] for s,v in config.upward_dim['out'].items()}
+        skip_channels    = {s:v[2] for s,v in config.skip_dim.items()}
+
+        in_channels.update({0:out_channels[1]})
+        out_channels.update({0:out_channels[1]})
+        skip_channels.update({0:None})
+
+        blocks      = []
+        self.scale  = []
+        scales_list = [0] + config.scales
+        for scale in scales_list[::-1]: #  config.scales[::-1]:
+            in_ch   = in_channels[scale] 
+            out_ch  = out_channels[scale]  
+            sk_ch   = skip_channels[scale] 
+            print('scale',scale)
+            if (in_ch is not None) and (out_ch is not None):
+                print("in_ch is not None) and (out_ch is not None")
+                blocks.append(DecoderBlock(in_ch, out_ch, sk_ch))
+                self.scale.append(scale)
+
+        self.Blocks = nn.ModuleList(blocks)
+        self.blocks  = {scale:self.Blocks[i] for i,scale in enumerate(self.scale)}
+        print('Cnn_Vit_Hybrid_Up_Sampler  self.blocks:',self.blocks)
+    
+    def forward(self, hidden_states, features=None):
+        B, n_patch, hidden = hidden_states.size()  # reshape from (B, n_patch, hidden) to (B, h, w, hidden)
+        h = self.config.input_size[0]//self.config.patch_size[0]
+        w = self.config.input_size[1]//self.config.patch_size[1]
+        # h, w = int(np.sqrt(n_patch)), int(np.sqrt(n_patch))
+        x = hidden_states.permute(0, 2, 1)
+        x = x.contiguous().view(B, hidden, h, w)
+        # print('x_shape before conv_more',x.shape)
+        x = self.conv_more(x)
+        # print('x_shape after conv_more',x.shape)     
+
+
+        # for i, decoder_block in enumerate(self.blocks):
+        for scale in self.blocks.keys():
+            decoder_block = self.blocks[scale]
+            if features is not None:
+                print('feature not none')
+                skip = features[scale] #if (i < self.config.n_skip) else None
+            else:
+                print('NONE !!!')
+                skip = None
+
+            # print(i,'decoder x.shape', x.shape)
+            # if skip is not None:
+            print('decoder decoder_block.scale ', scale)
+            x = decoder_block(x, skip=skip)
+
+
+        # for i, decoder_block in enumerate(self.blocks):
+        #     # print("Cnn_Vit_Hybrid_Up_Sampler i decoder:",i)
+        #     print('i, decoder_block', i)
+        #     print('scale', decoder_block.scale)
+        #     if features is not None:
+        #         skip = features[i] if (i < self.config.n_skip) else None
+        #     else:
+        #         skip = None
+        #     # print(i,'decoder x.shape', x.shape)
+        #     # if skip is not None:
+        #     print('decoder skip.scale ', skip.scale)
+        #     x = decoder_block(x, skip=skip)
+        
+        return x
+
+
 class Cnn_Vit_Hybrid_Embeddings(nn.Module):
     def __init__(self, config, img_size=(32,64), in_channels=672):
         super().__init__()
@@ -538,15 +819,17 @@ class Cnn_Vit_Hybrid_Up_Sampler(nn.Module):
 
         in_channels      = config.upward_in_channels
         out_channels     = config.decoder_out_channels 
-        skip_channels    = config.skip_channels_size
+        skip_channels    = config.skip_channels_size    
 
         blocks     = []
         self.scale = []
         for scale in config.scales[::-1]:
-            in_ch   = in_channels[scale]   
-            out_ch  = out_channels[scale]    
-            sk_ch   = skip_channels[scale]   
+            in_ch   = in_channels[scale] 
+            out_ch  = out_channels[scale]  
+            sk_ch   = skip_channels[scale] 
+            print('scale',scale)
             if (in_ch is not None) and (out_ch is not None):
+                print("in_ch is not None) and (out_ch is not None")
                 blocks.append(DecoderBlock(in_ch, out_ch, sk_ch))
                 self.scale.append(scale)
 
@@ -570,8 +853,10 @@ class Cnn_Vit_Hybrid_Up_Sampler(nn.Module):
         for scale in self.blocks.keys():
             decoder_block = self.blocks[scale]
             if features is not None:
+                print('feature not none')
                 skip = features[scale] #if (i < self.config.n_skip) else None
             else:
+                print('NONE')
                 skip = None
             # print(i,'decoder x.shape', x.shape)
             # if skip is not None:
@@ -597,7 +882,7 @@ class Cnn_Vit_Hybrid_Up_Sampler(nn.Module):
 class Cnn_Vit_Hybrid_Transformer(nn.Module):
     def __init__(self, config, img_size, vis):
         super().__init__()
-        self.embeddings = Cnn_Vit_Hybrid_Embeddings(config, img_size=img_size)
+        self.embeddings = Cnn_Vit_Hybrid_Embeddings(config, img_size=img_size,in_channels=512)
         self.encoder    = Cnn_Vit_Hybrid_Encoder(config,vis)
 
     def forward(self, input_ids):
@@ -611,11 +896,11 @@ class Paradis_Global_Feature_Extraction_Layer(nn.Module):
         super().__init__()
         print("####################################")
         print("Multi_Scale_Skip_Connection_Layer")
-        self.skip_connection = Multi_Scale_Skip_Connection_Layer(config)
+        self.skip_connection = Multi_Scale_Skip_Connection_Layer_essai(config)
         print("Cnn_Vit_Hybrid_Transformer")
         self.transformer     = Cnn_Vit_Hybrid_Transformer(config, img_size, vis)
         print("Cnn_Vit_Hybrid_Up_Sampler")
-        self.decoder         = Cnn_Vit_Hybrid_Up_Sampler(config) 
+        self.decoder         = Cnn_Vit_Hybrid_Up_Sampler_essai(config) 
         self.config          = config
         print("####################################")
 
