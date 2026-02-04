@@ -2,15 +2,9 @@
 
 import re
 import torch
-import torch.distributed as dist
 
-def _allreduce_max(x: torch.Tensor) -> torch.Tensor:
-    """DDP-safe global max (no-op if dist not initialized)."""
-    if dist.is_available() and dist.is_initialized():
-        y = x.clone()
-        dist.all_reduce(y, op=dist.ReduceOp.MAX)
-        return y
-    return x
+from model.padding import GeoCyclicPadding
+from utils.amse_loss import AMSELoss
 
 
 class ParadisLoss(torch.nn.Module):
@@ -88,8 +82,16 @@ class ParadisLoss(torch.nn.Module):
             self.loss_fn = torch.nn.MSELoss(reduction="none")
         elif loss_function == "reversed_huber":
             self.loss_fn = self._call_reversed_huber_loss
+        elif loss_function == "amse":
+            self.loss_fn = AMSELoss(
+                nlat=lat_grid.shape[0], nlon=lat_grid.shape[1], grid="equiangular"
+            )
+            # Latitude weight application needs to be deactivated
+            self.apply_latitude_weights = False
         else:
-            raise Exception(f"{loss_function} not supported, choose between [reversed_huber, mse]")
+            raise Exception(
+                f"{loss_function} not supported, choose between [reversed_huber, mse, amse]"
+            )
 
     def _check_uniform_spacing(self, grid: torch.Tensor) -> float:
         """Check if grid has uniform spacing and return the delta.
@@ -133,8 +135,9 @@ class ParadisLoss(torch.nn.Module):
         lat_min = torch.min(lat)
         lat_max = torch.max(lat)
 
-        has_poles = torch.isclose(lat_min, lat.new_tensor(-90.0), atol=1e-6) and \
-                    torch.isclose(lat_max, lat.new_tensor( 90.0), atol=1e-6)
+        has_poles = torch.isclose(
+            lat_min, lat.new_tensor(-90.0), atol=1e-6
+        ) and torch.isclose(lat_max, lat.new_tensor(90.0), atol=1e-6)
 
         if has_poles:
             # Interior weights proportional to cos(lat) * sin(d/2),
@@ -154,8 +157,10 @@ class ParadisLoss(torch.nn.Module):
         else:
             expected_max = 90.0 - float(delta) / 2.0
             expected_min = -90.0 + float(delta) / 2.0
-            if not (torch.isclose(lat_max, lat.new_tensor(expected_max), atol=1e-6) and
-                    torch.isclose(lat_min, lat.new_tensor(expected_min), atol=1e-6)):
+            if not (
+                torch.isclose(lat_max, lat.new_tensor(expected_max), atol=1e-6)
+                and torch.isclose(lat_min, lat.new_tensor(expected_min), atol=1e-6)
+            ):
                 raise ValueError(
                     f"Latitude vector must end at ±(90 - Δ/2). "
                     f"Got min={lat_min.item()}, max={lat_max.item()}, Δ={delta.item()}."
@@ -224,7 +229,9 @@ class ParadisLoss(torch.nn.Module):
         Returns:
             Loss tensor with same shape as input
         """
-        delta = torch.as_tensor(delta, device=pred.device, dtype=pred.dtype)  # <- ensure device/dtype
+        delta = torch.as_tensor(
+            delta, device=pred.device, dtype=pred.dtype
+        )
         error = pred - target
         abs_error = torch.abs(error)
         small_error = delta * abs_error
