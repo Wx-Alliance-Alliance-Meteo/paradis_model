@@ -100,8 +100,6 @@ class NeuralSemiLagrangian(torch.nn.Module):
         Forces the South Pole (row 0) and North Pole (row -1) to have
         a single scalar value (mean of the row).
         """
-        # Calculate global mean for South Pole (Row 0)
-        # x: [B, C, H, W]
         south_mean = x[:, :, 0:1, :].mean(dim=3, keepdim=True)
         north_mean = x[:, :, -1:, :].mean(dim=3, keepdim=True)
 
@@ -113,21 +111,52 @@ class NeuralSemiLagrangian(torch.nn.Module):
 
     def forward(
         self,
-        hidden_features: torch.Tensor,
-        u: torch.Tensor,
-        v: torch.Tensor,
-        dt: float,
+        hidden_n: torch.Tensor,
+        hidden_nm1: torch.Tensor,
+        u_vel: torch.Tensor,
+        v_vel: torch.Tensor,
+        u_acc: torch.Tensor,
+        v_acc: torch.Tensor,
+    ) -> tuple:
+        """BDF2 semi-Lagrangian advection step."""
+        batch_size = hidden_n.shape[0]
+
+        hidden_n = self.enforce_pole_continuity(hidden_n)
+        hidden_nm1 = self.enforce_pole_continuity(hidden_nm1)
+
+        proj_n = self.down_projection(hidden_n)
+        proj_nm1 = self.down_projection(hidden_nm1)
+
+        # alpha^(1): displacement evaluated at xi=1 (back-trace by dt)
+        alpha1_lon = u_vel + u_acc
+        alpha1_lat = v_vel + v_acc
+
+        # alpha^(2): displacement evaluated at xi=2 (back-trace by 2*dt)
+        alpha2_lon = 2.0 * u_vel + 4.0 * u_acc
+        alpha2_lat = 2.0 * v_vel + 4.0 * v_acc
+
+        # Interpolate z^n at x - alpha^(1)
+        grid1 = self._compute_grid(-alpha1_lat, -alpha1_lon, batch_size)
+        z_tilde_n = self._sample(proj_n, grid1, batch_size)
+        z_tilde_n = self.up_projection(z_tilde_n)
+        z_tilde_n = self.enforce_pole_continuity(z_tilde_n)
+
+        # Interpolate z^{n-1} at x - alpha^(2)
+        grid2 = self._compute_grid(-alpha2_lat, -alpha2_lon, batch_size)
+        z_tilde_nm1 = self._sample(proj_nm1, grid2, batch_size)
+        z_tilde_nm1 = self.up_projection(z_tilde_nm1)
+        z_tilde_nm1 = self.enforce_pole_continuity(z_tilde_nm1)
+
+        return z_tilde_n, z_tilde_nm1
+
+    def _compute_grid(
+        self,
+        lat_prime: torch.Tensor,
+        lon_prime: torch.Tensor,
+        batch_size: int,
     ) -> torch.Tensor:
-        """Compute advection using rotated coordinate system."""
-        batch_size = hidden_features.shape[0]
+        """Compute normalised grid_sample coordinates from local angular displacements."""
         H, W = self.mesh_size
-
-        hidden_features = self.enforce_pole_continuity(hidden_features)
-
-        projected_inputs = self.down_projection(hidden_features)
-
-        lon_prime = -u * dt
-        lat_prime = -v * dt
 
         lat_dep, lon_dep = self._transform_to_latlon(
             lat_prime, lon_prime, self.lat_grid, self.lon_grid
@@ -136,13 +165,11 @@ class NeuralSemiLagrangian(torch.nn.Module):
         pix_x = (lon_dep - self.min_lon) / self.d_lon * (self.Wf - 1.0)
         pix_y = (lat_dep - self.min_lat) / self.d_lat * (self.Hf - 1.0)
 
-        projected_padded = self.padding_interp(projected_inputs)
+        H_pad = H + 2 * self.padding
+        W_pad = W + 2 * self.padding
 
         pix_x_pad = pix_x + self.padding
         pix_y_pad = pix_y + self.padding
-
-        H_pad = H + 2 * self.padding
-        W_pad = W + 2 * self.padding
 
         grid_x = 2.0 * (pix_x_pad / float(W_pad - 1)) - 1.0
         grid_y = 2.0 * (pix_y_pad / float(H_pad - 1)) - 1.0
@@ -150,23 +177,28 @@ class NeuralSemiLagrangian(torch.nn.Module):
         grid_x = grid_x.reshape(batch_size * self.num_vels, H, W)
         grid_y = grid_y.reshape(batch_size * self.num_vels, H, W)
 
-        grid = torch.stack([grid_x, grid_y], dim=-1)
+        return torch.stack([grid_x, grid_y], dim=-1)
 
-        projected_padded = projected_padded.reshape(
-            batch_size * self.num_vels, 1, H_pad, W_pad
-        )
+    def _sample(
+        self,
+        projected: torch.Tensor,
+        grid: torch.Tensor,
+        batch_size: int,
+    ) -> torch.Tensor:
+        """Apply geocyclic padding and grid_sample, then reshape."""
+        H, W = self.mesh_size
+        H_pad = H + 2 * self.padding
+        W_pad = W + 2 * self.padding
+
+        padded = self.padding_interp(projected)
+        padded = padded.reshape(batch_size * self.num_vels, 1, H_pad, W_pad)
 
         interpolated = torch.nn.functional.grid_sample(
-            projected_padded,
+            padded,
             grid,
             align_corners=True,
             mode=self.interpolation,
             padding_mode="zeros",
         )
 
-        interpolated = self.up_projection(
-            interpolated.reshape(batch_size, self.num_vels, H, W)
-        )
-
-        interpolated = self.enforce_pole_continuity(interpolated)
-        return interpolated
+        return interpolated.reshape(batch_size, self.num_vels, H, W)

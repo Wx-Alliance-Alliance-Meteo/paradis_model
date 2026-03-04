@@ -358,6 +358,56 @@ class LitParadis(L.LightningModule):
             tb = self.logger.experiment
             tb.add_scalar("model/num_parameters", total, global_step=0)
 
+    def on_train_start(self):
+        """Adaptive output scaling calibration.
+
+        Runs once at the start of training on all ranks (after DDP setup,
+        before the first optimizer step).  Skipped when resuming from a
+        checkpoint, since the weights already encode a meaningful output
+        scale.
+
+        The first batch from the training dataloader is used as the
+        calibration sample.  Each DDP rank runs the forward pass on its
+        own local batch; the resulting sum-of-squares statistics are
+        all-reduced inside ``calibrate_output_scaling`` so every rank
+        applies the identical scaling factor.
+        """
+        cfg = self.cfg
+
+        # Skip if loading pre-trained weights ? the output scale is already set.
+        loading_checkpoint = (
+            cfg.init.checkpoint_path and not cfg.init.restart
+        ) or cfg.forecast.enable
+        if loading_checkpoint:
+            return
+
+        if not cfg.model.get("adaptive_scaling", True):
+            # Static scaling path: apply a fixed factor from config.
+            factor = cfg.model.get("output_scaling_factor", 1.0)
+            if factor != 1.0:
+                self.model._scale_final_layer(factor)
+                logging.info(
+                    f"Output projection scaled by static factor {factor:.4f}"
+                )
+            return
+
+        # Grab the first batch from the training dataloader.
+        try:
+            batch = next(iter(self.trainer.train_dataloader))
+        except StopIteration:
+            logging.warning(
+                "Adaptive scaling: could not obtain a calibration batch. "
+                "Skipping output scaling."
+            )
+            return
+
+        input_data, true_data = batch
+        # Use only the first autoregressive step for calibration.
+        sample_input  = input_data[:, 0].to(self.device)
+        sample_target = true_data[:,  0].to(self.device)
+
+        factor = self.model.calibrate_output_scaling(sample_input, sample_target)
+
     def on_train_epoch_start(self):
         """Record the start time of the epoch."""
         if self.print_losses:

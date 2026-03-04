@@ -4,7 +4,9 @@ model:
   latent_size: 1024                # Set a fixed size of the latent space (if latent_multiplier is -1)
   forecast_steps: 1                # Number of autoregressive steps
   base_dt: 21600                   # Data time resolution in seconds (6 hours * 3600 seconds)
-  num_layers: 8                    # Model depth
+  velocity_num_layers: 4           # Number of layers for velocity
+  diffusion_num_layers: 4          # Number of layers for diffusion
+  reaction_num_layers: 4           # Number of layers for reaction
   bias_channels: 4                 # Number of bias channels
   velocity_vectors: 256            # Number of velocity layers (if latent_multiplier is -1)
   diffusion_size: 1024             # Latent size for the diffusion operator
@@ -12,6 +14,8 @@ model:
   adv_interpolation: bicubic       # Choose between bilinear or bicubic
   projected_advection: true        # Whether to project the advection layers to velocity_vectors space
   num_encoder_layers: 1            # Number of input encoding layers
+  adaptive_scaling: true           # false to use a fixed factor instead
+  output_scaling_factor: 1.0       # only used when adaptive_scaling: false
 
 # Initialization settings (seeding)
 init:
