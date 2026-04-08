@@ -1,5 +1,7 @@
 **PARADIS**: **P**hysically inspired **A**dvection, **R**eaction **A**nd **DI**ffusion on the **S**phere
 
+Pre-print: [Learning to Advect: A Neural Semi-Lagrangian Architecture for Weather Forecasting](https://arxiv.org/abs/2601.21151)
+
 #### Key Features
 
 - **Physically-informed neural architecture:** Combines convolutional neural networks with operators akin to the advection, diffusion, and reaction (ADR) equation to handle complex physical phenomena.
