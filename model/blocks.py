@@ -93,36 +93,67 @@ class ChannelNorm(nn.Module):
         return x
 
 
+# LowRankBias -- low-rank factorized bias operator
 class GlobalBias(nn.Module):
-    """Learned bias operator with geophysical features."""
+    """
+    LowRankBias -- construct a low-rank factorized bias operator that reduces
+    the number of parameters while maintaining expressiveness through separable
+    rank-K decomposition.
+
+    Uses factors:
+    - A ∈ R^{C_in×K} (per-channel coefficients)
+    - U ∈ R^{K×H} (latitudinal factors)
+    - V ∈ R^{K×W} (longitudinal factors)
+
+    The bias map is computed as: y_c = ∑_{k=1}^K A_{ck} u_k v_k^T
+    With optional projection to output channels.
+
+    Parameters: K*(C_in + H + W) vs C_in*H*W for GlobalBias
+    """
 
     def __init__(
         self,
         input_dim: int,
         output_dim: int,
-        mesh_size: tuple,
-        bias: bool = True,
-        kernel_size: int = 0,
+        *,
+        bias: bool = True,  # Not used (would be redundant)
+        kernel_size: int = 0,  # Not used
+        mesh_size: Tuple[int, int],  # required
+        rank: int = 128,  # K - rank of the factorization
     ):
         super().__init__()
-        self.bias = nn.Parameter(
-            torch.zeros(((input_dim,) + mesh_size)), requires_grad=True
-        )
 
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.rank = rank
+        self.height, self.width = mesh_size
+
+        # Factor matrices
+        self.A = nn.Parameter(torch.zeros(input_dim, rank), requires_grad=True)
+        self.U = nn.Parameter(torch.zeros(rank, self.height), requires_grad=True)
+        self.V = nn.Parameter(torch.zeros(rank, self.width), requires_grad=True)
+
+        with torch.no_grad():
+            nn.init.normal_(self.A, mean=0.0, std=1e-3)
+            nn.init.normal_(self.U, mean=0.0, std=1e-3)
+            nn.init.normal_(self.V, mean=0.0, std=1e-3)
+
+        # Optional projection to output channels
         if input_dim != output_dim:
             self.projection = nn.Linear(input_dim, output_dim, bias=False)
         else:
             self.projection = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.projection is None:
-            y = self.bias
-        else:
-            y = torch.einsum("iab,ji->jab", self.bias, self.projection.weight)
+        # bias_maps: [C_in, H, W]
+        bias_maps = torch.einsum("ck,kh,kw->chw", self.A, self.U, self.V)
 
-        x = x + y[..., :, :, :]
-        return x
+        if self.projection is not None:
+            # [C_out, H, W]
+            bias_maps = torch.einsum("oc,chw->ohw", self.projection.weight, bias_maps)
 
+        # x: [B, C_out, H, W] (or [B, C_in, H, W] if no projection)
+        return x + bias_maps.unsqueeze(0)
 
 ActivationType = Type[nn.Module]
 
