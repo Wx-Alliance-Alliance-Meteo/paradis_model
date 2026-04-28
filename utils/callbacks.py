@@ -1,3 +1,4 @@
+import math
 import lightning as L
 from lightning.pytorch.callbacks import ModelCheckpoint, TQDMProgressBar
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
@@ -127,6 +128,16 @@ class ModProgressBar(TQDMProgressBar):
             self.train_progress_bar.set_postfix(self.get_metrics(trainer, pl_module))
 
 
+
+class StopOnNaNTrainLoss(L.Callback):
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        loss = outputs.get("loss") if isinstance(outputs, dict) else outputs
+        if loss is None:
+            return
+        value = float(loss.detach().item())
+        if value > 10 or not math.isfinite(value):
+            raise RuntimeError("NaN or Inf detected in training loss.")
+
 def enable_callbacks(cfg):
     # Define callbacks
     callbacks = []
@@ -134,6 +145,8 @@ def enable_callbacks(cfg):
         callbacks.append(ModProgressBar(leave=False))
 
     if cfg.training.early_stopping.enabled:
+        callbacks.append(StopOnNaNTrainLoss())
+
         # Stop epochs when validation loss is not decreasing during a coupe of epochs
         callbacks.append(
             EarlyStopping(
@@ -146,26 +159,41 @@ def enable_callbacks(cfg):
         )
 
     if cfg.training.checkpointing.enabled:
-        # Keep all epoch checkpoints
+
+        log_dir = cfg.training.log_dir
+
+        # Keep ALL epochs
         callbacks.append(
             ModelCheckpoint(
-                filename="{epoch:02d}",
-                monitor="step",
-                mode="max",
-                save_top_k=-1,
-                save_last=True,
+                filename="e{epoch:04d}",
                 every_n_epochs=1,
+                save_top_k=-1,
                 save_on_train_epoch_end=True,
             )
         )
 
-        # Keep only the best checkpoint
+        # Also store up to 10 intermediate steps between epochs
+        callbacks.append(
+            ModelCheckpoint(
+                filename="{step:08d}",
+                every_n_train_steps=100,
+                save_top_k=10,
+                monitor="step",
+                mode="max",
+                save_on_train_epoch_end=False,
+                save_last=True
+            )
+        )
+
+        # Keep also the best validation checkpoint (called at the end of every epoch)
         callbacks.append(
             ModelCheckpoint(
                 filename="best",
                 monitor="val_loss",
                 mode="min",
                 save_top_k=1,
+                save_last=False,
             )
         )
+
     return callbacks

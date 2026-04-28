@@ -5,13 +5,49 @@ model:
   forecast_steps: 1                # Number of autoregressive steps
   base_dt: 21600                   # Data time resolution in seconds (6 hours * 3600 seconds)
   num_layers: 8                    # Model depth
-  bias_channels: 4                 # Number of bias channels
-  velocity_vectors: 256            # Number of velocity layers (if latent_multiplier is -1)
-  diffusion_size: 1024             # Latent size for the diffusion operator
-  reaction_size: 1024              # Size for the reaction operator
+  bias_channels: 10                # Number of bias channels
+  velocity_vectors: 64             # Number of velocity layers (if latent_multiplier is -1)
   adv_interpolation: bicubic       # Choose between bilinear or bicubic
-  projected_advection: true        # Whether to project the advection layers to velocity_vectors space
-  num_encoder_layers: 1            # Number of input encoding layers
+  downsample_diffusion: false      # Whether to downsample diffusion to 1/4 resolution
+  latent_size_static: 128          # Latent size for static features
+  activation: SiLU                 # [SiLU, GELU]
+
+  # Physics block
+  # Specify blocks for each layer. If layer has length of 1, hidden_dim is ignored.
+  physblock:
+    input_proj:
+      layers:
+      - CLinear
+      hidden_dim: ${model.latent_size}
+    velocity_net:
+      layers:
+      - CLinear
+      hidden_dim: ${model.latent_size}
+    diffusion:
+      layers:
+      - SepConv
+      hidden_dim: ${model.latent_size}
+    reaction:
+      layers:
+      - CLinear
+      - CLinear
+      hidden_dim: ${model.latent_size}
+    output_proj:
+      layers:
+      - SepConv
+      - SepConv
+      - SepConv
+      hidden_dim: ${model.latent_size}
+    advection:
+      down_projection:
+        layers:
+        - SepConv
+        hidden_dim: ${model.latent_size}
+      up_projection:
+        layers:
+        - SepConv
+        - SepConv
+        hidden_dim: ${model.latent_size}
 
 # Initialization settings (seeding)
 init:
@@ -36,9 +72,10 @@ compute:
   num_devices: 1                   # Number of GPUS/CPU devices per node
   accelerator: gpu                 # CPU/GPU
   use_amp: true                    # Enable AMP (Automatic Mixed Precision)
-  batch_size: 32                   # Number of samples per batch
+  batch_size: 1                    # Number of samples per batch
   num_workers: 8                   # Number of parallel processes for data preloading
   compile: true                    # Whether to compile the model
+  gradient_checkpointing: false    # Enable activation checkpointing
 
 # Forecast parameters
 forecast:
@@ -56,11 +93,13 @@ training:
   gradient_clip_val: null          # Gradient clipping value, set to null to disable
   print_losses: false              # Manually print losses to screen (removes progress bar)
   log_every_n_steps: 100           # Write to log every n steps
-  log_dir: logs
+  log_dir: logs                    # Where logs will be written
   experiment_name: null            # Optional: Custom name for log directory (replaces version_xxx), set to null for default versioning
+  log_additional_stats: false      # Prints gradient-related metrics for debugging
+  accumulate_grad_batches: 1       # Increase effective global batch size by this factor
 
   dataset:
-    start_date: 1990-01-01         # Start date for the training dataset (YYYY-MM-DD)
+    start_date: 1980-01-01         # Start date for the training dataset (YYYY-MM-DD)
     end_date: 2019-12-31           # End date for the training dataset (YYYY-MM-DD)
     preload: false                 # If true, load the full dataset from disk into memory to speed training
 
@@ -72,6 +111,7 @@ training:
     validation_batches: null       # If non-null, use N batches rather than all for validation (0 disables val)
 
   optimizer:
+    name: muon                     # Choose among [adamw, muon, normuon]
     lr: 2.5e-4                     # Learning rate (LR) for the optimizer
     weight_decay: 1.e-2            # Weight decay coefficient for regularization
     beta1: 0.9                     # Exponential decay rate for the first moment (gradient) estimates

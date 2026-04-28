@@ -21,6 +21,16 @@ class Era5DataModule(L.LightningDataModule):
         self.forecast_steps = cfg.model.forecast_steps
         self.num_workers = cfg.compute.num_workers
 
+        if (val_workers := cfg.compute.get("val_num_workers", -1))> 0:
+            self.val_num_workers = val_workers
+        else:
+            self.val_num_workers = self.num_workers
+
+        if (val_steps := cfg.model.get("val_forecast_steps", -1)) > 0:
+            self.val_forecast_steps = val_steps
+        else:
+            self.val_forecast_steps = self.forecast_steps
+
         # Drop last batch when using compiled model
         self.drop_last = cfg.compute.compile
 
@@ -61,7 +71,7 @@ class Era5DataModule(L.LightningDataModule):
                     root_dir=self.root_dir,
                     start_date=val_start_date,
                     end_date=val_end_date,
-                    forecast_steps=self.forecast_steps,
+                    forecast_steps=self.val_forecast_steps,
                     preload=self.cfg.training.validation_dataset.preload,
                     cfg=self.cfg,
                     time_interval=self.cfg.dataset.sampling_interval,
@@ -93,6 +103,7 @@ class Era5DataModule(L.LightningDataModule):
                     forecast_steps=self.forecast_steps,
                     cfg=self.cfg,
                     time_interval=self.cfg.dataset.sampling_interval,
+                    prediction_stage=True,
                 )
 
                 self.num_common_features = self.dataset.num_common_features
@@ -131,7 +142,7 @@ class Era5DataModule(L.LightningDataModule):
         return DataLoader(
             self.val_dataset,
             batch_size=self.batch_size,
-            num_workers=self.num_workers,
+            num_workers=self.val_num_workers,
             # Shuffle if we're using less than all validation data
             shuffle=self.cfg.training.validation_dataset.validation_batches is not None,
             pin_memory=True,

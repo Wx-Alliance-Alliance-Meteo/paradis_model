@@ -29,6 +29,28 @@ from model.padding import GeoCyclicPadding
 """
 
 
+def init_conv2d_default(conv: nn.Conv2d, *, scale: float = 1.0) -> None:
+    nn.init.kaiming_normal_(conv.weight, mode="fan_in", nonlinearity="relu")
+    if scale != 1.0:
+        with torch.no_grad():
+            conv.weight.mul_(scale)
+    if conv.bias is not None:
+        nn.init.constant_(conv.bias, 0.0)
+
+
+def init_module_convs(m: nn.Module, *, last_conv_scale: float = 1.0) -> None:
+    convs = []
+    for module in m.modules():
+        # Skip entire GlobalBias subtrees
+        if isinstance(module, GlobalBias):
+            continue
+
+        if isinstance(module, nn.Conv2d):
+            convs.append(module)
+
+    for i, conv in enumerate(convs):
+        scale = last_conv_scale if (i == len(convs) - 1) else 1.0
+        init_conv2d_default(conv, scale=scale)
 class CLinear(nn.Module):
     """Channel-wise linear transformation."""
 
@@ -155,6 +177,24 @@ class GlobalBias(nn.Module):
         # x: [B, C_out, H, W] (or [B, C_in, H, W] if no projection)
         return x + bias_maps.unsqueeze(0)
 
+
+class PhysicalDownsample(nn.Module):
+    """Downsample a physical field to an exact target grid.
+
+    Uses average pooling for anti-aliasing, then interpolates to the exact target
+    size to handle 2N-1 latitude grids cleanly.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.pool = nn.AvgPool2d(kernel_size=5, stride=4, count_include_pad=False)
+        self.padding = GeoCyclicPadding(2)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.padding(x)
+        return self.pool(x)
+
+
 ActivationType = Type[nn.Module]
 
 BLOCK_REGISTRY = {
@@ -254,3 +294,4 @@ class GMBlock(nn.Sequential):
             layer_in_size = layer_out_size
 
         super().__init__(OrderedDict(blocks))
+        init_module_convs(self, last_conv_scale=0.1)

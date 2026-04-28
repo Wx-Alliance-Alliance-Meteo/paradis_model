@@ -215,8 +215,10 @@ def convert_cartesian_to_spherical_winds(latitude, longitude, cfg, array, featur
 
 def denormalize_datasets(ground_truth, output_forecast, dataset):
     """Denormalize both ground truth and forecast datasets."""
-    _denormalize_dataset(ground_truth, dataset)
-    _denormalize_dataset(output_forecast, dataset)
+    if ground_truth is not None:
+        _denormalize_dataset(ground_truth, dataset)
+    if output_forecast is not None:
+        _denormalize_dataset(output_forecast, dataset)
 
 
 def _denormalize_dataset(data: torch.tensor, dataset_obj):

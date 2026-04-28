@@ -32,6 +32,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         preload: bool = False,  # Whether to preload the dataset
         cfg: DictConfig = DictConfig({}),
         time_interval: str = None,
+        prediction_stage=False,
     ) -> None:
 
         self.cfg = cfg
@@ -45,13 +46,27 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.concat_input = cfg.dataset.n_time_inputs > 1
         self.n_time_inputs = cfg.dataset.n_time_inputs if self.concat_input else 1
         self.custom_normalization = not cfg.normalization.standard
+        self.prediction_stage = prediction_stage
 
         # Lazy open this dataset
         ds = xarray.open_mfdataset(
-            os.path.join(root_dir, "*"),
+            os.path.join(root_dir, "*[0-9]"),
             chunks={"time": 1},
             engine="zarr",
+            preprocess=lambda ds: (
+                ds.assign_coords(
+                    latitude=ds.latitude.astype("float64").round(6),
+                    longitude=ds.longitude.astype("float64").round(6),
+                )
+            ),
+            join="exact",
         )
+
+        if ds.latitude.values[0] > ds.latitude.values[-1]:
+            ds = ds.sortby("latitude")
+
+        if ds.longitude.values[0] > ds.longitude.values[-1]:
+            ds = ds.sortby("longitude")
 
         # Add stats to data array
         ds_stats = xarray.open_dataset(
@@ -103,19 +118,10 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
         # Convert end_date to a datetime object and adjust end date
         if end_date is not None:
-
             if "T" not in end_date:
                 end_date += "T23:59:59"
-
-            end_date_dt = numpy.datetime64(end_date)
-            adjusted_end_date = end_date_dt + time_delta * (
-                self.interval_steps + self.prediction_shift
-            )
         else:
             start_date_dt = numpy.datetime64(start_date)
-            adjusted_end_date = start_date_dt + time_delta * (
-                self.interval_steps + self.prediction_shift
-            )
 
         # Store a lazy dataset that contains the requested dates only
         ds_loader = ds.sel(time=slice(start_date, end_date, self.interval_steps))
@@ -125,12 +131,13 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.time = ds_loader.time.values
         self.length = ds_loader.time.size
 
-        # Select the time range needed to process this dataset
-        ds = ds.sel(time=slice(adjusted_start_date, adjusted_end_date))
+        # Make sure dataset starts at the right time
+        # Note it can access all available data after this
+        ds = ds.sel(time=slice(adjusted_start_date, None))
 
         # Extract latitude and longitude to build the graph
-        self.lat = torch.from_numpy(ds.latitude.values)
-        self.lon = torch.from_numpy(ds.longitude.values)
+        self.lat = torch.from_numpy(ds.latitude.values.copy())
+        self.lon = torch.from_numpy(ds.longitude.values.copy())
         self.lat_size = len(self.lat)
         self.lon_size = len(self.lon)
         self.pressure_levels = features_cfg.pressure_levels
@@ -165,6 +172,12 @@ class ERA5Dataset(torch.utils.data.Dataset):
         ds_constants = xarray.open_dataset(
             os.path.join(root_dir, "constants"), engine="zarr"
         ).compute()  # Definitely preload constants
+
+        if ds_constants.latitude.values[0] > ds_constants.latitude.values[-1]:
+            ds_constants = ds_constants.sortby("latitude")
+
+        if ds_constants.longitude.values[0] > ds_constants.longitude.values[-1]:
+            ds_constants = ds_constants.sortby("longitude")
 
         # Convert lat/lon to radians
         lat_rad = torch.deg2rad(self.lat).to(self.dtype)
@@ -202,7 +215,14 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self._compute_geometric_constants()
 
         post_constants = []
-        for feature in ["lon_spacing", "latitude", "longitude"]:
+        for feature in [
+            "lon_spacing",
+            "cos_latitude",
+            "cos_longitude",
+            "sin_longitude",
+            "latitude",
+            "longitude",
+        ]:
             if feature in features_cfg.input.constants:
                 if feature == "lon_spacing":
                     post_constants.append(self.d_lon_inv)
@@ -210,6 +230,12 @@ class ERA5Dataset(torch.utils.data.Dataset):
                     post_constants.append(self.lat_rad_grid)
                 if feature == "longitude":
                     post_constants.append(self.lon_rad_grid)
+                if feature == "cos_latitude":
+                    post_constants.append(torch.cos(self.lat_rad_grid))
+                if feature == "cos_longitude":
+                    post_constants.append(torch.cos(self.lon_rad_grid))
+                if feature == "sin_longitude":
+                    post_constants.append(torch.sin(self.lon_rad_grid))
 
         # Stack all constant features together
         self.constant_data = (
@@ -219,6 +245,16 @@ class ERA5Dataset(torch.utils.data.Dataset):
             .unsqueeze(0)
             .expand(self.forecast_steps, -1, -1, -1)
         )
+
+        # Check that constants have been added properly
+        actual_total = len(pre_constants) + len(post_constants)
+        expected_total = len(features_cfg.input.constants)
+
+        if actual_total != expected_total:
+            raise ValueError(
+                f"Constant count mismatch: expected {expected_total} total constants from configuration, "
+                f"but found {actual_total} (Pre: {len(pre_constants)}, Post: {len(post_constants)})."
+            )
 
         # Store these for access in forecaster
         self.ds_constants = ds_constants
@@ -238,6 +274,9 @@ class ERA5Dataset(torch.utils.data.Dataset):
         ds_input = ds.sel(features=self.dyn_input_features)
         ds_output = ds.sel(features=self.dyn_output_features)
         self.ds_loader = self.ds_loader.sel(features=self.dyn_input_features)
+        self.ds_loader = self.ds_loader.transpose(
+            "time", "latitude", "longitude", "features"
+        )
 
         # Pre-select the features in the right order
         if self.preload:
@@ -249,8 +288,31 @@ class ERA5Dataset(torch.utils.data.Dataset):
             self.dyn_input_features *= self.n_time_inputs
 
         # Fetch data
-        self.ds_input = ds_input["data"]
-        self.ds_output = ds_output["data"]
+        self.ds_input = ds_input["data"].transpose(
+            "time", "latitude", "longitude", "features"
+        )
+        self.ds_output = ds_output["data"].transpose(
+            "time", "latitude", "longitude", "features"
+        )
+
+        # Load tendency statistics (for variance-normalized loss)
+        tendency_stats_path = os.path.join(self.root_dir, "tendency_stats_6h")
+        if os.path.exists(tendency_stats_path):
+            ds_tendency = xarray.open_dataset(tendency_stats_path, engine="zarr")
+            # Build lookup: feature name -> tendency std
+            self._tendency_std_lookup = {
+                name: float(s)
+                for name, s in zip(
+                    ds_tendency.features.values,
+                    ds_tendency["tendency_std"].values,
+                )
+            }
+        else:
+            self._tendency_std_lookup = None
+            print(
+                f"Warning: no tendency stats found at {tendency_stats_path}. "
+                f"Variance-normalized loss will not be available."
+            )
 
         # Get the indices to apply custom normalizations
         self._prepare_normalization(ds_input, ds_output)
@@ -286,7 +348,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
         # is no future data
         return self.length
 
-    def __getitem__(self, ind: int):
+    def _getitem_standard(self, ind: int):
         ind = ind * self.interval_steps
 
         # Retrieve the current value of forecast steps
@@ -294,8 +356,11 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
         # Extract values from the requested indices
         input_ini = ind
-        input_end = input_ini + steps + self.n_time_inputs - 1
+        input_end = input_ini + self.n_time_inputs
         input_data = self.ds_input.isel(time=slice(input_ini, input_end))
+
+        input_end = input_ini + steps + self.n_time_inputs - 1
+        forcing_ds = self.ds_input.isel(time=slice(input_ini, input_end))
 
         output_ini = input_ini + self.n_time_inputs + self.prediction_shift
         output_end = ind + steps + self.n_time_inputs + self.prediction_shift
@@ -303,19 +368,20 @@ class ERA5Dataset(torch.utils.data.Dataset):
         true_data = self.ds_output.isel(time=slice(output_ini, output_end))
 
         # Load arrays into CPU memory
-        input_data, true_data = dask.compute(input_data, true_data, scheduler="synchronous", traverse=False)
+        input_data, true_data = dask.compute(
+            input_data, true_data, scheduler="synchronous", traverse=False
+        )
 
         # Convert to tensors - data comes in [time, lat, lon, features]
         x = torch.tensor(input_data.data, dtype=self.dtype)
 
         # Concatenate n_time_inputs if requested
-        if self.concat_input:
-            x = torch.stack(
-                [
-                    torch.cat([x[j] for j in range(i, i + self.n_time_inputs)], dim=-1)
-                    for i in range(steps)
-                ]
+        if self.n_time_inputs > 1:
+            x = torch.cat([x[j] for j in range(self.n_time_inputs)], dim=-1).unsqueeze(
+                0
             )
+        else:
+            x = x.unsqueeze(0)
 
         y = torch.tensor(true_data.data, dtype=self.dtype)
 
@@ -323,19 +389,61 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self._apply_normalization(x, y)
 
         # Compute forcings
-        forcings = self._compute_forcings(input_data, steps)
-
-        if forcings is not None:
-            x = torch.cat([x, forcings], dim=-1)
-
-        # Add constant data to input
-        x = torch.cat([x, self.constant_data[:steps]], dim=-1)
+        forcings = self._compute_forcings(forcing_ds, steps)
 
         # Permute to [time, channels, latitude, longitude] format
         x_grid = x.permute(0, 3, 1, 2)
         y_grid = y.permute(0, 3, 1, 2)
 
-        return x_grid.float(), y_grid.float()
+        return x_grid.float(), y_grid.float(), forcings, self.constant_data[:1]
+
+    def _getitem_prediction(self, ind: int):
+        ind0 = ind
+        ind = ind * self.interval_steps
+
+        # Retrieve the current value of forecast steps
+        steps = self.forecast_steps
+
+        # Extract values from the requested indices
+        input_ini = ind
+        input_end = input_ini + self.n_time_inputs
+        input_data = self.ds_input.isel(time=slice(input_ini, input_end))
+
+        input_end = input_ini + steps + self.n_time_inputs - 1
+        forcing_ds = self.ds_input.isel(time=slice(input_ini, input_end))
+
+        # Load arrays into CPU memory
+        # input_data = dask.compute(input_data, scheduler="synchronous", traverse=False)
+        (input_data,) = dask.compute(
+            input_data, scheduler="synchronous", traverse=False
+        )
+
+        # Convert to tensors - data comes in [time, lat, lon, features]
+        x = torch.tensor(input_data.data, dtype=self.dtype)
+
+        # Concatenate n_time_inputs if requested
+        if self.n_time_inputs > 1:
+            x = torch.cat([x[j] for j in range(self.n_time_inputs)], dim=-1).unsqueeze(
+                0
+            )
+        else:
+            x = x.unsqueeze(0)
+
+        # Apply normalizations
+        self._apply_normalization(x, None)
+
+        # Compute forcings
+        forcings = self._compute_forcings(forcing_ds, steps)
+
+        # Permute to [time, channels, latitude, longitude] format
+        x_grid = x.permute(0, 3, 1, 2)
+
+        return ind0, x_grid.float(), forcings, self.constant_data[:1]
+
+    def __getitem__(self, ind: int):
+        if self.prediction_stage:
+            return self._getitem_prediction(ind)
+        return self._getitem_standard(ind)
 
     def _run_dataset_checks(self):
         # Check if grid includes poles
@@ -462,8 +570,24 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.toa_rad_std = ds_input.attrs["toa_radiation_std"]
         self.toa_rad_mean = ds_input.attrs["toa_radiation_mean"]
 
+        # Build per-output-channel tendency std in the order of dyn_output_features
+        if self._tendency_std_lookup is not None:
+            tendency_std_list = []
+            missing = []
+            for feat in self.dyn_output_features:
+                if feat in self._tendency_std_lookup:
+                    tendency_std_list.append(self._tendency_std_lookup[feat])
+                else:
+                    missing.append(feat)
+                    tendency_std_list.append(1.0)  # safe fallback
+            if missing:
+                print(f"Warning: missing tendency stds for features: {missing}")
+            self.output_tendency_std = torch.tensor(tendency_std_list, dtype=self.dtype)
+        else:
+            self.output_tendency_std = None
+
     def _apply_normalization(
-        self, input_data: torch.Tensor, output_data: torch.Tensor
+        self, input_data: torch.Tensor, output_data: torch.Tensor = None
     ) -> None:
 
         # Apply custom normalizations to input
@@ -475,16 +599,17 @@ class ERA5Dataset(torch.utils.data.Dataset):
                 input_data[..., self.norm_humidity_in], self.q_min, self.q_max, self.eps
             )
 
-            # Apply custom normalizations to output
-            output_data[..., self.norm_precip_out] = normalize_precipitation(
-                output_data[..., self.norm_precip_out]
-            )
-            output_data[..., self.norm_humidity_out] = normalize_humidity(
-                output_data[..., self.norm_humidity_out],
-                self.q_min,
-                self.q_max,
-                self.eps,
-            )
+            if output_data is not None:
+                # Apply custom normalizations to output
+                output_data[..., self.norm_precip_out] = normalize_precipitation(
+                    output_data[..., self.norm_precip_out]
+                )
+                output_data[..., self.norm_humidity_out] = normalize_humidity(
+                    output_data[..., self.norm_humidity_out],
+                    self.q_min,
+                    self.q_max,
+                    self.eps,
+                )
 
         # Apply standard normalizations to input and output
         input_data[..., self.norm_zscore_in] = normalize_standard(
@@ -493,9 +618,12 @@ class ERA5Dataset(torch.utils.data.Dataset):
             self.input_std,
         )
 
-        output_data[..., self.norm_zscore_out] = normalize_standard(
-            output_data[..., self.norm_zscore_out], self.output_mean, self.output_std
-        )
+        if output_data is not None:
+            output_data[..., self.norm_zscore_out] = normalize_standard(
+                output_data[..., self.norm_zscore_out],
+                self.output_mean,
+                self.output_std,
+            )
 
     def _compute_forcings(self, input_data: xarray.Dataset, steps: int) -> torch.Tensor:
         """Computes forcing paramters based in input_data array"""
