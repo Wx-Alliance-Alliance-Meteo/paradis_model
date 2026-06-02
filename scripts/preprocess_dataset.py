@@ -15,8 +15,29 @@ compressor = LayerQuantizer()
 fallback_compressor = Blosc(cname="zstd", clevel=5, shuffle=Blosc.SHUFFLE)
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from forcings.toa_radiation import toa_radiation, toa_radiation_stats
+from data.forcings.toa_radiation import toa_radiation, toa_radiation_stats
 
+def clean_zarr_v2_encoding(ds):
+    for v in ds.variables:
+        for key in ["serializer", "filters", "compressors", "shards"]:
+            ds[v].encoding.pop(key, None)
+    return ds
+
+def drop_unused_noncore_coords(ds, core_dims):
+    """
+    Drop auxiliary coordinates such as lat/lon bounds before transposing.
+
+    Some inputs include coordinates like ``lat_b`` and ``lon_b`` that are not
+    used by any data variable. Xarray still includes their dimensions in the
+    dataset-wide dimension set, which makes ``Dataset.transpose`` fail unless
+    those coordinates are removed first.
+    """
+    coord_names_to_drop = [
+        name for name in ds.coords if name not in core_dims and name not in ds.data_vars
+    ]
+    if coord_names_to_drop:
+        ds = ds.drop_vars(coord_names_to_drop, errors="ignore")
+    return ds
 
 def compute_cartesian_wind(ds):
     """
@@ -119,13 +140,45 @@ def main():
     )
     parser.add_argument("--begin_year", type=int, default=1979, help="Initial year")
     parser.add_argument("--end_year", type=int, default=2023, help="Final year")
+    parser.add_argument("--levels", type=int, choices=[37, 13], default=13)
+
+    parser.add_argument(
+        "--skip-stats",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Do not compute stats",
+    )
+
+    parser.add_argument(
+        "--only-stats",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Only compute stats",
+    )
+
     args = parser.parse_args()
 
+    if args.skip_stats and args.only_stats:
+        parser.error("--skip-stats and --only-stats cannot both be used")
+
+    core_dims = ("time", "latitude", "longitude", "level")
     ds = xarray.open_mfdataset(args.input_dir, engine="zarr")
+    ds = drop_unused_noncore_coords(ds, core_dims)
+    ds = ds.transpose(*core_dims)
+
 
     ds = ds.transpose("time", "latitude", "longitude", "level")
-    default_levels = [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
-    ds = ds.sel(level=default_levels)
+
+    if args.levels == 13:
+        levels = [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
+    elif args.levels == 37:
+        levels = [1, 2, 3, 5, 7, 10, 20, 30, 50,  70, 100, 125, 150, 175, 200,
+                  225, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700, 750,
+                  775, 800, 825, 850, 875, 900, 925, 950, 975, 1000]
+    else:
+        raise("Invalid number of levels for preprocessing")
+
+    ds = ds.sel(level=levels)
 
     # Variables that will be extracted from the dataset
     keep_variables = [
@@ -146,7 +199,7 @@ def main():
         "latitude",
         "longitude",
         "geopotential_at_surface",
-        "total_precipitation_6hr",
+        "total_precipitation",
         "total_column_water",
         "standard_deviation_of_orography",
         "slope_of_sub_gridscale_orography",
@@ -175,26 +228,35 @@ def main():
         longitude = numpy.arange(0, 360, args.interp_deg)
         ds = ds.sel(latitude=latitude, longitude=longitude)
 
+    # Set a small tolerance to avoid log(0)
+    tolerance = 1e-10
+
+    # Compute log_humidity safely
+    # ds["log_humidity"] = numpy.log(ds["specific_humidity"].clip(min=0) + tolerance)
+
+    # Store the tolerance as a dataset attribute
+    # ds.attrs["log_humidity_tolerance"] = tolerance
+
     # Step 1: Stack data for efficient storage and processing
-    stack_data(ds, args.output_dir, args.begin_year, args.end_year)
+    if not args.only_stats:
+        stack_data(ds, args.output_dir, args.begin_year, args.end_year)
 
-    # Step 2: Precompute static data (e.g., geographic variables)
-    precompute_static_data(ds, args.output_dir)
+    if not args.skip_stats:
+        # Step 2: Precompute static data (e.g., geographic variables)
+        precompute_static_data(ds, args.output_dir)
 
-    # Step 3: Compute mean and standard deviation for atmospheric and surface variables
-    compute_statistics(args.output_dir, args.begin_year, args.end_year)
+        # Step 3: Compute mean and standard deviation for atmospheric and surface variables
+        compute_statistics(args.output_dir, args.begin_year, args.end_year)
 
-    # Step 4: Compute 6h standard deviation per variable
-    compute_tendency_statistics(args.output_dir, args.begin_year, args.end_year)
+        # Step 4: Compute the 6h standard deviation
+        compute_tendency_statistics(args.output_dir, args.begin_year, args.end_year)
 
 
 def stack_data(ds, output_base_dir, begin_year, end_year):
     ds = compute_cartesian_wind(ds)
 
     # Cast variables to float32
-    for v in list(ds.data_vars):
-        if "time" in ds[v].dims:
-            ds[v] = ds[v].astype("float32")
+    ds = clean_zarr_v2_encoding(ds)
 
     min_year = begin_year
     max_year = end_year
@@ -252,9 +314,7 @@ def stack_data(ds, output_base_dir, begin_year, end_year):
             }
         }
 
-        for v in ds_year.variables:
-            for key in ["serializer", "filters", "compressors", "shards"]:
-                ds_year[v].encoding.pop(key, None)
+        ds_year = clean_zarr_v2_encoding(ds_year)
 
         output_file_path = os.path.join(output_dir)
         with dask.config.set(scheduler="threads"):
@@ -333,6 +393,8 @@ def precompute_static_data(ds, output_base_dir):
                 "dtype": "f4",
             }
 
+    ds_result = clean_zarr_v2_encoding(ds_result)
+
     with dask.config.set(scheduler="threads"):
         ds_result.to_zarr(
             os.path.join(output_base_dir, "constants"),
@@ -404,6 +466,8 @@ def compute_statistics(output_base_dir, begin_year, end_year):
         },
     }
 
+    result_ds = clean_zarr_v2_encoding(result_ds)
+
     with dask.config.set(scheduler="threads"):
         result_ds.to_zarr(
             os.path.join(output_base_dir, "stats"),
@@ -422,6 +486,9 @@ def compute_tendency_statistics(
     For each delta in `delta_hours`, computes per-feature statistics of
     the tendency  y(t + delta) - y(t)  over the time range, and writes
     them to a separate zarr group at `<output_base_dir>/tendency_stats_<delta>h`.
+
+    The output structure mirrors `compute_statistics` so it can be loaded
+    the same way by the dataset.
 
     Args:
         output_base_dir: base directory containing per-year stacked zarrs
@@ -509,6 +576,9 @@ def compute_tendency_statistics(
         }
 
         out_path = os.path.join(output_base_dir, f"tendency_stats_{delta_h}h")
+
+        result_ds = clean_zarr_v2_encoding(result_ds)
+
         with dask.config.set(scheduler="threads"):
             result_ds.to_zarr(
                 out_path,

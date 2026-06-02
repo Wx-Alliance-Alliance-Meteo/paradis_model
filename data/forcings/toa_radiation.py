@@ -84,6 +84,7 @@ def equation_of_time(mean_longitude, ascension):
     return numpy.mod(mean_longitude - ascension + numpy.pi, 2 * numpy.pi) - numpy.pi
 
 
+
 # Local solar time, based on longitude and adjusted day (mean time + EOT, in days)
 def local_solar_time_rad(longitude_deg, julian_day):
     # return (longitude_deg*numpy.pi/180 + numpy.mod(julian_day,1)*2*numpy.pi)
@@ -196,3 +197,42 @@ def toa_radiation(times: numpy.ndarray, lat: numpy.ndarray, lon: numpy.ndarray):
         )
 
     return output_rad
+
+
+
+def toa_radiation_stats(times: numpy.ndarray,
+                        lat: numpy.ndarray,
+                        lon: numpy.ndarray,
+                        time_stride: int = 1,
+                        lat_stride: int = 1,
+                        lon_stride: int = 1):
+    """
+    Streaming computation of global mean/std of 1h TOA radiation
+    over (times, lat, lon) without allocating a (T×Y×X) array.
+
+    Strides allow optional sub-sampling to bound runtime if desired.
+    """
+    # Subsample if requested
+    times = numpy.asarray(times).astype("datetime64[us]")[::time_stride]
+    lat = numpy.asarray(lat)[::lat_stride]
+    lon = numpy.asarray(lon)[::lon_stride]
+
+    # Prepare 2-D grid once; per-step allocation is (Y×X) only
+    lat_rad = (lat.reshape(-1, 1) * numpy.pi / 180).astype(numpy.float32)
+    lon_deg = lon.reshape(1, -1).astype(numpy.float32)
+
+    total = 0.0
+    total_sq = 0.0
+    count = float(lat.size * lon.size * times.size)
+
+    # Loop over time; each iteration holds only a (Y×X) array (~a few MB)
+    for t in times:
+        rad_2d = toa_radiation_1h(lat_rad, lon_deg, t.astype(numpy.float64))
+        # use float64 accumulators for numerical stability
+        total    += rad_2d.sum(dtype=numpy.float64)
+        total_sq += (rad_2d.astype(numpy.float64) ** 2).sum()
+
+    mean = total / count
+    var = max(0.0, (total_sq / count) - mean**2)
+    std = float(numpy.sqrt(var))
+    return float(mean), std
