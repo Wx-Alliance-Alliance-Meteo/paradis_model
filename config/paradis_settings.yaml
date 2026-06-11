@@ -75,7 +75,8 @@ compute:
   batch_size: 1                    # Number of samples per batch
   num_workers: 8                   # Number of parallel processes for data preloading
   compile: true                    # Whether to compile the model
-  gradient_checkpointing: false    # Enable activation checkpointing
+  gradient_checkpointing: false    # Flat per-layer checkpointing: O(1) mem, O(n) recompute
+  log_gradient_checkpointing: false # Log-tree checkpointing: O(log n) mem, O(log n) recompute
 
 # Forecast parameters
 forecast:

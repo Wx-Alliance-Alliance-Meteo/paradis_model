@@ -72,6 +72,7 @@ class Paradis(nn.Module):
         # Wrapper for gradient checkpointing
         self.step_fn = self._layer_step
         self.gradient_checkpoint = cfg.compute.get("gradient_checkpointing", False)
+        self.log_gradient_checkpoint = cfg.compute.get("log_gradient_checkpointing", False)
 
         # Enable downsampling automatically for
         self.downsample_diffusion = cfg.model.get("downsample_diffusion", False)
@@ -233,6 +234,24 @@ class Paradis(nn.Module):
     def _diffusion(self, i: int, z: torch.Tensor) -> torch.Tensor:
         return self.upsample(self.diffusion[i](self.downsample(z)))
 
+    def _run_layers_log_checkpoint(
+        self, start: int, end: int, hidden: torch.Tensor, hidden_static: torch.Tensor
+    ) -> torch.Tensor:
+        """Run layers [start, end) with log-structured gradient checkpointing.
+
+        Divides the segment in half recursively, checkpointing the first half so
+        that at most O(log n) activations coexist during the backward pass.
+        """
+        if end - start == 1:
+            return self._layer_step(start, hidden, hidden_static)
+        mid = (start + end) // 2
+        hidden = checkpoint(
+            lambda h: self._run_layers_log_checkpoint(start, mid, h, hidden_static),
+            hidden,
+            use_reentrant=False,
+        )
+        return self._run_layers_log_checkpoint(mid, end, hidden, hidden_static)
+
     def _layer_step(
         self, i: int, hidden: torch.Tensor, hidden_static: torch.Tensor
     ) -> torch.Tensor:
@@ -269,8 +288,11 @@ class Paradis(nn.Module):
         )
 
         # Recurrent integration through physics layers
-        for i in range(self.num_layers):
-            hidden = self.step_fn(i, hidden, hidden_static)
+        if self.log_gradient_checkpoint:
+            hidden = self._run_layers_log_checkpoint(0, self.num_layers, hidden, hidden_static)
+        else:
+            for i in range(self.num_layers):
+                hidden = self.step_fn(i, hidden, hidden_static)
 
         # Decode latent state back to prognostic variables
         return fields[
