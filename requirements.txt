@@ -1,4 +1,6 @@
 # Deep Learning Framework
+# note: may need the following torch version for Intel GPU support
+#pip install torch --index-url https://download.pytorch.org/whl/xpu
 torch>=2.0.0
 lightning>=2.4.0
 tensorboard>=2.18.0

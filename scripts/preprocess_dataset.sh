@@ -5,8 +5,8 @@ mkdir -p logs
 PYTHON=python
 SCRIPT=preprocess_dataset.py
 
-INPUT=/path/to/input/
-OUTPUT=/path/to/output.zarr/
+INPUT=../../ERA5/5.625deg_wb2/
+OUTPUT=../../ERA5/5.65/
 
 START_YEAR=1979
 END_YEAR=2023
