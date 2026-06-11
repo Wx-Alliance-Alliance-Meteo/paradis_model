@@ -57,7 +57,7 @@ init:
 
 # Input dataset
 dataset:
-  root_dir: ../ERA5/5.65/
+  root_dir: ../ERA5/5.65_2018_2023/
   time_resolution: 6h              # Dataset original resolution
   n_time_inputs: 2                 # Number inputs (For example, n_time_inputs: 2 feeds [tn-1, tn])
   sampling_interval: 6h            # Sample dataset feeds at this time interval

@@ -6,9 +6,9 @@ PYTHON=python
 SCRIPT=preprocess_dataset.py
 
 INPUT=../../ERA5/5.625deg_wb2/
-OUTPUT=../../ERA5/5.65/
+OUTPUT=../../ERA5/5.65_2018_2023/
 
-START_YEAR=1979
+START_YEAR=2018
 END_YEAR=2023
 
 echo "========================================"
