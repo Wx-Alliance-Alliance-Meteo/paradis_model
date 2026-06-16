@@ -1,77 +1,16 @@
 """Training script for the model."""
-
-import os # Intel GPUs
-os.environ["TORCH_ATTENTION_MODE"] = "sdpa" # Intel GPUs
-os.environ["TORCH_COMPILE_DISABLE"] = "1" # Intel GPUs
-
 import logging
 
 import hydra
 import lightning as L
-import torch # Intel GPUs
-from lightning.pytorch.accelerators import Accelerator # Intel GPUs
-from lightning.pytorch.strategies import SingleDeviceStrategy # Intel GPUs
 from lightning.pytorch.loggers import TensorBoardLogger
-from typing import Any, List, Optional # Intel GPUs
 from omegaconf import DictConfig
 
 from data.datamodule import Era5DataModule
 from trainer import LitParadis
 from utils.callbacks import enable_callbacks
 from utils.system import save_train_config, setup_system
-
-# For compatibility with Intel ARC GPUs
-class IntelXPUAccelerator(Accelerator):
-
-    # Lightning uses this name property internally
-    @property
-    def name(self) -> str:
-        return "intel_xpu"
-
-    # create list of device indices
-    @staticmethod
-    def parse_devices(devices: Any) -> Optional[List[int]]:
-        if isinstance(devices, int):
-            return list(range(devices))  # Turns 1 into [0]
-        if isinstance(devices, list):
-            return devices
-        return None
-
-    # Expects a structured iterable list from parse_devices
-    @staticmethod
-    def get_parallel_devices(devices: List[int]) -> List[torch.device]:
-        return [torch.device("xpu", idx) for idx in devices]
-
-    @staticmethod
-    def auto_device_count() -> int:
-        return torch.xpu.device_count()
-
-    @staticmethod
-    def is_available() -> bool:
-        return torch.xpu.is_available()
-
-    # Tells Lightning how to register the device to the runtime environment
-    def setup_device(self, device: torch.device) -> None:
-        if device.type != "xpu":
-            raise ValueError(f"Invalid device passed to XPU Accelerator: {device}")
-        torch.xpu.set_device(device)
-
-    # Tells Lightning how to clean up memory assets after execution
-    def teardown(self) -> None:
-        # Clear out the active XPU cache layer on exit
-        if torch.xpu.is_available():
-            torch.xpu.empty_cache()
-
-    def get_device_stats(self, device: torch.device) -> dict:
-        return {}
-
-# For compatibility with Intel ARC GPUs
-class SingleXPUStrategy(SingleDeviceStrategy):
-    def __init__(self, device_index: int = 0):
-        super().__init__(
-            accelerator=IntelXPUAccelerator(),
-            device=torch.device("xpu", device_index)
-        )
+from utils.Intel_GPU import SingleXPUStrategy # Intel GPUs
 
 # pylint: disable=E1120
 @hydra.main(version_base=None, config_path="config/", config_name="paradis_settings")
