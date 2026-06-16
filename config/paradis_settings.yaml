@@ -57,7 +57,7 @@ init:
 
 # Input dataset
 dataset:
-  root_dir: ../ERA5/5.65_2018_2023/
+  root_dir: ../ERA5/5.65_2018_2023/ # SJT: /path/to/dataset/
   time_resolution: 6h              # Dataset original resolution
   n_time_inputs: 2                 # Number inputs (For example, n_time_inputs: 2 feeds [tn-1, tn])
   sampling_interval: 6h            # Sample dataset feeds at this time interval
@@ -71,15 +71,16 @@ compute:
   num_nodes: 1                     # Number of nodes
   num_devices: 1                   # Number of GPUS/CPU devices per node
   accelerator: gpu                 # CPU/GPU
-  use_amp: False                   # Enable AMP (Automatic Mixed Precision)
+  Intel_GPU: true                  # Whether Intel GPUs are used # SJT : added new option
+  use_amp: true                    # Enable AMP (Automatic Mixed Precision)
   batch_size: 1                    # Number of samples per batch
   num_workers: 8                   # Number of parallel processes for data preloading
-  compile: True                    # Whether to compile the model
-  gradient_checkpointing: False    # Enable activation checkpointing
+  compile: true                    # Whether to compile the model
+  gradient_checkpointing: false    # Enable activation checkpointing
 
 # Forecast parameters
 forecast:
-  enable: False                    # Set model to forecast mode
+  enable: false                    # Set model to forecast mode
   start_date: 2019-12-31           # Time to generate forecast from (YYYY-MM-DD) or (YYYY-MM-DDTHH:MM:SS)
   end_date: null                   # OPTIONAL, for validation purposes (YYYY-MM-DD) or null
   output_frequency: 1              # Store to file every output_frequency forecast steps
@@ -88,7 +89,7 @@ forecast:
 # Training parameters
 training:
   max_epochs: -1                   # Maximum number of epochs the training is allowed (-1 to disable and use steps)
-  max_steps: 100                   # Maximum number of steps to use for training (-1 to disable and use epochs)
+  max_steps: 100                   # Maximum number of steps to use for training (-1 to disable and use epochs) # SJT: 300000
   progress_bar: true               # Enable progress bar
   gradient_clip_val: null          # Gradient clipping value, set to null to disable
   print_losses: false              # Manually print losses to screen (removes progress bar)
@@ -99,7 +100,7 @@ training:
   accumulate_grad_batches: 1       # Increase effective global batch size by this factor
 
   dataset:
-    start_date: 2019-11-01         # Start date for the training dataset (YYYY-MM-DD)
+    start_date: 2019-11-01         # Start date for the training dataset (YYYY-MM-DD) # SJT: 1980-01-01
     end_date: 2019-12-31           # End date for the training dataset (YYYY-MM-DD)
     preload: false                 # If true, load the full dataset from disk into memory to speed training
 
@@ -154,7 +155,7 @@ training:
     # 3. LambdaLR with initial warmup, steady learning rate and final cooldown
     wsd:
       enabled: true
-      warmup: 10                   # ≥1 : number of warmup steps, else fraction
+      warmup: 10                   # ≥1 : number of warmup steps, else fraction # SJT: 1000
       decay: 0.2                   # ≥1 : number of decay steps, else fraction
 
   variable_loss_weights:
