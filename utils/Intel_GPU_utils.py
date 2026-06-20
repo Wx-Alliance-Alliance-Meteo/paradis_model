@@ -1,6 +1,6 @@
-import os # Intel GPUs
-os.environ["TORCH_ATTENTION_MODE"] = "sdpa" # Intel GPUs
-os.environ["TORCH_COMPILE_DISABLE"] = "1" # Intel GPUs
+#import os # Intel GPUs
+#os.environ["TORCH_ATTENTION_MODE"] = "sdpa" # Intel GPUs
+#os.environ["TORCH_COMPILE_DISABLE"] = "1" # Intel GPUs
 
 import torch # Intel GPUs
 from lightning.pytorch.accelerators import Accelerator # Intel GPUs

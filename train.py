@@ -1,4 +1,9 @@
 """Training script for the model."""
+import os # Intel GPUs
+# the following works but forces serial GPU computation
+os.environ["TORCH_ATTENTION_MODE"] = "sdpa" # Intel GPUs
+os.environ["TORCH_COMPILE_DISABLE"] = "1" # Intel GPUs
+
 import logging
 
 import hydra
@@ -11,6 +16,8 @@ from trainer import LitParadis
 from utils.callbacks import enable_callbacks
 from utils.system import save_train_config, setup_system
 from utils.Intel_GPU_utils import SingleXPUStrategy # Intel GPUs
+
+#import torch
 
 # pylint: disable=E1120
 @hydra.main(version_base=None, config_path="config/", config_name="paradis_settings")
@@ -68,8 +75,6 @@ def main(cfg: DictConfig):
         trainer_kwargs.update({
             "strategy": xpu_strategy
         })
-        #print(f"Device Count: {torch.xpu.device_count()}")
-        #print(f"GPU Name: {torch.xpu.get_device_name(0)}")
     else:
         trainer_kwargs.update({
             "accelerator": cfg.compute.accelerator,

@@ -71,7 +71,7 @@ compute:
   num_nodes: 1                     # Number of nodes
   num_devices: 1                   # Number of GPUS/CPU devices per node
   accelerator: gpu                 # CPU/GPU
-  Intel_GPU: true                  # Whether Intel GPUs are used # SJT : added new option
+  Intel_GPU: true                  # Whether Intel GPUs are used # SJT: added new option
   use_amp: true                    # Enable AMP (Automatic Mixed Precision)
   batch_size: 1                    # Number of samples per batch
   num_workers: 8                   # Number of parallel processes for data preloading
