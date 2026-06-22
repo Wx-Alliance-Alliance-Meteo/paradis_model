@@ -1,8 +1,11 @@
 """Training script for the model."""
 import os # Intel GPUs
-# the following works but forces serial GPU computation
-os.environ["TORCH_ATTENTION_MODE"] = "sdpa" # Intel GPUs
-os.environ["TORCH_COMPILE_DISABLE"] = "1" # Intel GPUs
+
+# PyTorch settings for specific GPU vendors
+torch_wheel = os.environ.get("TORCH_WHEEL","cuda") # get environment variable for PyTorch wheel (NVIDIA: "cuda", Intel: "xpu")
+if torch_wheel == "xpu":
+    os.environ["TORCH_ATTENTION_MODE"] = "sdpa" # Intel GPUs
+    os.environ["TORCH_COMPILE_DISABLE"] = "1"   # Intel GPUs
 
 import logging
 
@@ -16,8 +19,6 @@ from trainer import LitParadis
 from utils.callbacks import enable_callbacks
 from utils.system import save_train_config, setup_system
 from utils.Intel_GPU_utils import SingleXPUStrategy # Intel GPUs
-
-#import torch
 
 # pylint: disable=E1120
 @hydra.main(version_base=None, config_path="config/", config_name="paradis_settings")
@@ -87,7 +88,7 @@ def main(cfg: DictConfig):
     # Keep track of configuration parameters in logging directory
     save_train_config(trainer.logger.log_dir, cfg)  # type: ignore
 
-    # Train model
+    ## Train model
     checkpoint_path = cfg.init.checkpoint_path if cfg.init.restart else None
     trainer.fit(litmodel, datamodule=datamodule, ckpt_path=checkpoint_path)
 

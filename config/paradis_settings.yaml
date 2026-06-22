@@ -52,7 +52,7 @@ model:
 # Initialization settings (seeding)
 init:
   seed: 42                         # If not provided, a seed will not be used
-  checkpoint_path: null            # Path to model checkpoint for loading pre-trained weights
+  checkpoint_path: null            # Path to model checkpoint for loading pre-trained weights (SJT: default=null)
   restart: false                   # Whether to restart from checkpoint (true) or only load pre-trained weights (false)
 
 # Input dataset

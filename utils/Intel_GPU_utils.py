@@ -1,11 +1,8 @@
-#import os # Intel GPUs
-#os.environ["TORCH_ATTENTION_MODE"] = "sdpa" # Intel GPUs
-#os.environ["TORCH_COMPILE_DISABLE"] = "1" # Intel GPUs
-
-import torch # Intel GPUs
-from lightning.pytorch.accelerators import Accelerator # Intel GPUs
-from lightning.pytorch.strategies import SingleDeviceStrategy # Intel GPUs
-from typing import Any, List, Optional # Intel GPUs
+# classes for Intel GPUs
+import torch 
+from lightning.pytorch.accelerators import Accelerator
+from lightning.pytorch.strategies import SingleDeviceStrategy
+from typing import Any, List, Optional
 
 # For compatibility with Intel ARC GPUs
 class IntelXPUAccelerator(Accelerator):
