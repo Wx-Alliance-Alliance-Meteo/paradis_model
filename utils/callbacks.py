@@ -146,26 +146,38 @@ def enable_callbacks(cfg):
         )
 
     if cfg.training.checkpointing.enabled:
-        # Keep all epoch checkpoints
+        # Keep all epochs
         callbacks.append(
             ModelCheckpoint(
-                filename="{epoch:02d}",
-                monitor="step",
-                mode="max",
-                save_top_k=-1,
-                save_last=True,
+                filename="epoch={epoch:02d}",
                 every_n_epochs=1,
+                save_top_k=-1,
                 save_on_train_epoch_end=True,
             )
         )
 
-        # Keep only the best checkpoint
+        # Also store up to 10 intermediate steps between epochs
+        callbacks.append(
+            ModelCheckpoint(
+                filename="step={step:04d}",
+                every_n_train_steps=100,
+                save_top_k=10,
+                monitor="step",
+                mode="max",
+                save_on_train_epoch_end=False,
+                save_last=True,
+            )
+        )
+
+        # Keep also the best validation checkpoint (called at the end of every epoch)
         callbacks.append(
             ModelCheckpoint(
                 filename="best",
                 monitor="val_loss",
                 mode="min",
                 save_top_k=1,
+                save_last=False,
             )
         )
+
     return callbacks

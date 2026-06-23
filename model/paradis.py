@@ -4,6 +4,7 @@ import math
 
 import torch
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 
 from model.advection import NeuralSemiLagrangian
 from model.blocks import GMBlock
@@ -52,6 +53,8 @@ class Paradis(nn.Module):
             datamodule.dataset.num_in_dyn_features
             + datamodule.dataset.num_in_static_features
         )
+
+        self.gradient_checkpoint = cfg.compute.get("gradient_checkpointing", False)
 
         current_dim = input_dim
         encoder_layers = []
@@ -153,6 +156,37 @@ class Paradis(nn.Module):
             bias_channels=bias_channels,
         )
 
+    def _apply_checkpoint(self, func, *args):
+        if self.gradient_checkpoint:
+            return checkpoint(func, *args, use_reentrant=False)
+        else:
+            return func(*args)
+
+    def _layer_step(self, i: int, hidden: torch.Tensor) -> torch.Tensor:
+        """Execute a single ADR layer (advection, diffusion, reaction)."""
+        batch_size = hidden.shape[0]
+
+        velocities_raw = self.velocity_nets[i](hidden)
+
+        # Obtain velocities in latent space
+        velocities = velocities_raw.reshape(
+            batch_size, 2, self.num_vels, self.nlat, self.nlon
+        )
+        u = velocities[:, 0]
+        v = velocities[:, 1]
+
+        # Apply SL advection, reaction and diffusion blocks
+        advected = self.advection[i](hidden, u, v, self.dt)
+        hidden = hidden + advected
+
+        diffused = self.diffusion[i](hidden)
+        hidden = hidden + diffused
+
+        reacted = self.reaction[i](hidden)
+        hidden = hidden + reacted
+
+        return hidden
+
     def forward(self, fields: torch.Tensor) -> torch.Tensor:
         """
         Forward pass with fields and winds.
@@ -166,31 +200,20 @@ class Paradis(nn.Module):
         torch.Tensor
             Output fields of shape (batch, out_channels, nlat, nlon)
         """
-        x = fields
-        batch_size = x.shape[0]
 
         # Project features to latent space
-        hidden = self.input_proj(x)
+        hidden = self._apply_checkpoint(self.input_proj, fields)
 
         for i in range(self.num_layers):
-            velocities_raw = self.velocity_nets[i](hidden)
 
-            # Obtain velocities in latent space
-            velocities = velocities_raw.reshape(
-                batch_size, 2, self.num_vels, self.nlat, self.nlon
-            )
-            u = velocities[:, 0]
-            v = velocities[:, 1]
+            if self.gradient_checkpoint:
 
-            # Apply SL advection, reaction and diffusion blocks
-            advected = self.advection[i](hidden, u, v, self.dt)
-            hidden = hidden + advected
+                def checkpoint_wrapper(h, idx=i):
+                    return self._layer_step(idx, h)
 
-            diffused = self.diffusion[i](hidden)
-            hidden = hidden + diffused
-
-            reacted = self.reaction[i](hidden)
-            hidden = hidden + reacted
+                hidden = checkpoint(checkpoint_wrapper, hidden, use_reentrant=False)
+            else:
+                hidden = self._layer_step(i, hidden)
 
         # Project back to physical space
-        return self.output_proj(hidden)
+        return self._apply_checkpoint(self.output_proj, hidden)
