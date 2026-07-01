@@ -52,7 +52,7 @@ model:
 # Initialization settings (seeding)
 init:
   seed: 42                         # If not provided, a seed will not be used
-  checkpoint_path: null            # Path to model checkpoint for loading pre-trained weights (SJT: default=null)
+  checkpoint_path: logs/lightning_logs/version_SJT/checkpoints/best.ckpt  # Path to model checkpoint for loading pre-trained weights (SJT: default=null)
   restart: false                   # Whether to restart from checkpoint (true) or only load pre-trained weights (false)
 
 # Input dataset
@@ -80,9 +80,9 @@ compute:
 
 # Forecast parameters
 forecast:
-  enable: false                    # Set model to forecast mode
-  start_date: 2019-12-31           # Time to generate forecast from (YYYY-MM-DD) or (YYYY-MM-DDTHH:MM:SS)
-  end_date: null                   # OPTIONAL, for validation purposes (YYYY-MM-DD) or null
+  enable: true                     # Set model to forecast mode
+  start_date: 2021-01-01           # Time to generate forecast from (YYYY-MM-DD) or (YYYY-MM-DDTHH:MM:SS)
+  end_date: 2021-01-02             # OPTIONAL, for validation purposes (YYYY-MM-DD) or null
   output_frequency: 1              # Store to file every output_frequency forecast steps
   output_file: null                # Name of output forecast file
 
@@ -93,7 +93,7 @@ training:
   progress_bar: true               # Enable progress bar
   gradient_clip_val: null          # Gradient clipping value, set to null to disable
   print_losses: false              # Manually print losses to screen (removes progress bar)
-  log_every_n_steps: 100           # Write to log every n steps
+  log_every_n_steps: 50           # Write to log every n steps # SJT: 100
   log_dir: logs                    # Where logs will be written
   experiment_name: null            # Optional: Custom name for log directory (replaces version_xxx), set to null for default versioning
   log_additional_stats: false      # Prints gradient-related metrics for debugging
@@ -108,7 +108,7 @@ training:
     start_date: 2020-01-01         # Start date for the validation dataset (YYYY-MM-DD)
     end_date: 2020-12-31           # End date for the validation dataset (YYYY-MM-DD)
     preload: false                 # If true, load the full dataset from disk into memory to speed validation
-    validation_every_n_steps: null # Run validation every N steps (null once per epoch)
+    validation_every_n_steps: 100 # Run validation every N steps (null once per epoch)
     validation_batches: null       # If non-null, use N batches rather than all for validation (0 disables val)
 
   optimizer:
