@@ -114,12 +114,12 @@ def main():
     }
 
     # Keyword arguments that depend on GPU hardware choice
-    if cfg.compute.Intel_GPU:
+    if cfg.compute.accelerator == "gpu" and torch_wheel == "xpu": # Intel GPUs
         xpu_strategy = SingleXPUStrategy(device_index=0)
         trainer_kwargs.update({
             "strategy": xpu_strategy
         })
-    else:
+    else: # NVIDIA GPUs and CPU
         trainer_kwargs.update({
             "accelerator": cfg.compute.accelerator
         })

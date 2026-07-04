@@ -1,5 +1,5 @@
 # classes for Intel GPUs
-import torch 
+import torch
 from lightning.pytorch.accelerators import Accelerator
 from lightning.pytorch.strategies import SingleDeviceStrategy
 from typing import Any, List, Optional

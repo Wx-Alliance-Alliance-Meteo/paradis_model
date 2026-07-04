@@ -2,7 +2,7 @@
 import os # Intel GPUs
 
 # PyTorch settings for specific GPU vendors
-torch_wheel = os.environ.get("TORCH_WHEEL","cuda") # get environment variable for PyTorch wheel (NVIDIA: "cuda", Intel: "xpu")
+torch_wheel = os.environ.get("TORCH_WHEEL","cuda") # get environment variable for PyTorch wheel (NVIDIA: "cuda" (default), Intel: "xpu")
 if torch_wheel == "xpu":
     os.environ["TORCH_ATTENTION_MODE"] = "sdpa" # Intel GPUs
     os.environ["TORCH_COMPILE_DISABLE"] = "1"   # Intel GPUs
@@ -68,27 +68,26 @@ def main(cfg: DictConfig):
         "num_sanity_val_steps": 0,
         "accumulate_grad_batches": cfg.training.get("accumulate_grad_batches", 1)
     }
-            
 
     # Keyword arguments that depend on GPU hardware choice
-    if cfg.compute.Intel_GPU:
+    if cfg.compute.accelerator == "gpu" and torch_wheel == "xpu": # Intel GPUs
         xpu_strategy = SingleXPUStrategy(device_index=0)
         trainer_kwargs.update({
             "strategy": xpu_strategy
         })
-    else:
+    else: # NVIDIA GPUs and CPU
         trainer_kwargs.update({
             "accelerator": cfg.compute.accelerator,
             "strategy": auto if cfg.compute.num_devices == 1 else "ddp"
         })
-        
+ 
     # Instantiate lightning trainer with options
     trainer = L.Trainer(**trainer_kwargs)
 
     # Keep track of configuration parameters in logging directory
     save_train_config(trainer.logger.log_dir, cfg)  # type: ignore
 
-    ## Train model
+    # Train model
     checkpoint_path = cfg.init.checkpoint_path if cfg.init.restart else None
     trainer.fit(litmodel, datamodule=datamodule, ckpt_path=checkpoint_path)
 

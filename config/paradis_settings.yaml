@@ -71,7 +71,6 @@ compute:
   num_nodes: 1                     # Number of nodes
   num_devices: 1                   # Number of GPUS/CPU devices per node
   accelerator: gpu                 # CPU/GPU
-  Intel_GPU: true                  # Whether Intel GPUs are used # SJT: added new option
   use_amp: true                    # Enable AMP (Automatic Mixed Precision)
   batch_size: 1                    # Number of samples per batch
   num_workers: 8                   # Number of parallel processes for data preloading
@@ -82,7 +81,7 @@ compute:
 forecast:
   enable: true                     # Set model to forecast mode
   start_date: 2021-01-01           # Time to generate forecast from (YYYY-MM-DD) or (YYYY-MM-DDTHH:MM:SS)
-  end_date: 2021-01-02             # OPTIONAL, for validation purposes (YYYY-MM-DD) or null
+  end_date: 2021-02-01             # OPTIONAL, for validation purposes (YYYY-MM-DD) or null
   output_frequency: 1              # Store to file every output_frequency forecast steps
   output_file: null                # Name of output forecast file
 

@@ -1,6 +1,6 @@
 # Index Registry Options
 --index-url=https://download.pytorch.org/whl/${TORCH_WHEEL} # search for specified PyTorch wheel first (NVIDIA CUDA: TORCH_WHEEL="cuda", Intel XPU: TORCH_WHEEL="xpu") 
---extra-index-url=https://pypi.org/simple                   # fall back to standard registry for all other packages
+--extra-index-url=https://pypi.org/simple                   # fall back to standard registry for all other packages (defaults to NVIDIA CUDA for PyTorch)
 
 # Deep Learning Framework
 torch>=2.0.0
