@@ -9,7 +9,7 @@ Pre-print: [Learning to Advect: A Neural Semi-Lagrangian Architecture for Weathe
 - **Geocyclic Padding:** Addresses the challenge of representing the Earth’s spherical geometry
 
 #### Dependencies
-Necessary python packages can be installed using **pip**. For GPU runs, NVIDIA CUDA is the default. For Intel GPUs, use `export TORCH_WHEEL="xpu"` before using **pip**.
+Necessary python packages can be installed using **pip**. For GPU runs, NVIDIA CUDA is the default. For Intel GPUs, use `export TORCH_WHEEL="xpu"` before using **pip** (and before the training/inference steps described below).
 
 ```
 pip install -r requirements.txt
