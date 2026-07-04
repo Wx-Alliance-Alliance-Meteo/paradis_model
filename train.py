@@ -1,4 +1,11 @@
 """Training script for the model."""
+import os # Intel GPUs
+
+# PyTorch settings for specific GPU vendors
+torch_wheel = os.environ.get("TORCH_WHEEL","cuda") # get environment variable for PyTorch wheel (NVIDIA: "cuda" (default), Intel: "xpu")
+if torch_wheel == "xpu":
+    os.environ["TORCH_ATTENTION_MODE"] = "sdpa" # Intel GPUs
+    os.environ["TORCH_COMPILE_DISABLE"] = "1"   # Intel GPUs
 
 import logging
 
@@ -11,7 +18,7 @@ from data.datamodule import Era5DataModule
 from trainer import LitParadis
 from utils.callbacks import enable_callbacks
 from utils.system import save_train_config, setup_system
-
+from utils.Intel_GPU_utils import SingleXPUStrategy # Intel GPUs
 
 # pylint: disable=E1120
 @hydra.main(version_base=None, config_path="config/", config_name="paradis_settings")
@@ -40,29 +47,42 @@ def main(cfg: DictConfig):
         version=cfg.training.get("experiment_name", None),
     )
 
+    # Keyword arguments common to all hardware
+    trainer_kwargs = {
+        "default_root_dir": cfg.training.log_dir,
+        "devices": cfg.compute.num_devices,
+        "num_nodes": cfg.compute.num_nodes,
+        "max_epochs": cfg.training.max_epochs,
+        "max_steps": cfg.training.max_steps,
+        "gradient_clip_val": cfg.training.gradient_clip_val,
+        "gradient_clip_algorithm": "norm",
+        "log_every_n_steps": cfg.training.log_every_n_steps,
+        "callbacks": callbacks,
+        "precision": "bf16-mixed" if cfg.compute.use_amp else "32-true",
+        "enable_progress_bar": cfg.training.progress_bar and not cfg.training.print_losses,
+        "enable_model_summary": True,
+        "logger": logger,
+        "val_check_interval": cfg.training.validation_dataset.validation_every_n_steps,
+        "limit_val_batches": cfg.training.validation_dataset.validation_batches,
+        "enable_checkpointing": cfg.training.checkpointing.enabled,
+        "num_sanity_val_steps": 0,
+        "accumulate_grad_batches": cfg.training.get("accumulate_grad_batches", 1)
+    }
+
+    # Keyword arguments that depend on GPU hardware choice
+    if cfg.compute.accelerator == "gpu" and torch_wheel == "xpu": # Intel GPUs
+        xpu_strategy = SingleXPUStrategy(device_index=0)
+        trainer_kwargs.update({
+            "strategy": xpu_strategy
+        })
+    else: # NVIDIA GPUs and CPU
+        trainer_kwargs.update({
+            "accelerator": cfg.compute.accelerator,
+            "strategy": auto if cfg.compute.num_devices == 1 else "ddp"
+        })
+ 
     # Instantiate lightning trainer with options
-    trainer = L.Trainer(
-        default_root_dir=cfg.training.log_dir,
-        accelerator=cfg.compute.accelerator,
-        devices=cfg.compute.num_devices,
-        num_nodes=cfg.compute.num_nodes,
-        strategy="auto" if cfg.compute.num_devices == 1 else "ddp",
-        max_epochs=cfg.training.max_epochs,
-        max_steps=cfg.training.max_steps,
-        gradient_clip_val=cfg.training.gradient_clip_val,
-        gradient_clip_algorithm="norm",
-        log_every_n_steps=cfg.training.log_every_n_steps,
-        callbacks=callbacks,
-        precision="bf16-mixed" if cfg.compute.use_amp else "32-true",
-        enable_progress_bar=cfg.training.progress_bar and not cfg.training.print_losses,
-        enable_model_summary=True,
-        logger=logger,
-        val_check_interval=cfg.training.validation_dataset.validation_every_n_steps,
-        limit_val_batches=cfg.training.validation_dataset.validation_batches,
-        enable_checkpointing=cfg.training.checkpointing.enabled,
-        num_sanity_val_steps=0,
-        accumulate_grad_batches=cfg.training.get("accumulate_grad_batches", 1),
-    )
+    trainer = L.Trainer(**trainer_kwargs)
 
     # Keep track of configuration parameters in logging directory
     save_train_config(trainer.logger.log_dir, cfg)  # type: ignore
@@ -70,7 +90,6 @@ def main(cfg: DictConfig):
     # Train model
     checkpoint_path = cfg.init.checkpoint_path if cfg.init.restart else None
     trainer.fit(litmodel, datamodule=datamodule, ckpt_path=checkpoint_path)
-
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

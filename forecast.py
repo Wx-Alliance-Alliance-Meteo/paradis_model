@@ -1,3 +1,11 @@
+import os # Intel GPUs
+
+# PyTorch settings for specific GPU vendors
+torch_wheel = os.environ.get("TORCH_WHEEL","cuda") # get environment variable for PyTorch wheel (NVIDIA: "cuda", Intel: "xpu")
+if torch_wheel == "xpu":
+    os.environ["TORCH_ATTENTION_MODE"] = "sdpa" # Intel GPUs
+    os.environ["TORCH_COMPILE_DISABLE"] = "1"   # Intel GPUs
+
 import argparse
 import logging
 from omegaconf import OmegaConf
@@ -6,6 +14,7 @@ import torch
 
 from trainer import LitParadis
 from data.datamodule import Era5DataModule
+from utils.Intel_GPU_utils import SingleXPUStrategy # Intel GPUs
 
 torch.set_float32_matmul_precision("high")
 
@@ -95,14 +104,28 @@ def main():
 
     model = LitParadis(datamodule, cfg)
 
-    trainer = L.Trainer(
-        accelerator=cfg.compute.accelerator,
-        devices=cfg.compute.num_devices,
-        num_nodes=cfg.compute.num_nodes,
-        precision="16-mixed" if cfg.compute.use_amp else "32-true",
-        logger=False,
-        enable_checkpointing=False,
-    )
+    # Keyword arguments common to all hardware
+    trainer_kwargs = {
+        "devices": cfg.compute.num_devices,
+        "num_nodes": cfg.compute.num_nodes,
+        "precision": "16-mixed" if cfg.compute.use_amp else "32-true",
+        "logger": False,
+        "enable_checkpointing": False
+    }
+
+    # Keyword arguments that depend on GPU hardware choice
+    if cfg.compute.accelerator == "gpu" and torch_wheel == "xpu": # Intel GPUs
+        xpu_strategy = SingleXPUStrategy(device_index=0)
+        trainer_kwargs.update({
+            "strategy": xpu_strategy
+        })
+    else: # NVIDIA GPUs and CPU
+        trainer_kwargs.update({
+            "accelerator": cfg.compute.accelerator
+        })
+
+    # Instantiate lightning trainer with options
+    trainer = L.Trainer(**trainer_kwargs)
 
     trainer.predict(
         model,
