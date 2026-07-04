@@ -5,10 +5,10 @@ mkdir -p logs
 PYTHON=python
 SCRIPT=preprocess_dataset.py
 
-INPUT=../../ERA5/5.625deg_wb2/ # SJT: INPUT=/path/to/input/
-OUTPUT=../../ERA5/5.65_2018_2023/ # SJT: OUTPUT=/path/to/output.zarr/
+INPUT=/path/to/input/
+OUTPUT=/path/to/output.zarr/
 
-START_YEAR=2018 # SJT: START_YEAR=1979
+START_YEAR=1979
 END_YEAR=2023
 
 echo "========================================"
