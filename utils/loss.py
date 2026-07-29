@@ -1,3 +1,5 @@
+"""Loss functions for the weather forecasting model."""
+
 import re
 import torch
 
@@ -31,9 +33,6 @@ class ParadisLoss(torch.nn.Module):
         output_name_order: list,
         delta_loss: float = 1.0,
         apply_latitude_weights: bool = False,
-        state_std: torch.Tensor = None,
-        tendency_std: torch.Tensor = None,
-        apply_tendency_normalization: bool = False,
     ) -> None:
         """Initialize the weighted reversed Huber loss function.
 
@@ -62,9 +61,6 @@ class ParadisLoss(torch.nn.Module):
         self.num_atmospheric_vars = num_features - num_surface_vars
         self.var_loss_weights = var_loss_weights
         self.output_name_order = output_name_order
-        self.apply_tendency_normalization = apply_tendency_normalization
-        self.state_std = state_std
-        self.tendency_std = tendency_std
 
         # Whether to flip geopotential weights
         self.flip_geopotential_weights = False
@@ -87,31 +83,6 @@ class ParadisLoss(torch.nn.Module):
             persistent=False,
         )
 
-        if self.apply_tendency_normalization:
-            if self.state_std is None or self.tendency_std is None:
-                raise ValueError(
-                    "apply_tendency_normalization=True requires both state_std "
-                    "and tendency_std to be provided."
-                )
-            if self.state_std.shape != self.tendency_std.shape:
-                raise ValueError(
-                    f"state_std and tendency_std must have the same shape, "
-                    f"got {self.state_std.shape} and {self.tendency_std.shape}"
-                )
-            if self.state_std.shape[0] != self.num_features:
-                raise ValueError(
-                    f"Expected state_std of length {self.num_features}, "
-                    f"got {self.state_std.shape[0]}"
-                )
-
-            correction = self.state_std.to(torch.float32) / self.tendency_std.to(
-                torch.float32
-            ).clamp(min=1e-8)
-
-            self.register_buffer(
-                "tendency_scaling_buf", correction.view(1, -1, 1, 1), persistent=False
-            )
-
         if loss_function == "mse":
             self.loss_fn = torch.nn.MSELoss(reduction="none")
         elif loss_function == "reversed_huber":
@@ -130,26 +101,30 @@ class ParadisLoss(torch.nn.Module):
                 f"{loss_function} not supported, choose between [reversed_huber, mse]"
             )
 
-        self.apply_tendency_normalization = apply_tendency_normalization
-        self.state_std = state_std
-        self.tendency_std = tendency_std
 
-    def _check_uniform_spacing(self, grid: torch.Tensor) -> float:
-        """Check if grid has uniform spacing and return the delta.
-
-        Args:
-            grid: Input coordinate grid tensor
+    def per_channel_loss(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        weighted: bool = True,
+    ) -> torch.Tensor:
+        """Return loss per output channel.
 
         Returns:
-            Grid spacing delta
-
-        Raises:
-            ValueError: If grid spacing is not uniform
+            Tensor of shape [num_features].
         """
-        diff = torch.diff(grid)
-        if not torch.allclose(diff, diff[0]):
-            raise ValueError(f"Grid {grid} is not uniformly spaced")
-        return diff[0].item()
+
+        loss = self.loss_fn(pred, target)
+
+        if weighted:
+            loss = loss * self.feature_weights_buf
+
+            if self.apply_latitude_weights:
+                loss = loss * self.lat_weights_buf
+
+        # Reduce over batch, lat, lon. Keep channel dimension.
+        return loss.mean(dim=(0, 2, 3))
+
 
     def _compute_latitude_weights(self, grid_lat_deg: torch.Tensor) -> torch.Tensor:
         """
@@ -271,7 +246,7 @@ class ParadisLoss(torch.nn.Module):
         """
         delta = torch.as_tensor(
             delta, device=pred.device, dtype=pred.dtype
-        )
+        )  # <- ensure device/dtype
         error = pred - target
         abs_error = torch.abs(error)
         small_error = delta * abs_error
@@ -294,11 +269,6 @@ class ParadisLoss(torch.nn.Module):
         Returns:
             Weighted loss value
         """
-        # Prepare weights with correct shapes for broadcasting
-        if self.apply_tendency_normalization:
-            pred = pred * self.tendency_scaling_buf
-            target = target * self.tendency_scaling_buf
-
         # Get the loss using the appropriate function
         loss = self.loss_fn(pred, target)
 

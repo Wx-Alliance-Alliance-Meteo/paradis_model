@@ -1,23 +1,40 @@
 """ERA5 dataset handling"""
 
-from datetime import timedelta
 import os
 import re
+from datetime import timedelta
 
 import dask
 import numpy
-from omegaconf import DictConfig
 import torch
 import xarray
-
+from omegaconf import DictConfig
 
 from data.forcings import time_forcings, toa_radiation
 from utils.normalization import (
-    normalize_standard,
     normalize_humidity,
     normalize_precipitation,
+    normalize_standard,
 )
 
+
+def _preprocess_era5_store(ds: xarray.Dataset) -> xarray.Dataset:
+    coord_updates = {}
+
+    if "latitude" in ds.coords:
+        coord_updates["latitude"] = ds.latitude.astype("float64").round(6)
+
+    if "longitude" in ds.coords:
+        coord_updates["longitude"] = ds.longitude.astype("float64").round(6)
+
+    if coord_updates:
+        ds = ds.assign_coords(**coord_updates)
+
+    for coord in ("features", "latitude", "longitude"):
+        if coord in ds.coords and coord in ds.dims and ds.sizes.get(coord, 0) > 1:
+            ds = ds.sortby(coord)
+
+    return ds
 
 class ERA5Dataset(torch.utils.data.Dataset):
     """Prepare and process ERA5 dataset for Pytorch."""
@@ -53,12 +70,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
             os.path.join(root_dir, "*[0-9]"),
             chunks={"time": 1},
             engine="zarr",
-            preprocess=lambda ds: (
-                ds.assign_coords(
-                    latitude=ds.latitude.astype("float64").round(6),
-                    longitude=ds.longitude.astype("float64").round(6),
-                )
-            ),
+            preprocess=_preprocess_era5_store,
             join="exact",
         )
 
@@ -77,24 +89,17 @@ class ERA5Dataset(torch.utils.data.Dataset):
         ds["mean"] = ds_stats["mean"]
         ds["std"] = ds_stats["std"]
         ds["max"] = ds_stats["max"]
-        # Store statistics for each variable (for use in forecast.py)
-        self.var_stats = {}
-        for i, feature in enumerate(ds_stats.features.values):
-            self.var_stats[feature] = {
-                "mean": float(ds_stats["mean"].values[i]),
-                "std": float(ds_stats["std"].values[i]),
-            }
 
         ds["min"] = ds_stats["min"]
         ds.attrs["toa_radiation_std"] = ds_stats.attrs["toa_radiation_std"]
         ds.attrs["toa_radiation_mean"] = ds_stats.attrs["toa_radiation_mean"]
 
-        # Make sure start date and end_date provide the time, othersize asume 0Z and 24Z respectively
+        # Make sure start date and end_date provide the time, otherwise asume 0Z and 24Z respectively
         if "T" not in start_date:
             start_date += "T00:00:00"
 
         # Add the number of forecast steps to the range of dates
-        time_resolution = int(cfg.dataset.time_resolution[:-1])
+        self.time_resolution = time_resolution = int(cfg.dataset.time_resolution[:-1])
 
         # Apply an initialization time interval if necessary
         if time_interval is None:
@@ -109,8 +114,6 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
         # Get the number of additional time instances needed in data for autoregression
         hours = time_resolution * self.forecast_steps
-        time_delta = timedelta(hours=hours)
-        time_delta = numpy.timedelta64(int(time_delta.total_seconds()), "s")
 
         start_date_dt = numpy.datetime64(start_date, "s")
         step = numpy.timedelta64(time_resolution, "h")
@@ -120,8 +123,6 @@ class ERA5Dataset(torch.utils.data.Dataset):
         if end_date is not None:
             if "T" not in end_date:
                 end_date += "T23:59:59"
-        else:
-            start_date_dt = numpy.datetime64(start_date)
 
         # Store a lazy dataset that contains the requested dates only
         ds_loader = ds.sel(time=slice(start_date, end_date, self.interval_steps))
@@ -173,18 +174,21 @@ class ERA5Dataset(torch.utils.data.Dataset):
             os.path.join(root_dir, "constants"), engine="zarr"
         ).compute()  # Definitely preload constants
 
-        if ds_constants.latitude.values[0] > ds_constants.latitude.values[-1]:
-            ds_constants = ds_constants.sortby("latitude")
-
-        if ds_constants.longitude.values[0] > ds_constants.longitude.values[-1]:
-            ds_constants = ds_constants.sortby("longitude")
-
         # Convert lat/lon to radians
         lat_rad = torch.deg2rad(self.lat).to(self.dtype)
         lon_rad = torch.deg2rad(self.lon).to(self.dtype)
         self.lat_rad_grid, self.lon_rad_grid = torch.meshgrid(
             lat_rad, lon_rad, indexing="ij"
         )
+
+        if len(lat_rad) != len(ds_constants.latitude.values):
+            ds_constants = ds_constants.sel(latitude=ds.latitude, longitude=ds.longitude)
+
+        if ds_constants.latitude.values[0] > ds_constants.latitude.values[-1]:
+            ds_constants = ds_constants.sortby("latitude")
+
+        if ds_constants.longitude.values[0] > ds_constants.longitude.values[-1]:
+            ds_constants = ds_constants.sortby("longitude")
 
         # Use zscore to normalize the following variables
         normalize_const_vars = {
@@ -260,23 +264,27 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.ds_constants = ds_constants
 
         # Order them so that common features are placed first
-        self.dyn_input_features = common_features + list(
-            set(input_atmospheric) - set(output_atmospheric)
-        )
+        input_features = input_atmospheric + list(features_cfg.input.surface)
+        output_features = output_atmospheric + list(features_cfg.output.surface)
 
-        self.dyn_output_features = common_features + list(
-            set(output_atmospheric) - set(input_atmospheric)
-        )
+        common_features = [f for f in output_features if f in input_features]
+
+        output_only_features = [f for f in output_features if f not in input_features]
+        input_only_features = [f for f in input_features if f not in output_features]
+
+        self.dyn_input_features = common_features + input_only_features
+        self.dyn_output_features = common_features + output_only_features
 
         # Store the number of dynamic features without concatenation
         self.num_dyn_inputs_single = len(self.dyn_input_features)
 
+        # Inputs must exist because they are required by the model.
         ds_input = ds.sel(features=self.dyn_input_features)
+
         ds_output = ds.sel(features=self.dyn_output_features)
+
         self.ds_loader = self.ds_loader.sel(features=self.dyn_input_features)
-        self.ds_loader = self.ds_loader.transpose(
-            "time", "latitude", "longitude", "features"
-        )
+        self.ds_loader = self.ds_loader.transpose("time", "latitude", "longitude", "features")
 
         # Pre-select the features in the right order
         if self.preload:
@@ -288,31 +296,8 @@ class ERA5Dataset(torch.utils.data.Dataset):
             self.dyn_input_features *= self.n_time_inputs
 
         # Fetch data
-        self.ds_input = ds_input["data"].transpose(
-            "time", "latitude", "longitude", "features"
-        )
-        self.ds_output = ds_output["data"].transpose(
-            "time", "latitude", "longitude", "features"
-        )
-
-        # Load tendency statistics (for variance-normalized loss)
-        tendency_stats_path = os.path.join(self.root_dir, "tendency_stats_6h")
-        if os.path.exists(tendency_stats_path):
-            ds_tendency = xarray.open_dataset(tendency_stats_path, engine="zarr")
-            # Build lookup: feature name -> tendency std
-            self._tendency_std_lookup = {
-                name: float(s)
-                for name, s in zip(
-                    ds_tendency.features.values,
-                    ds_tendency["tendency_std"].values,
-                )
-            }
-        else:
-            self._tendency_std_lookup = None
-            print(
-                f"Warning: no tendency stats found at {tendency_stats_path}. "
-                f"Variance-normalized loss will not be available."
-            )
+        self.ds_input = ds_input["data"].transpose("time", "latitude", "longitude", "features")
+        self.ds_output = ds_output["data"].transpose("time", "latitude", "longitude", "features")
 
         # Get the indices to apply custom normalizations
         self._prepare_normalization(ds_input, ds_output)
@@ -342,6 +327,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
                 "mean": report_features["mean"].values,
                 "std": report_features["std"].values,
             }
+
 
     def __len__(self):
         # Do not yield a value for the last time in the dataset since there
@@ -377,9 +363,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
         # Concatenate n_time_inputs if requested
         if self.n_time_inputs > 1:
-            x = torch.cat([x[j] for j in range(self.n_time_inputs)], dim=-1).unsqueeze(
-                0
-            )
+            x = torch.cat([x[j] for j in range(self.n_time_inputs)], dim=-1).unsqueeze(0)
         else:
             x = x.unsqueeze(0)
 
@@ -423,9 +407,7 @@ class ERA5Dataset(torch.utils.data.Dataset):
 
         # Concatenate n_time_inputs if requested
         if self.n_time_inputs > 1:
-            x = torch.cat([x[j] for j in range(self.n_time_inputs)], dim=-1).unsqueeze(
-                0
-            )
+            x = torch.cat([x[j] for j in range(self.n_time_inputs)], dim=-1).unsqueeze(0)
         else:
             x = x.unsqueeze(0)
 
@@ -446,15 +428,6 @@ class ERA5Dataset(torch.utils.data.Dataset):
         return self._getitem_standard(ind)
 
     def _run_dataset_checks(self):
-        # Check if grid includes poles
-        has_poles = torch.any(
-            torch.isclose(
-                torch.abs(self.lat_rad_grid),
-                torch.tensor(torch.pi, dtype=self.lat_rad_grid.dtype),
-            )
-        )
-        assert not has_poles, "Grid with poles unsupported!"
-
         # Make sure latitude and longitude are in input file
         assert (
             self.cfg.features.input.constants[-2] == "latitude"
@@ -570,21 +543,6 @@ class ERA5Dataset(torch.utils.data.Dataset):
         self.toa_rad_std = ds_input.attrs["toa_radiation_std"]
         self.toa_rad_mean = ds_input.attrs["toa_radiation_mean"]
 
-        # Build per-output-channel tendency std in the order of dyn_output_features
-        if self._tendency_std_lookup is not None:
-            tendency_std_list = []
-            missing = []
-            for feat in self.dyn_output_features:
-                if feat in self._tendency_std_lookup:
-                    tendency_std_list.append(self._tendency_std_lookup[feat])
-                else:
-                    missing.append(feat)
-                    tendency_std_list.append(1.0)  # safe fallback
-            if missing:
-                print(f"Warning: missing tendency stds for features: {missing}")
-            self.output_tendency_std = torch.tensor(tendency_std_list, dtype=self.dtype)
-        else:
-            self.output_tendency_std = None
 
     def _apply_normalization(
         self, input_data: torch.Tensor, output_data: torch.Tensor = None
@@ -625,8 +583,9 @@ class ERA5Dataset(torch.utils.data.Dataset):
                 self.output_std,
             )
 
+
     def _compute_forcings(self, input_data: xarray.Dataset, steps: int) -> torch.Tensor:
-        """Computes forcing paramters based in input_data array"""
+        """Computes forcing parameters based in input_data array"""
 
         forcings_time_ds = time_forcings(input_data["time"].values)
 

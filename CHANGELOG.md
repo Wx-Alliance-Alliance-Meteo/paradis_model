@@ -1,5 +1,6 @@
-## Changelog
+# Changelog
 
+## v1.02
 ### Dataloader
 - Improved robustness by ensuring consistency in:
   - Latitude/longitude matching across years
@@ -21,3 +22,17 @@
 - Switched output normalization to use the standard deviation of 6-hour values.
 - Added support for Muon and Normuon optimizers.
 - Updated data preprocessing to rely on the LayerQuantier compressor.
+
+## v1.03
+### Model
+- Changed the model to predict non-residual outputs.
+- Updated the default hyperparameters in the configuration file.
+- Enabled a coarsened latent physics processor.
+- Switched training to manual optimization to support customized fine-tuning behavior.
+
+### Inference
+- Added an option for configuring the number of data-loading workers.
+
+### Other
+- Disabled tendency normalization when using non-residual outputs.
+-Performed general code cleanup and removed stale code.

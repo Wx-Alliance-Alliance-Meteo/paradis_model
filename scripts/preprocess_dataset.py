@@ -200,6 +200,7 @@ def main():
         "longitude",
         "geopotential_at_surface",
         "total_precipitation",
+        "total_precipitation_6hr",
         "total_column_water",
         "standard_deviation_of_orography",
         "slope_of_sub_gridscale_orography",

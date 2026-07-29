@@ -165,7 +165,7 @@ def enable_callbacks(cfg):
         # Keep ALL epochs
         callbacks.append(
             ModelCheckpoint(
-                filename="e{epoch:04d}",
+                filename="{epoch:04d}",
                 every_n_epochs=1,
                 save_top_k=-1,
                 save_on_train_epoch_end=True,

@@ -1,6 +1,3 @@
-"""Model training implementation."""
-
-import datetime
 import logging
 import re
 import time
@@ -11,6 +8,7 @@ from lightning.pytorch.utilities import rank_zero_only
 import omegaconf.dictconfig
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 
 from data.datamodule import Era5DataModule
 from model.paradis import Paradis
@@ -18,7 +16,7 @@ from utils.loss import ParadisLoss
 from utils.normalization import denormalize_humidity, denormalize_precipitation
 from utils.file_output import ZarrForecastWriter
 
-# Configure torch.compile to handle dynamic shapes in Dion optimizers
+# Configure torch.compile to handle dynamic shapes in Muon/NorMuon optimizers
 torch._dynamo.config.cache_size_limit = 64
 torch._dynamo.config.force_parameter_static_shapes = False
 
@@ -67,11 +65,10 @@ def build_param_groups(model, lr, weight_decay, optimizer_name):
 
 
 def _strip_orig_mod_prefix(state_dict: dict[str, torch.Tensor]) -> OrderedDict:
-    # Ensure compatibility between checkpoints that were or were not compiled
     fixed = OrderedDict()
     for k, v in state_dict.items():
         new_k = k.replace("._orig_mod.", ".")
-
+        # also handle rare case where the key starts with "_orig_mod."
         if new_k.startswith("_orig_mod."):
             new_k = new_k[len("_orig_mod.") :]
         fixed[new_k] = v
@@ -102,6 +99,7 @@ class LitParadis(L.LightningModule):
         self.model = Paradis(datamodule, cfg, lat_grid, lon_grid)
         self.cfg = cfg
         self.n_inputs = cfg.dataset.n_time_inputs
+        self.gradient_checkpoint = cfg.compute.gradient_checkpointing
 
         # Log metrics
         num_parameters = sum(
@@ -143,14 +141,34 @@ class LitParadis(L.LightningModule):
 
         # Initialize reordered weights tensor
         num_features = len(atmospheric_weights) * num_levels + len(surface_weights)
-        var_loss_weights_reordered = torch.zeros(num_features, dtype=torch.float32)
 
-        # Reorder based on self.output_name_order
-        for i, var in enumerate(self.output_name_order):
-            # Get the variable name without the level
-            var_name = re.sub(r"_h\d+$", "", var)
-            if var_name in var_name_to_weight:
-                var_loss_weights_reordered[i] = var_name_to_weight[var_name]
+        var_loss_weights_reordered = torch.zeros(
+            datamodule.num_out_features,
+            dtype=torch.float32,
+        )
+
+        for i, feature in enumerate(datamodule.output_name_order):
+            var_name = re.sub(r"_h\d+$", "", feature)
+
+            if var_name in cfg.training.variable_loss_weights.atmospheric:
+                var_loss_weights_reordered[i] = (
+                    cfg.training.variable_loss_weights.atmospheric[var_name]
+                )
+            elif var_name in cfg.training.variable_loss_weights.surface:
+                var_loss_weights_reordered[i] = (
+                    cfg.training.variable_loss_weights.surface[var_name]
+                )
+            else:
+                raise ValueError(
+                    f"No loss weight configured for output feature '{feature}' "
+                    f"(base variable '{var_name}')."
+                )
+
+        if var_loss_weights_reordered.numel() != datamodule.num_out_features:
+            raise ValueError(
+                f"Loss weight count mismatch: got {var_loss_weights_reordered.numel()}, "
+                f"expected {datamodule.num_out_features}."
+            )
 
         # Initialize loss function with delta schedule parameters
         if not cfg.forecast.enable:
@@ -191,11 +209,17 @@ class LitParadis(L.LightningModule):
             else:
                 self.val_loss_fn = self.loss_fn
 
+            self.detach_gradient_every = cfg.training.optimizer.get(
+                "detach_gradient_every", None
+            )
+
+            self.automatic_optimization = False
+
         self.num_common_features = datamodule.num_common_features
         self.print_losses = cfg.training.print_losses
 
         # Load weights only but reset lightning configuration
-        if (cfg.init.checkpoint_path and not cfg.init.restart) or cfg.forecast.enable:
+        if (cfg.init.checkpoint_path and not cfg.init.restart): # or cfg.forecast.enable:
             # Load into CPU, then Lightning will transfer to GPU
             checkpoint = torch.load(
                 cfg.init.checkpoint_path, weights_only=False, map_location="cpu"
@@ -203,11 +227,11 @@ class LitParadis(L.LightningModule):
 
             sd = checkpoint["state_dict"]
 
-            # Make sure model can read checkpoint whether it has been previously compiled or not
+            # # Make sure model can read checkpoint whether it has been previously compiled or not
             sd = _strip_orig_mod_prefix(sd)
 
-            # Interpolate GlobalBias parameters for resolution change
-            # We look for any keys ending in .U or .V belonging to a GlobalBias module
+            # # # Interpolate GlobalBias parameters for resolution change
+            # # # We look for any keys ending in .U or .V belonging to a GlobalBias module
             for k in list(sd.keys()):
                 if k.endswith(".U") or k.endswith(".V"):
                     old_param = sd[k]  # Shape: [rank, old_size]
@@ -231,26 +255,24 @@ class LitParadis(L.LightningModule):
                             f"Interpolated {k}: {old_param.shape[-1]} -> {target_size}"
                         )
 
-            a, b = self.load_state_dict(sd, strict=True)
+            self.load_state_dict(sd, strict=True)
+
         # Compile model in place
-        if cfg.compute.compile:
+        if cfg.compute.compile == True:
             self.model.compile(
                 mode="default",
                 fullgraph=True,
                 dynamic=False,
                 backend="inductor",
             )
-        else:
-            # If full model cannot be compiled, at least compile heavy functions
-            self.model._layer_step = torch.compile(self.model._layer_step)
-            self.model.static_encoder = torch.compile(self.model.static_encoder)
-            self.model.input_proj = torch.compile(self.model.input_proj)
-            self.model.output_proj = torch.compile(self.model.output_proj)
+        elif cfg.compute.compile == "modules":
+            self.model._compile()
 
         self.epoch_start_time = None
 
         # Store the index and stats of the report quantities
-        if not cfg.forecast.enable and cfg.training.reports.enable:
+        self.enable_reports = cfg.training.reports.enable
+        if not cfg.forecast.enable and self.enable_reports:
             self.report_features = cfg.training.reports.features
             self.report_ind = [
                 datamodule.dataset.dyn_input_features.index(feature)
@@ -267,10 +289,8 @@ class LitParadis(L.LightningModule):
             self.forecast_writer = ZarrForecastWriter(cfg, datamodule.dataset)
 
     def _get_report_rmse(self, output_data, pred_data):
-
         lat_weights = self.loss_fn.lat_weights.view(1, 1, -1, 1).to(output_data.device)
 
-        # Compute the batch error
         errors = torch.empty(
             len(self.report_ind), dtype=output_data.dtype, device=output_data.device
         )
@@ -296,6 +316,8 @@ class LitParadis(L.LightningModule):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through the model."""
+        if self.cfg.model.forecast_steps > 1:
+            return self._apply_checkpoint(self.model, x)
         return self.model(x)
 
     def configure_optimizers(self):  # type: ignore
@@ -304,15 +326,7 @@ class LitParadis(L.LightningModule):
 
         if cfg.optimizer.name == "adamw":
 
-            if cfg.optimizer.get("custom_adamw", True):
-                param_groups = build_adamw_param_groups(
-                    self.model,
-                    lr=cfg.optimizer.lr,
-                    weight_decay=cfg.optimizer.weight_decay,
-                )
-            else:
-                param_groups = self.model.parameters()
-
+            param_groups = self.model.parameters()
             optimizer = torch.optim.AdamW(
                 param_groups,
                 lr=cfg.optimizer.lr,
@@ -321,7 +335,7 @@ class LitParadis(L.LightningModule):
             )
 
         elif "muon" in cfg.optimizer.name:
-            from dion import Dion2, Muon, NorMuon, Dion
+            from dion import Muon, NorMuon
 
             param_groups = build_param_groups(
                 self.model,
@@ -338,7 +352,6 @@ class LitParadis(L.LightningModule):
                     betas=(cfg.optimizer.beta1, cfg.optimizer.beta2),
                     use_triton=True,
                 )
-
             elif cfg.optimizer.name == "normuon":
                 optimizer = NorMuon(
                     param_groups,
@@ -347,6 +360,8 @@ class LitParadis(L.LightningModule):
                     betas=(cfg.optimizer.beta1, cfg.optimizer.beta2),
                     use_triton=True,
                 )
+            else:
+                raise ValueError(f"Optimizer {cfg.optimizer.name} not supported. Choose between normuon|muon")
 
         enabled_schedulers = sum(
             [
@@ -474,67 +489,154 @@ class LitParadis(L.LightningModule):
         if self.print_losses:
             self.epoch_start_time = time.time()
 
-    def _autoregression_next_input(
-        self,
-        input_data: torch.Tensor,
-        output_data: torch.Tensor,
-        step: int,
-        num_steps: int,
-    ) -> torch.Tensor:
-        """Update autoregressive channel stack."""
-        common = output_data[:, : self.num_common_features]
-
-        if self.n_inputs == 1:
-            return common
-
-        lag_channels = self.num_common_features * self.n_inputs
-
-        return torch.cat(
-            [
-                input_data[:, self.num_common_features : lag_channels],
-                common,
-            ],
-            dim=1,
-        )
+    def _apply_checkpoint(self, func, *args):
+        if self.gradient_checkpoint:
+            return checkpoint(func, *args, use_reentrant=False)
+        else:
+            return func(*args)
 
     def training_step(self, batch, batch_idx):
         input_data, true_data, forcings, constant_data = batch
 
+        opt = self.optimizers()
+
+        grad_accum_steps = self.cfg.training.get("accumulate_grad_batches", 1)
+
+        if batch_idx % grad_accum_steps == 0:
+            opt.zero_grad()
+
         constants = constant_data[:, :1].permute(0, 1, 4, 2, 3)
         forcings = forcings.permute(0, 1, 4, 2, 3)
 
-        train_loss = 0.0
-        train_loss_reference = 0.0
         num_steps = true_data.size(1)
+
+        train_loss_for_logging = 0.0
+        train_loss_reference = 0.0
+        chunk_loss = 0.0
+
+        detach_every_n = self.detach_gradient_every
+        scheduler = self.lr_schedulers()
+
+        if self.log_statistics:
+            train_channel_loss_weighted = torch.zeros(
+                self.loss_fn.num_features,
+                device=self.device,
+                dtype=torch.float32
+            )
+
+            train_channel_loss_unweighted = torch.zeros(
+                self.loss_fn.num_features,
+                device=self.device,
+                dtype=torch.float32
+            )
 
         for step in range(num_steps):
             forcings_step = forcings[:, step].unsqueeze(1)
 
-            input_data = torch.cat(
+            model_input = torch.cat(
                 [input_data, forcings_step, constants], dim=2
             ).squeeze(1)
 
-            output_data = self(input_data)
+            output_data = self(model_input)
 
             loss = self.loss_fn(output_data, true_data[:, step])
-            train_loss += loss
+
+            if self.log_statistics:
+                with torch.no_grad():
+                    train_channel_loss_weighted += self.loss_fn.per_channel_loss(
+                        output_data,
+                        true_data[:, step],
+                        weighted=True,
+                    ).float()
+
+                    train_channel_loss_unweighted += self.loss_fn.per_channel_loss(
+                        output_data,
+                        true_data[:, step],
+                        weighted=False,
+                    ).float()
+
+            train_loss_for_logging = train_loss_for_logging + loss.detach()
+
+            chunk_loss = chunk_loss + loss / (num_steps * grad_accum_steps)
 
             input_data = self._autoregression_next_input(
-                input_data, output_data, step, num_steps
+                model_input, output_data,
             ).unsqueeze(1)
 
-        train_loss = train_loss / num_steps
+            should_backward_chunk = (
+                detach_every_n is not None
+                and (step + 1) % detach_every_n == 0
+            )
 
-        self.log(
-            "train_loss",
-            train_loss,
-            on_step=True,
-            on_epoch=False,
-            prog_bar=True,
-            sync_dist=True,
+            is_last_step = step == num_steps - 1
+
+            if should_backward_chunk or is_last_step:
+                self.manual_backward(chunk_loss)
+                input_data = input_data.detach()
+                chunk_loss = 0.0
+
+        is_last_batch = self.trainer.is_last_batch
+
+        should_step_optimizer = (
+            (batch_idx + 1) % grad_accum_steps == 0
+            or is_last_batch
         )
 
-        self.log("lr", self.trainer.optimizers[0].param_groups[0]["lr"], prog_bar=True)
+        if should_step_optimizer:
+            opt.step()
+            scheduler.step()
+
+        train_loss = train_loss_for_logging / num_steps
+
+        if self.log_statistics:
+            train_channel_loss_weighted = train_channel_loss_weighted / num_steps
+            train_channel_loss_unweighted = train_channel_loss_unweighted / num_steps
+
+            channel_metrics = {}
+
+            channel_metrics.update(
+                {
+                    f"train_loss_channel_weighted/{name}": train_channel_loss_weighted[i]
+                    for i, name in enumerate(self.output_name_order)
+                }
+            )
+
+            channel_metrics.update(
+                {
+                    f"train_loss_channel_unweighted/{name}": train_channel_loss_unweighted[i]
+                    for i, name in enumerate(self.output_name_order)
+                }
+            )
+
+            self.log_dict(
+                channel_metrics,
+                on_step=True,
+                on_epoch=False,
+                prog_bar=False,
+                sync_dist=True,
+            )
+
+            train_loss_reference = train_loss_reference / num_steps
+            self.log(
+                "train_loss",
+                train_loss_reference,
+                on_step=True,
+                on_epoch=False,
+                prog_bar=True,
+                sync_dist=True,
+            )
+
+        else:
+            self.log(
+                "train_loss",
+                train_loss,
+                on_step=True,
+                on_epoch=False,
+                prog_bar=True,
+                sync_dist=True,
+            )
+
+        self.log("lr", opt.param_groups[0]["lr"], prog_bar=True)
 
         self.log(
             "forecast_steps",
@@ -569,14 +671,16 @@ class LitParadis(L.LightningModule):
             output_data = self(input_data)
 
             loss = self.val_loss_fn(output_data, true_data[:, step])
+
             # Log requested scaled RMSE losses for validation
-            report_loss += self._get_report_rmse(output_data, true_data[:, step])
+            if self.enable_reports:
+                report_loss += self._get_report_rmse(output_data, true_data[:, step])
 
             # Compute loss (data is already transformed by dataset)
             val_loss += loss
 
             input_data = self._autoregression_next_input(
-                input_data, output_data, step, num_steps
+                input_data, output_data,
             ).unsqueeze(1)
 
         batch_loss = val_loss / num_steps
@@ -589,6 +693,7 @@ class LitParadis(L.LightningModule):
             prog_bar=True,
             sync_dist=True,
         )
+
         # Log requested reports
         for i, name in enumerate(self.cfg.training.reports.features):
             self.log(
@@ -602,18 +707,31 @@ class LitParadis(L.LightningModule):
 
         return batch_loss
 
+    def _autoregression_next_input(
+        self,
+        input_data: torch.Tensor,
+        output_data: torch.Tensor,
+    ) -> torch.Tensor:
+        """Update autoregressive channel stack."""
+        common = output_data[:, : self.num_common_features]
+
+        if self.n_inputs == 1:
+            return common
+
+        lag_channels = self.num_common_features * self.n_inputs
+
+        return torch.cat(
+            [
+                input_data[:, self.num_common_features : lag_channels],
+                common,
+            ],
+            dim=1,
+        )
+
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         sample_indices, input_data, forcings, constant_data = batch
 
         dataset = self.datamodule.dataset
-        atmospheric_vars = self.cfg.features.output.atmospheric
-        surface_vars = self.cfg.features.output.surface
-        pressure_levels = self.cfg.features.pressure_levels
-
-        num_levels = len(pressure_levels)
-        num_atm_features = len(atmospheric_vars) * num_levels
-        num_sur_features = len(surface_vars)
-        num_features = num_atm_features + num_sur_features
 
         num_forecast_steps = self.cfg.model.forecast_steps
         output_frequency = self.cfg.forecast.output_frequency
@@ -640,7 +758,7 @@ class LitParadis(L.LightningModule):
             output_data = self(model_input)
 
             input_data = self._autoregression_next_input(
-                model_input, output_data, step, num_forecast_steps
+                model_input, output_data
             ).unsqueeze(1)
 
             if step % output_frequency == 0:
@@ -806,29 +924,20 @@ class LitParadis(L.LightningModule):
 
     def on_train_batch_start(self, batch, batch_idx):
         # Record current time for time-per-step calculation
-        self.tic = datetime.datetime.now()
+        self.tic = time.perf_counter()
 
         return super().on_train_batch_start(batch, batch_idx)
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
-        return super().on_train_batch_end(outputs, batch, batch_idx)
+        dt = time.perf_counter() - self.tic
 
-    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure=None):
-        super().optimizer_step(epoch, batch_idx, optimizer, optimizer_closure)
-
-        # After the optimizer step, compute and log how long the step took
-        toc = datetime.datetime.now()
-        dt = (toc - self.tic).total_seconds()
         self.log(
             "dt",
             dt,
             on_step=True,
+            on_epoch=False,
+            prog_bar=False,
+            sync_dist=True,
         )
 
-        # Keep track of the minimum time
-        self.min_dt = min(dt, self.min_dt)
-        self.log(
-            "min_dt",
-            self.min_dt,
-            on_step=True,
-        )
+        return super().on_train_batch_end(outputs, batch, batch_idx)

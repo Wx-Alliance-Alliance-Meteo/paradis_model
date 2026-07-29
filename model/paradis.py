@@ -1,5 +1,3 @@
-"""Paradis neural architecture adapted for shallow water equations."""
-
 from torch.utils.checkpoint import checkpoint
 
 import torch
@@ -39,14 +37,6 @@ class Paradis(nn.Module):
         self.nlat = lat_grid.shape[0]
         self.nlon = lat_grid.shape[1]
 
-        self.grid = "equiangular"
-
-        if self.grid != "equiangular":
-            raise ValueError(
-                f"Paradis model only supports 'equiangular' grid, got '{self.grid}'. "
-                "Please set data.grid='equiangular' in your config."
-            )
-
         mesh_size = (self.nlat, self.nlon)
 
         hidden_dim = cfg.model.get("latent_size")
@@ -67,14 +57,12 @@ class Paradis(nn.Module):
             + datamodule.dataset.num_in_static_features
         )
         self.num_common_features = datamodule.num_common_features
-        self.n_inputs = datamodule.dataset.n_time_inputs
+        self.n_inputs = cfg.dataset.n_time_inputs
 
         # Wrapper for gradient checkpointing
         self.step_fn = self._layer_step
         self.gradient_checkpoint = cfg.compute.get("gradient_checkpointing", False)
 
-        # Enable downsampling automatically for
-        self.downsample_diffusion = cfg.model.get("downsample_diffusion", False)
 
         if self.gradient_checkpoint:
             self.step_fn = lambda i, h, hs: checkpoint(
@@ -92,14 +80,14 @@ class Paradis(nn.Module):
         diff_ldim = cfg.model.physblock.diffusion.hidden_dim
         reac_ldim = cfg.model.physblock.reaction.hidden_dim
         output_ldim = cfg.model.physblock.output_proj.hidden_dim
+        static_dim = 128
 
-        self.nlat_coarse = self.nlat
-        self.nlon_coarse = self.nlon
+        stride = cfg.model.get("coarsening_factor", 1)
+        if stride < 1:
+            raise ValueError("Coarsening factor must be >=1")
 
-        if self.downsample_diffusion:
-            self.nlat_coarse = (self.nlat - 1) // 4 + 1
-            self.nlon_coarse = self.nlon // 4
-
+        self.nlat_coarse = (self.nlat - 1) // stride + 1
+        self.nlon_coarse = self.nlon // stride
         mesh_size_coarse = (self.nlat_coarse, self.nlon_coarse)
 
         self.input_proj = GMBlock(
@@ -121,7 +109,7 @@ class Paradis(nn.Module):
                     input_dim=hidden_dim,
                     output_dim=2 * self.num_vels,
                     hidden_dim=vnet_ldim,
-                    mesh_size=mesh_size,
+                    mesh_size=mesh_size_coarse,
                     bias_channels=bias_channels,
                     activation_fn=self.activation_function,
                     pre_normalize=True,
@@ -135,10 +123,10 @@ class Paradis(nn.Module):
                 NeuralSemiLagrangian(
                     cfg,
                     hidden_dim,
-                    mesh_size,
+                    mesh_size_coarse,
                     num_vels=self.num_vels,
-                    lat_grid=lat_grid,
-                    lon_grid=lon_grid,
+                    lat_grid=lat_grid[::stride, ::stride],
+                    lon_grid=lon_grid[::stride, ::stride],
                     interpolation=adv_interpolation,
                 )
                 for _ in range(self.num_layers)
@@ -161,15 +149,14 @@ class Paradis(nn.Module):
             ]
         )
 
-        static_size = cfg.model.latent_size_static
         self.reaction = nn.ModuleList(
             [
                 GMBlock(
                     layers=reaction_layers,
-                    input_dim=hidden_dim + static_size,
+                    input_dim=hidden_dim + static_dim,
                     output_dim=hidden_dim,
                     hidden_dim=reac_ldim,
-                    mesh_size=mesh_size,
+                    mesh_size=mesh_size_coarse,
                     pre_normalize=True,
                     activation_fn=self.activation_function,
                     bias_channels=bias_channels,
@@ -179,6 +166,7 @@ class Paradis(nn.Module):
         )
 
         self.output_proj = GMBlock(
+            pre_normalize=True,
             layers=output_layers,
             input_dim=hidden_dim,
             output_dim=datamodule.num_out_features,
@@ -191,26 +179,33 @@ class Paradis(nn.Module):
 
         self.alpha_adv = nn.Parameter(torch.full((self.num_layers, hidden_dim), -1.0))
 
-        if self.downsample_diffusion:
-            self.upsample = self.upsampler
-            self.downsample = PhysicalDownsample()
-        else:
-            self.downsample = lambda x: x
-            self.upsample = lambda x: x
+        self.downsample = PhysicalDownsample(stride=stride)
 
         self.n_static = n_static = len(cfg.features.input.constants)
 
-        # Encoder block for static features
         self.static_encoder = nn.Sequential(
             SepConv(n_static, 64, mesh_size, kernel_size=7),
             nn.SiLU(),
             GeoCyclicPadding(3),
             nn.Conv2d(64, 64, groups=64, kernel_size=7),
             nn.SiLU(),
-            SepConv(64, static_size, mesh_size, kernel_size=5),
+            SepConv(64, static_dim, mesh_size, kernel_size=5),
         )
 
-    def upsampler(self, x: torch.Tensor) -> torch.Tensor:
+    def _compile(self):
+        self._layer_step = torch.compile(self._layer_step)
+        self.static_encoder = torch.compile(self.static_encoder)
+        self.input_proj = torch.compile(self.input_proj)
+        self.output_proj = torch.compile(self.output_proj)
+
+        if self.gradient_checkpoint:
+            self.step_fn = lambda i, h, hs: checkpoint(
+                self._layer_step, i, h, hs, use_reentrant=False
+            )
+        else:
+            self.step_fn = self._layer_step
+
+    def upsample(self, x: torch.Tensor) -> torch.Tensor:
         # Make longitude explicitly periodic before interpolation
         x_ext = torch.cat([x, x[..., :1]], dim=-1)
 
@@ -230,9 +225,6 @@ class Paradis(nn.Module):
         else:
             return func(*args)
 
-    def _diffusion(self, i: int, z: torch.Tensor) -> torch.Tensor:
-        return self.upsample(self.diffusion[i](self.downsample(z)))
-
     def _layer_step(
         self, i: int, hidden: torch.Tensor, hidden_static: torch.Tensor
     ) -> torch.Tensor:
@@ -241,7 +233,7 @@ class Paradis(nn.Module):
 
         # Predict latent velocities (u, v) for advection
         velocities_raw = self.velocity_nets[i](hidden)
-        velocities = velocities_raw.view(B, 2, self.num_vels, self.nlat, self.nlon)
+        velocities = velocities_raw.view(B, 2, self.num_vels, self.nlat_coarse, self.nlon_coarse)
         u, v = velocities[:, 0], velocities[:, 1]
 
         g_adv = torch.sigmoid(self.alpha_adv[i]).to(hidden.dtype).view(1, -1, 1, 1)
@@ -251,7 +243,7 @@ class Paradis(nn.Module):
         hidden = hidden + g_adv * (advected - hidden)
 
         # Mixing: Learned diffusion
-        hidden = hidden + self._diffusion(i, hidden)
+        hidden = hidden + self.diffusion[i](hidden)
 
         # Add static features
         hidden_reac = torch.cat([hidden, hidden_static], dim=1)
@@ -261,21 +253,17 @@ class Paradis(nn.Module):
 
         return hidden
 
-    def forward(self, fields: torch.Tensor) -> torch.Tensor:
-        # Encode physical variables to latent space
+    def forward(self, fields):
         hidden = self._apply_checkpoint(self.input_proj, fields)
         hidden_static = self._apply_checkpoint(
-            self.static_encoder, fields[:, -self.n_static :]
-        )
+            self.static_encoder, fields[:, -self.n_static:])
 
-        # Recurrent integration through physics layers
+        skip = hidden
+        hidden = self.downsample(hidden)
+        hidden_static = self.downsample(hidden_static)
+
         for i in range(self.num_layers):
             hidden = self.step_fn(i, hidden, hidden_static)
 
-        # Decode latent state back to prognostic variables
-        return fields[
-            :,
-            (self.n_inputs - 1)
-            * self.num_common_features : self.n_inputs
-            * self.num_common_features,
-        ] + self._apply_checkpoint(self.output_proj, hidden)
+        hidden = self.upsample(hidden) + skip
+        return self._apply_checkpoint(self.output_proj, hidden)

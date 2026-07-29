@@ -1,13 +1,3 @@
-from collections import OrderedDict
-from collections.abc import Sequence
-from typing import Tuple
-from typing import Union, Type, Tuple
-
-import torch
-from torch import nn
-
-from model.padding import GeoCyclicPadding
-
 """
     simple_blocks: Wrapper file to consolidate simple NN layers, defined as those that do
     not have activation functions.  This includes convolution, normalization, and bias layers.
@@ -27,6 +17,17 @@ from model.padding import GeoCyclicPadding
     silently ignored. Some modules impose stricter requirements and will assert/check
     parameter values (e.g., FlatConv requires input_dim == output_dim).
 """
+
+
+from collections import OrderedDict
+from collections.abc import Sequence
+from typing import Union, Type, Tuple
+
+import torch
+from torch import nn
+import torch.nn.functional as F
+
+from model.padding import GeoCyclicPadding
 
 
 def init_conv2d_default(conv: nn.Conv2d, *, scale: float = 1.0) -> None:
@@ -51,6 +52,25 @@ def init_module_convs(m: nn.Module, *, last_conv_scale: float = 1.0) -> None:
     for i, conv in enumerate(convs):
         scale = last_conv_scale if (i == len(convs) - 1) else 1.0
         init_conv2d_default(conv, scale=scale)
+
+
+class PhysicalDownsample(nn.Module):
+    """Downsample a physical field.
+
+    Uses average pooling for anti-aliasing, then interpolates to the exact target
+    size to handle 2N-1 latitude grids cleanly.
+    """
+
+    def __init__(self, stride=4):
+        super().__init__()
+        self.pool = nn.AvgPool2d(kernel_size=5, stride=stride, count_include_pad=False)
+        self.padding = GeoCyclicPadding(2)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.padding(x)
+        return self.pool(x)
+
+
 class CLinear(nn.Module):
     """Channel-wise linear transformation."""
 
@@ -94,7 +114,6 @@ class SepConv(nn.Module):
         x = self.depthwise(x)
         x = self.pointwise(x)
         return x
-
 
 class ChannelNorm(nn.Module):
     """Channel normalization layer."""
@@ -178,24 +197,7 @@ class GlobalBias(nn.Module):
         return x + bias_maps.unsqueeze(0)
 
 
-class PhysicalDownsample(nn.Module):
-    """Downsample a physical field to an exact target grid.
 
-    Uses average pooling for anti-aliasing, then interpolates to the exact target
-    size to handle 2N-1 latitude grids cleanly.
-    """
-
-    def __init__(self):
-        super().__init__()
-        self.pool = nn.AvgPool2d(kernel_size=5, stride=4, count_include_pad=False)
-        self.padding = GeoCyclicPadding(2)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.padding(x)
-        return self.pool(x)
-
-
-ActivationType = Type[nn.Module]
 
 BLOCK_REGISTRY = {
     "SepConv": SepConv,
@@ -217,7 +219,7 @@ class GMBlock(nn.Sequential):
         input_dim: int,
         output_dim: int,
         mesh_size: Tuple[int, int],
-        kernel_size: int = 3,
+        kernel_size:Union[Sequence[int], int] = 5,
         hidden_dim: Union[Sequence, int] = 0,
         activation_fn: Type[nn.Module] = nn.SiLU,
         bias_channels: int = 0,
@@ -239,6 +241,11 @@ class GMBlock(nn.Sequential):
             if hidden_dim <= 0:
                 hidden_dim = max(input_dim, output_dim)
             hidden_dim = (hidden_dim,) * (num_layers - 1)
+
+        if isinstance(kernel_size, int):
+            kernel_size = (kernel_size,) * num_layers
+        else:
+            assert len(kernel_size) == num_layers
 
         blocks = []
 
@@ -272,7 +279,7 @@ class GMBlock(nn.Sequential):
                 input_dim=layer_in_size,
                 output_dim=layer_out_size,
                 mesh_size=mesh_size,
-                kernel_size=kernel_size,
+                kernel_size=kernel_size[idx],
             )
             blocks.append((layer_name, layer_obj))
 

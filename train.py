@@ -61,7 +61,7 @@ def main(cfg: DictConfig):
         limit_val_batches=cfg.training.validation_dataset.validation_batches,
         enable_checkpointing=cfg.training.checkpointing.enabled,
         num_sanity_val_steps=0,
-        accumulate_grad_batches=cfg.training.get("accumulate_grad_batches", 1),
+        accumulate_grad_batches=1, # This must be set to one here for manual optimization, but taken care of in trainer.py
     )
 
     # Keep track of configuration parameters in logging directory

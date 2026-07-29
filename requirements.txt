@@ -19,6 +19,9 @@ matplotlib>=3.7.0
 # Development Tools
 black>=23.3.0
 
+# AMSE loss
+torch-harmonics @ git+https://github.com/NVIDIA/torch-harmonics.git
+
 # For Muon optimizer
 dion @ git+https://github.com/microsoft/dion.git
 

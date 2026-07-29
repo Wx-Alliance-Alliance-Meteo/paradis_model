@@ -5,11 +5,11 @@ import dask
 import dask.array as da
 import numpy
 import xarray
-from lightning.pytorch.callbacks import BasePredictionWriter
+from utils.postprocessing import convert_cartesian_to_spherical_winds
+
 from numcodecs import BitRound, Blosc
 
 from utils.mhuaes import mhuaes3
-
 
 # Conservative, relatively fast compressor
 compressor = Blosc(cname="zstd", clevel=5, shuffle=Blosc.SHUFFLE)
@@ -82,20 +82,54 @@ def _build_dataset_for_samples(
     data_vars = {}
     num_levels = len(pressure_levels)
 
+    output_features = list(dataset.dyn_output_features)
+    input_features = list(dataset.dyn_input_features[: dataset.num_dyn_inputs_single])
+
     input_data = dataset.ds_loader.sel(time=init_times).sortby("time")["data"].values
+    input_data = input_data.transpose(0, 3, 1, 2)  # [B, F_in, Lat, Lon]
+
+    init_data = numpy.full(
+        (
+            input_data.shape[0],
+            1,
+            len(output_features),
+            input_data.shape[2],
+            input_data.shape[3],
+        ),
+        numpy.nan,
+        dtype=input_data.dtype,
+    )
+
+    input_feature_to_idx = {name: i for i, name in enumerate(input_features)}
+
+    for out_idx, feature in enumerate(output_features):
+        in_idx = input_feature_to_idx.get(feature)
+        if in_idx is not None:
+            init_data[:, 0, out_idx] = input_data[:, in_idx]
+
+    convert_cartesian_to_spherical_winds(
+        dataset.lat,
+        dataset.lon,
+        cfg,
+        init_data,
+        output_features,
+    )
+
+    output_feature_to_idx = {name: i for i, name in enumerate(output_features)}
 
     # Atmospheric variables
     atm_dims = ["time", "prediction_timedelta", "level", "latitude", "longitude"]
-    for i, feature in enumerate(atmospheric_vars):
-        beg_ind = i * num_levels
-        end_ind = (i + 1) * num_levels
+    for in_feature, out_feature in zip(cfg.features.output.atmospheric, atmospheric_vars):
+        feature_indices = [
+            output_feature_to_idx[f"{in_feature}_h{level}"] for level in pressure_levels
+        ]
 
-        data_vars[feature] = (
+        data_vars[out_feature] = (
             atm_dims,
             numpy.concatenate(
                 (
-                    input_data[..., beg_ind:end_ind].transpose(0, 3, 1, 2)[:, None],
-                    forecast[:, :, beg_ind:end_ind],
+                    init_data[:, :, feature_indices],
+                    forecast[:, :, feature_indices],
                 ),
                 axis=1,
             ),
@@ -103,16 +137,17 @@ def _build_dataset_for_samples(
 
     # Surface variables
     sur_dims = ["time", "prediction_timedelta", "latitude", "longitude"]
-    for i, feature in enumerate(surface_vars):
-        if feature == "wind_z_10m":
+    for in_feature, out_feature in zip(cfg.features.output.surface, surface_vars):
+        if in_feature == "wind_z_10m":
             continue
 
-        data_vars[feature] = (
+        feature_idx = output_feature_to_idx[in_feature]
+        data_vars[out_feature] = (
             sur_dims,
             numpy.concatenate(
                 (
-                    input_data[..., len(atmospheric_vars) * num_levels + i][:, None],
-                    forecast[:, :, len(atmospheric_vars) * num_levels + i],
+                    init_data[:, :, feature_idx],
+                    forecast[:, :, feature_idx],
                 ),
                 axis=1,
             ),
@@ -140,11 +175,12 @@ def _build_dataset_for_samples(
     return ds
 
 
-def _build_template_dataset(cfg, dataset, filename):
+def _build_template_dataset(cfg, dataset):
     """
     Build the full output template with all coordinates and variables preallocated.
     No actual forecast values are written here; this only creates the store layout.
     """
+
     atmospheric_vars, surface_vars = _replace_variable_names(cfg)
     pressure_levels = list(cfg.features.pressure_levels)
 
@@ -168,7 +204,7 @@ def _build_template_dataset(cfg, dataset, filename):
         "time": sorted_times,
         "level": pressure_levels,
         "prediction_timedelta": numpy.arange(output_num_forecast_steps + 1)
-        * numpy.timedelta64(6 * 3600 * 10**9, "ns"),
+        * numpy.timedelta64(dataset.time_resolution * 3600 * 10**9, "ns"),
     }
 
     data_vars = {}
@@ -248,7 +284,7 @@ def init_forecast_store(cfg, dataset, filename):
     if os.path.exists(filename):
         shutil.rmtree(filename)
 
-    ds, encoding = _build_template_dataset(cfg, dataset, filename)
+    ds, encoding = _build_template_dataset(cfg, dataset)
 
     with dask.config.set(scheduler="threads"):
         ds.to_zarr(
@@ -258,53 +294,6 @@ def init_forecast_store(cfg, dataset, filename):
             zarr_format=2,
             encoding=encoding,
         )
-
-
-def write_forecast_region(forecast, sample_indices, cfg, dataset, filename):
-    """
-    Write one prediction batch into the preinitialized Zarr store.
-
-    Args:
-        forecast: numpy array [B, T_forecast, F, Lat, Lon]
-        sample_indices: original dataset sample indices for this batch
-    """
-    sorted_times, sample_index_to_sorted_pos = _get_sorted_time_info(dataset)
-
-    sample_indices = numpy.asarray(sample_indices)
-    order = numpy.argsort(sample_indices)
-    sample_indices = sample_indices[order]
-    forecast = forecast[order]
-
-    sorted_positions = sample_index_to_sorted_pos[sample_indices]
-    init_times = sorted_times[sorted_positions]
-
-    # Usually contiguous for a non-shuffled loader, but do not assume it.
-    # Group contiguous sorted_positions so region writes stay efficient.
-    breaks = numpy.where(numpy.diff(sorted_positions) != 1)[0] + 1
-    groups = numpy.split(numpy.arange(len(sorted_positions)), breaks)
-
-    with dask.config.set(scheduler="threads"):
-        for g in groups:
-            group_positions = sorted_positions[g]
-            group_times = init_times[g]
-            group_forecast = forecast[g]
-
-            ds = _build_dataset_for_samples(
-                forecast=group_forecast,
-                init_times=group_times,
-                cfg=cfg,
-                dataset=dataset,
-            )
-
-            start = int(group_positions[0])
-            stop = int(group_positions[-1]) + 1
-
-            ds.to_zarr(
-                filename,
-                region={"time": slice(start, stop)},
-                consolidated=False,
-                zarr_format=2,
-            )
 
 
 def write_forecast_region_chunked(

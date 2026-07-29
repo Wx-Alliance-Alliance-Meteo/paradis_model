@@ -131,32 +131,6 @@ def get_var_indices(variable_name, variable_list):
     return numpy.array(indices)
 
 
-def preprocess_variable_names(atmospheric_vars, surface_vars):
-    # Rename variables that require post-processing in dataset
-    atmospheric_vars = replace_variable_name(
-        "wind_x", "u_component_of_wind", atmospheric_vars
-    )
-    atmospheric_vars = replace_variable_name(
-        "wind_y", "v_component_of_wind", atmospheric_vars
-    )
-
-    if "vertical velocity" not in atmospheric_vars:
-        atmospheric_vars = replace_variable_name(
-            "wind_z", "vertical_velocity", atmospheric_vars
-        )
-    else:
-        atmospheric_vars = replace_variable_name(
-            "wind_z", "computed_vertical_velocity", atmospheric_vars
-        )
-
-    surface_vars = replace_variable_name(
-        "wind_x_10m", "10m_u_component_of_wind", surface_vars
-    )
-    surface_vars = replace_variable_name(
-        "wind_y_10m", "10m_v_component_of_wind", surface_vars
-    )
-
-
 def replace_variable_name(variable_old, variable_new, variable_list):
     for i, var in enumerate(variable_list):
         var_name = re.sub(r"_h\d+$", "", var)  # Remove height suffix (e.g., "_h10")
