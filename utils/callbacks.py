@@ -165,7 +165,7 @@ def enable_callbacks(cfg):
         # Keep ALL epochs
         callbacks.append(
             ModelCheckpoint(
-                filename="{epoch:04d}",
+                filename="epoch={epoch:04d}",
                 every_n_epochs=1,
                 save_top_k=-1,
                 save_on_train_epoch_end=True,
@@ -175,7 +175,7 @@ def enable_callbacks(cfg):
         # Also store up to 10 intermediate steps between epochs
         callbacks.append(
             ModelCheckpoint(
-                filename="{step:08d}",
+                filename="step={step:08d}",
                 every_n_train_steps=100,
                 save_top_k=10,
                 monitor="step",

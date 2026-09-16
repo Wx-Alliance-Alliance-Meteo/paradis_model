@@ -11,6 +11,7 @@ from data.datamodule import Era5DataModule
 from trainer import LitParadis
 from utils.callbacks import enable_callbacks
 from utils.system import save_train_config, setup_system
+from utils.tp_strategy import TensorParallelDDPStrategy
 
 
 # pylint: disable=E1120
@@ -40,13 +41,27 @@ def main(cfg: DictConfig):
         version=cfg.training.get("experiment_name", None),
     )
 
+    # Build a 2-D [DDP, TP] strategy when requested. TP groups are kept
+    # intra-node; DDP synchronizes matching channel shards across replicas.
+    world_size = cfg.compute.num_devices * cfg.compute.num_nodes
+    tensor_parallel_size = int(cfg.compute.get("tensor_parallel_size", 1))
+    if world_size == 1:
+        strategy = "auto"
+    elif tensor_parallel_size > 1:
+        strategy = TensorParallelDDPStrategy(
+            tensor_parallel_size=tensor_parallel_size,
+            gradient_as_bucket_view=True,
+        )
+    else:
+        strategy = "ddp"
+
     # Instantiate lightning trainer with options
     trainer = L.Trainer(
         default_root_dir=cfg.training.log_dir,
         accelerator=cfg.compute.accelerator,
         devices=cfg.compute.num_devices,
         num_nodes=cfg.compute.num_nodes,
-        strategy="auto" if cfg.compute.num_devices == 1 else "ddp",
+        strategy=strategy,
         max_epochs=cfg.training.max_epochs,
         max_steps=cfg.training.max_steps,
         gradient_clip_val=cfg.training.gradient_clip_val,

@@ -71,6 +71,34 @@ class NeuralSemiLagrangian(torch.nn.Module):
         self.register_buffer("d_lon", self.max_lon - self.min_lon, persistent=False)
         self.register_buffer("d_lat", self.max_lat - self.min_lat, persistent=False)
 
+    def enable_tensor_parallel(self, *, group, rank: int, world_size: int) -> None:
+        """Shard latent and velocity channels for this advection operator."""
+        if world_size == 1 or getattr(self, "_tp_enabled", False):
+            return
+        if self.num_vels % world_size != 0:
+            raise ValueError(
+                f"velocity_vectors={self.num_vels} must be divisible by "
+                f"tensor_parallel_size={world_size}"
+            )
+
+        self.down_projection.enable_tensor_parallel(
+            group=group,
+            rank=rank,
+            world_size=world_size,
+            input_layout="sharded",
+            output_layout="sharded",
+        )
+        self.up_projection.enable_tensor_parallel(
+            group=group,
+            rank=rank,
+            world_size=world_size,
+            input_layout="sharded",
+            output_layout="sharded",
+        )
+        self.num_vels //= world_size
+        self.hidden_dim //= world_size
+        self._tp_enabled = True
+
     def _transform_to_latlon(
         self,
         lat_prime: torch.Tensor,

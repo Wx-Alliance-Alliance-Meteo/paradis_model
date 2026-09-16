@@ -3,12 +3,14 @@ import re
 import time
 from collections import defaultdict, OrderedDict
 
+
 import lightning as L
 from lightning.pytorch.utilities import rank_zero_only
 import omegaconf.dictconfig
 import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
+from torch.cuda import nvtx
 
 from data.datamodule import Era5DataModule
 from model.paradis import Paradis
@@ -257,16 +259,21 @@ class LitParadis(L.LightningModule):
 
             self.load_state_dict(sd, strict=True)
 
-        # Compile model in place
-        if cfg.compute.compile == True:
-            self.model.compile(
-                mode="default",
-                fullgraph=True,
-                dynamic=False,
-                backend="inductor",
-            )
-        elif cfg.compute.compile == "modules":
-            self.model._compile()
+        # Tensor-parallel conversion happens after torch.distributed is initialized,
+        # so compilation must not happen before the TP strategy has sharded the model.
+        # The first implementation keeps torch.compile disabled for TP because the
+        # custom NCCL autograd collectives intentionally form graph boundaries.
+        self.tensor_parallel_size = int(cfg.compute.get("tensor_parallel_size", 1))
+        if self.tensor_parallel_size == 1:
+            if cfg.compute.compile == True:
+                self.model.compile(
+                    mode="default",
+                    fullgraph=False,
+                    dynamic=False,
+                    backend="inductor",
+                )
+            elif cfg.compute.compile == "modules":
+                self.model._compile()
 
         self.epoch_start_time = None
 
@@ -287,6 +294,57 @@ class LitParadis(L.LightningModule):
 
         if cfg.forecast.enable:
             self.forecast_writer = ZarrForecastWriter(cfg, datamodule.dataset)
+
+    def enable_tensor_parallel(
+        self,
+        *,
+        group,
+        rank: int,
+        world_size: int,
+        src_global_rank: int,
+    ) -> None:
+        """Called by TensorParallelDDPStrategy after distributed setup."""
+        self.model.enable_tensor_parallel(
+            group=group,
+            rank=rank,
+            world_size=world_size,
+            src_global_rank=src_global_rank,
+        )
+
+    def tensor_parallel_full_state_dict(self) -> OrderedDict:
+        """Reconstruct a normal full-model state dict for checkpoint saving."""
+        state = OrderedDict(self.state_dict())
+        specs = self.model.tensor_parallel_state_specs()
+        if not specs:
+            return state
+
+        for name, spec in specs.items():
+            key = f"model.{name}"
+            if key not in state:
+                raise KeyError(f"TP checkpoint spec refers to missing state key: {key}")
+            state[key] = spec.gather(
+                state[key],
+                self.model._tp_group,
+                self.model._tp_rank,
+                self.model._tp_size,
+            )
+        return state
+
+    def tensor_parallel_localize_state_dict(self, state_dict) -> OrderedDict:
+        """Slice a normal full-model checkpoint into this rank's TP shards."""
+        state = OrderedDict(state_dict)
+        specs = self.model.tensor_parallel_state_specs()
+        if not specs:
+            return state
+
+        for name, spec in specs.items():
+            key = f"model.{name}"
+            if key not in state:
+                raise KeyError(f"TP checkpoint is missing required state key: {key}")
+            state[key] = spec.localize(
+                state[key], self.model._tp_rank, self.model._tp_size
+            )
+        return state
 
     def _get_report_rmse(self, output_data, pred_data):
         lat_weights = self.loss_fn.lat_weights.view(1, 1, -1, 1).to(output_data.device)
@@ -914,9 +972,12 @@ class LitParadis(L.LightningModule):
         # Record current time for time-per-step calculation
         self.tic = time.perf_counter()
 
+        nvtx.range_push(f"train_batch_{batch_idx}")
         return super().on_train_batch_start(batch, batch_idx)
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
+        nvtx.range_pop()
+
         dt = time.perf_counter() - self.tic
 
         self.log(

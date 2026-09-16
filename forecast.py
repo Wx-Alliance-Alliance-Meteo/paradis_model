@@ -46,14 +46,10 @@ def parse_args():
         "--batch-size", type=int, default=1, help="Prediction batch size"
     )
     parser.add_argument(
-        "--num-devices", type=int, help="Number of devices", required=True
+        "--num-devices", type=int, default=1, help="Number of devices", required=True
     )
     parser.add_argument(
-        "--flush-every-n-steps", type=int, help="Write a forecast every n steps to reduce CPU memory usage", required=True,
-    )
-
-    parser.add_argument(
-        "--num-workers", type=int, default=1, help="Number of dataloader workers"
+        "--flush-every-n-steps", type=int, default=0, help="Write a forecast every n steps to reduce CPU memory usage", required=True,
     )
 
     return parser.parse_args()
@@ -83,13 +79,16 @@ def main():
     cfg.compute.num_devices = args.num_devices
 
     cfg.compute.use_amp = False
-    cfg.compute.num_workers = args.num_workers
+    cfg.compute.num_workers = 1
 
     # Only supporting single node for now
     cfg.compute.num_nodes = 1
 
-    # Restart continues the training from the current step
+    # Restart true must be set so that the checkpoint isn't loaded twice
     cfg.init.restart = True
+
+    # Enable forecasting mode
+    cfg.forecast.enable = True
 
     datamodule = Era5DataModule(cfg)
     datamodule.setup(stage="predict")

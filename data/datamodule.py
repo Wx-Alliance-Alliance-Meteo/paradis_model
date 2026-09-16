@@ -32,7 +32,9 @@ class Era5DataModule(L.LightningDataModule):
             self.val_forecast_steps = self.forecast_steps
 
         # Drop last batch when using compiled model
-        self.drop_last = cfg.compute.compile
+        self.drop_last = False
+        if cfg.compute.compile == True or cfg.compute.compile == 'modules':
+            self.drop_last = True
 
         self.has_setup_been_called = {"fit": False, "predict": False}
 
@@ -134,7 +136,7 @@ class Era5DataModule(L.LightningDataModule):
             shuffle=True,
             pin_memory=True,
             drop_last=self.drop_last,
-            persistent_workers=self.num_workers > 0,
+            persistent_workers=True,
         )
 
     def val_dataloader(self):
@@ -147,7 +149,7 @@ class Era5DataModule(L.LightningDataModule):
             shuffle=self.cfg.training.validation_dataset.validation_batches is not None,
             pin_memory=True,
             drop_last=self.drop_last,
-            persistent_workers=self.val_num_workers > 0,
+            persistent_workers=True,
         )
 
     def predict_dataloader(self):

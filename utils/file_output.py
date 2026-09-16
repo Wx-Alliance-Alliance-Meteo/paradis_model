@@ -5,6 +5,7 @@ import dask
 import dask.array as da
 import numpy
 import xarray
+from lightning.pytorch.callbacks import BasePredictionWriter
 from utils.postprocessing import convert_cartesian_to_spherical_winds
 
 from numcodecs import BitRound, Blosc
@@ -175,7 +176,7 @@ def _build_dataset_for_samples(
     return ds
 
 
-def _build_template_dataset(cfg, dataset):
+def _build_template_dataset(cfg, dataset, filename):
     """
     Build the full output template with all coordinates and variables preallocated.
     No actual forecast values are written here; this only creates the store layout.
@@ -204,7 +205,7 @@ def _build_template_dataset(cfg, dataset):
         "time": sorted_times,
         "level": pressure_levels,
         "prediction_timedelta": numpy.arange(output_num_forecast_steps + 1)
-        * numpy.timedelta64(dataset.time_resolution * 3600 * 10**9, "ns"),
+        * numpy.timedelta64(6 * 3600 * 10**9, "ns"),
     }
 
     data_vars = {}
@@ -284,7 +285,7 @@ def init_forecast_store(cfg, dataset, filename):
     if os.path.exists(filename):
         shutil.rmtree(filename)
 
-    ds, encoding = _build_template_dataset(cfg, dataset)
+    ds, encoding = _build_template_dataset(cfg, dataset, filename)
 
     with dask.config.set(scheduler="threads"):
         ds.to_zarr(
@@ -294,6 +295,53 @@ def init_forecast_store(cfg, dataset, filename):
             zarr_format=2,
             encoding=encoding,
         )
+
+
+def write_forecast_region(forecast, sample_indices, cfg, dataset, filename):
+    """
+    Write one prediction batch into the preinitialized Zarr store.
+
+    Args:
+        forecast: numpy array [B, T_forecast, F, Lat, Lon]
+        sample_indices: original dataset sample indices for this batch
+    """
+    sorted_times, sample_index_to_sorted_pos = _get_sorted_time_info(dataset)
+
+    sample_indices = numpy.asarray(sample_indices)
+    order = numpy.argsort(sample_indices)
+    sample_indices = sample_indices[order]
+    forecast = forecast[order]
+
+    sorted_positions = sample_index_to_sorted_pos[sample_indices]
+    init_times = sorted_times[sorted_positions]
+
+    # Usually contiguous for a non-shuffled loader, but do not assume it.
+    # Group contiguous sorted_positions so region writes stay efficient.
+    breaks = numpy.where(numpy.diff(sorted_positions) != 1)[0] + 1
+    groups = numpy.split(numpy.arange(len(sorted_positions)), breaks)
+
+    with dask.config.set(scheduler="threads"):
+        for g in groups:
+            group_positions = sorted_positions[g]
+            group_times = init_times[g]
+            group_forecast = forecast[g]
+
+            ds = _build_dataset_for_samples(
+                forecast=group_forecast,
+                init_times=group_times,
+                cfg=cfg,
+                dataset=dataset,
+            )
+
+            start = int(group_positions[0])
+            stop = int(group_positions[-1]) + 1
+
+            ds.to_zarr(
+                filename,
+                region={"time": slice(start, stop)},
+                consolidated=False,
+                zarr_format=2,
+            )
 
 
 def write_forecast_region_chunked(
