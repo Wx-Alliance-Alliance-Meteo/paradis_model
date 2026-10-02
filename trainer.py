@@ -21,6 +21,47 @@ torch._dynamo.config.cache_size_limit = 64
 torch._dynamo.config.force_parameter_static_shapes = False
 
 
+def build_adamw_param_groups(model, lr, weight_decay, gate_lr_mult=10.0):
+    base_params = []
+    gate_params = []
+    seen = set()
+
+    gate_names = {"alpha_adv", "alpha_diff", "alpha_reac"}
+
+    for name, p in model.named_parameters():
+        if not p.requires_grad or id(p) in seen:
+            continue
+
+        top_level_name = name.split(".")[0]
+        if top_level_name in gate_names:
+            gate_params.append(p)
+        else:
+            base_params.append(p)
+
+        seen.add(id(p))
+
+    param_groups = [
+        dict(
+            params=base_params,
+            algorithm="adamw",
+            lr=lr,
+            weight_decay=weight_decay,
+        )
+    ]
+
+    if gate_params:
+        param_groups.append(
+            dict(
+                params=gate_params,
+                algorithm="adamw",
+                lr=lr * gate_lr_mult,
+                weight_decay=0.0,
+            )
+        )
+
+    return param_groups
+
+
 def build_param_groups(model, lr, weight_decay, optimizer_name):
     muon_params = []
     adamw_params = []
@@ -326,7 +367,15 @@ class LitParadis(L.LightningModule):
 
         if cfg.optimizer.name == "adamw":
 
-            param_groups = self.model.parameters()
+            if cfg.optimizer.get("custom_adamw", True):
+                param_groups = build_adamw_param_groups(
+                    self.model,
+                    lr=cfg.optimizer.lr,
+                    weight_decay=cfg.optimizer.weight_decay,
+                )
+            else:
+                param_groups = self.model.parameters()
+
             optimizer = torch.optim.AdamW(
                 param_groups,
                 lr=cfg.optimizer.lr,

@@ -32,7 +32,9 @@ class Era5DataModule(L.LightningDataModule):
             self.val_forecast_steps = self.forecast_steps
 
         # Drop last batch when using compiled model
-        self.drop_last = cfg.compute.compile
+        self.drop_last = False
+        if cfg.compute.compile == True or cfg.compute.compile == 'modules':
+            self.drop_last = True
 
         self.has_setup_been_called = {"fit": False, "predict": False}
 
