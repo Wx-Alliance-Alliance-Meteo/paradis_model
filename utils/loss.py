@@ -107,6 +107,7 @@ class ParadisLoss(torch.nn.Module):
         pred: torch.Tensor,
         target: torch.Tensor,
         weighted: bool = True,
+        lat_slice: tuple[int, int] | None = None,
     ) -> torch.Tensor:
         """Return loss per output channel.
 
@@ -120,7 +121,11 @@ class ParadisLoss(torch.nn.Module):
             loss = loss * self.feature_weights_buf
 
             if self.apply_latitude_weights:
-                loss = loss * self.lat_weights_buf
+                lat_weights = self.lat_weights_buf
+                if lat_slice is not None:
+                    start, end = lat_slice
+                    lat_weights = lat_weights[..., start:end, :]
+                loss = loss * lat_weights
 
         # Reduce over batch, lat, lon. Keep channel dimension.
         return loss.mean(dim=(0, 2, 3))
@@ -189,44 +194,24 @@ class ParadisLoss(torch.nn.Module):
         return weights.to(dtype=grid_lat_deg.dtype)
 
     def _create_feature_weights(self) -> torch.Tensor:
-        """Create weights for all features."""
-        # Initialize weights tensor for all features
-        feature_weights = torch.zeros(self.num_features, dtype=torch.float32)
+        feature_weights = torch.zeros(
+            self.num_features,
+            dtype=torch.float32,
+        )
 
-        # Standard pressure weights normalized by number of levels
-        if self.apply_pressure_weights:
-            # Compute proper integration weights along pressure coordinate
-            pressure_weights = torch.where(
-                self.pressure_levels / 1000 > 0.2, self.pressure_levels / 1000, 0.2
-            )
-        else:
-            pressure_weights = torch.ones(
-                len(self.pressure_levels), dtype=torch.float32
-            )
+        for i, feature in enumerate(self.output_name_order):
+            base_weight = self.var_loss_weights[i]
 
-        # Process atmospheric variables (with pressure levels)
-        for i in range(0, self.num_atmospheric_vars, self.num_levels):
+            match = re.search(r"_h(\d+)$", feature)
 
-            # Get the variable name independent of pressure level
-            var_name = re.sub(r"_h\d+$", "", self.output_name_order[i])
+            if match is not None:
+                pressure = float(match.group(1))
+                pressure_weight = max(pressure / 1000.0, 0.2)
 
-            # Get the base weights for this variable
-            base_weights = self.var_loss_weights[i : i + self.num_levels]
-
-            # Multiply by pressure weights
-            if self.flip_geopotential_weights and var_name == "geopotential":
-                feature_weights[i : i + self.num_levels] = (
-                    base_weights * pressure_weights.flip(0)
-                )
+                feature_weights[i] = base_weight * pressure_weight
             else:
-                feature_weights[i : i + self.num_levels] = (
-                    base_weights * pressure_weights
-                )
-
-        # Process surface variables
-        feature_weights[self.num_atmospheric_vars :] = self.var_loss_weights[
-            self.num_atmospheric_vars :
-        ]
+                # Surface variable
+                feature_weights[i] = base_weight
 
         return feature_weights
 
@@ -259,7 +244,12 @@ class ParadisLoss(torch.nn.Module):
     ) -> torch.Tensor:
         return self._reversed_huber_loss(pred, target, self.delta)
 
-    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        lat_slice: tuple[int, int] | None = None,
+    ) -> torch.Tensor:
         """Calculate weighted reversed Huber loss.
 
         Args:
@@ -277,6 +267,9 @@ class ParadisLoss(torch.nn.Module):
 
         if self.apply_latitude_weights:
             lat_weights = self.lat_weights_buf
+            if lat_slice is not None:
+                start, end = lat_slice
+                lat_weights = lat_weights[..., start:end, :]
             weighted_loss *= lat_weights
 
         return weighted_loss.mean()

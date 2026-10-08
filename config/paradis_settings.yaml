@@ -1,14 +1,14 @@
 # Model architecture
 model:
-  latent_size: 1024                # Set a fixed size of the latent space (if latent_multiplier is -1)
+  latent_size: 512                # Set a fixed size of the latent space (if latent_multiplier is -1)
   forecast_steps: 1                # Number of autoregressive steps
   base_dt: 21600                   # Data time resolution in seconds (6 hours * 3600 seconds)
-  num_layers: 8                    # Model depth
+  num_layers: 4                    # Model depth
   bias_channels: 8                 # Number of bias channels
   velocity_vectors: 768            # Number of velocity layers (if latent_multiplier is -1)
   adv_interpolation: bicubic       # Choose between bilinear or bicubic
   activation: SiLU                 # [SiLU, GELU]
-  coarsening_factor: 1             # Coarsens the processor grid by this factor
+  coarsening_factor: 2             # Coarsens the processor grid by this factor
   val_forecast_steps: ${model.forecast_steps}
 
   # Physics block
@@ -58,11 +58,12 @@ init:
 
 # Input dataset
 dataset:
-  root_dir: /path/to/dataset/
+  root_dir: /home/cap003/site7/datasets/weatherbench_0.25deg_13level
   time_resolution: 6h              # Dataset original resolution
   n_time_inputs: 2                 # Number inputs (For example, n_time_inputs: 2 feeds [tn-1, tn])
   sampling_interval: 6h            # Sample dataset feeds at this time interval
   prediction_delta: 6h             # Prediction will be done at t+prediction_delta
+  stats_path: /home/cap003/site7/datasets/era5_stats.json
 
 normalization:
   standard: true                   # (True = z-score normalization to all variables, False = custom norms)
@@ -70,7 +71,7 @@ normalization:
 # Compute/hardware aspects
 compute:
   num_nodes: 1                     # Number of nodes
-  num_devices: 1                   # Number of GPUS/CPU devices per node
+  num_devices: 4                   # Number of GPUS/CPU devices per node
   accelerator: gpu                 # CPU/GPU
   use_amp: true                    # Enable AMP (Automatic Mixed Precision)
   batch_size: 1                    # Number of samples per batch
@@ -78,6 +79,9 @@ compute:
   val_num_workers: ${compute.num_workers} # Specify for different number of validation dataloader workers
   compile: true                    # Whether to compile the model [true | false | modules (compile layers only)]
   gradient_checkpointing: false    # Enable activation checkpointing
+  spatial_parallel:
+    enabled: true                  # Split each sample into latitude bands across GPUs
+    size: 4                        # GPUs per spatial group; world size must be divisible by this
 
 # Forecast parameters
 forecast:
@@ -91,7 +95,7 @@ forecast:
 # Training parameters
 training:
   max_epochs: -1                   # Maximum number of epochs the training is allowed (-1 to disable and use steps)
-  max_steps: 300000                # Maximum number of steps to use for training (-1 to disable and use epochs)
+  max_steps: 5000                  # Maximum number of steps to use for training (-1 to disable and use epochs)
   progress_bar: true               # Enable progress bar
   gradient_clip_val: null          # Gradient clipping value, set to null to disable
   print_losses: false              # Manually print losses to screen (removes progress bar)
@@ -158,7 +162,7 @@ training:
     # 3. LambdaLR with initial warmup, steady learning rate and final cooldown
     wsd:
       enabled: true
-      warmup: 1000                 # ≥1 : number of warmup steps, else fraction
+      warmup: 0.01                 # ≥1 : number of warmup steps, else fraction
       decay: 0.2                   # ≥1 : number of decay steps, else fraction
 
   variable_loss_weights:

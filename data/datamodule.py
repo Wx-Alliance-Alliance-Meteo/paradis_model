@@ -6,8 +6,11 @@ import lightning as L
 from omegaconf import DictConfig
 import torch
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
 from data.era5_dataset import ERA5Dataset
+# from data.era5_zarr_dataset import ERA5ZarrDataset as ERA5Dataset
+from utils.spatial_parallel import get_hybrid_parallel_info
 
 
 class Era5DataModule(L.LightningDataModule):
@@ -125,13 +128,34 @@ class Era5DataModule(L.LightningDataModule):
 
             logging.info(f"Dataset setup completed successfully for stage {stage}")
 
+    def _distributed_sampler(self, dataset, shuffle: bool, drop_last: bool):
+        """Sampler for DDP replicas when each replica contains spatial ranks.
+
+        All ranks in a spatial group intentionally receive identical sample
+        indices. Different spatial groups receive disjoint DDP shards.
+        """
+        sp_cfg = self.cfg.compute.get("spatial_parallel", {})
+        if not bool(sp_cfg.get("enabled", False)):
+            return None
+
+        info = get_hybrid_parallel_info(self.cfg)
+        return DistributedSampler(
+            dataset,
+            num_replicas=info.data_parallel_size,
+            rank=info.data_parallel_rank,
+            shuffle=shuffle,
+            drop_last=drop_last,
+        )
+
     def train_dataloader(self):
         """Return the training dataloader."""
+        sampler = self._distributed_sampler(self.dataset, shuffle=True, drop_last=self.drop_last)
         return DataLoader(
             self.dataset,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
-            shuffle=True,
+            shuffle=sampler is None,
+            sampler=sampler,
             pin_memory=True,
             drop_last=self.drop_last,
             persistent_workers=self.num_workers > 0,
@@ -139,12 +163,16 @@ class Era5DataModule(L.LightningDataModule):
 
     def val_dataloader(self):
         """Return the validation dataloader."""
+        shuffle = self.cfg.training.validation_dataset.validation_batches is not None
+        sampler = self._distributed_sampler(
+            self.val_dataset, shuffle=shuffle, drop_last=self.drop_last
+        )
         return DataLoader(
             self.val_dataset,
             batch_size=self.batch_size,
             num_workers=self.val_num_workers,
-            # Shuffle if we're using less than all validation data
-            shuffle=self.cfg.training.validation_dataset.validation_batches is not None,
+            shuffle=shuffle if sampler is None else False,
+            sampler=sampler,
             pin_memory=True,
             drop_last=self.drop_last,
             persistent_workers=self.val_num_workers > 0,
@@ -152,11 +180,13 @@ class Era5DataModule(L.LightningDataModule):
 
     def predict_dataloader(self):
         """Return the forecasting dataloader (includes all data)."""
+        sampler = self._distributed_sampler(self.dataset, shuffle=False, drop_last=False)
         return DataLoader(
             self.dataset,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             shuffle=False,
+            sampler=sampler,
             pin_memory=True,
             drop_last=False,
         )

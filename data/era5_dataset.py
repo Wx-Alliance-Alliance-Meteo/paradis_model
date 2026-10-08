@@ -1,43 +1,613 @@
-"""ERA5 dataset handling"""
+"""WeatherBench-style ERA5 dataset handling for PARADIS."""
 
-import os
+import json
 import re
-from datetime import timedelta
+from pathlib import Path
 
-import dask
 import numpy
 import torch
 import xarray
 from omegaconf import DictConfig
 
 from data.forcings import time_forcings, toa_radiation
-from utils.normalization import (
-    normalize_humidity,
-    normalize_precipitation,
-    normalize_standard,
-)
 
 
-def _preprocess_era5_store(ds: xarray.Dataset) -> xarray.Dataset:
-    coord_updates = {}
+def _standardize_weatherbench_coords(ds: xarray.Dataset) -> xarray.Dataset:
+    """Rename common coordinate aliases and enforce increasing lat/lon order."""
+    rename = {}
+    aliases = {
+        "lat": "latitude",
+        "lon": "longitude",
+        "valid_time": "time",
+    }
 
-    if "latitude" in ds.coords:
-        coord_updates["latitude"] = ds.latitude.astype("float64").round(6)
+    for old, new in aliases.items():
+        if old in ds.dims or old in ds.coords:
+            if new not in ds.dims and new not in ds.coords:
+                rename[old] = new
 
-    if "longitude" in ds.coords:
-        coord_updates["longitude"] = ds.longitude.astype("float64").round(6)
+    if rename:
+        ds = ds.rename(rename)
 
-    if coord_updates:
-        ds = ds.assign_coords(**coord_updates)
+    required = {"time", "latitude", "longitude"}
+    available = set(ds.dims) | set(ds.coords)
+    missing = required - available
+    if missing:
+        raise ValueError(
+            "WeatherBench dataset is missing required coordinates/dimensions: "
+            f"{sorted(missing)}"
+        )
 
-    for coord in ("features", "latitude", "longitude"):
-        if coord in ds.coords and coord in ds.dims and ds.sizes.get(coord, 0) > 1:
-            ds = ds.sortby(coord)
+    ds = ds.assign_coords(
+        latitude=ds.latitude.astype("float64").round(6),
+        longitude=ds.longitude.astype("float64").round(6),
+    )
+
+    if ds.latitude.values[0] > ds.latitude.values[-1]:
+        ds = ds.sortby("latitude")
+
+    if ds.longitude.values[0] > ds.longitude.values[-1]:
+        ds = ds.sortby("longitude")
 
     return ds
 
+
+def _is_zarr_store(path: Path) -> bool:
+    return (
+        path.is_dir()
+        and (
+            (path / ".zgroup").exists()
+            or (path / ".zmetadata").exists()
+            or (path / "zarr.json").exists()
+        )
+    )
+
+
+def _open_weatherbench_dataset(root_dir: str, cfg: DictConfig) -> xarray.Dataset:
+    """Open a WeatherBench-style Zarr store or NetCDF collection lazily."""
+    configured_path = cfg.dataset.get("weatherbench_path", root_dir)
+    path = Path(str(configured_path)).expanduser()
+
+    if path.is_file():
+        return xarray.open_dataset(path, chunks=None, cache=False)
+
+    if _is_zarr_store(path):
+        return xarray.open_zarr(path, chunks=None)
+
+    if not path.is_dir():
+        raise FileNotFoundError(f"WeatherBench path does not exist: {path}")
+
+    # One Zarr store per variable is also supported.
+    zarr_paths = sorted(p for p in path.rglob("*.zarr") if _is_zarr_store(p))
+    if zarr_paths:
+        datasets = [xarray.open_zarr(p, chunks=None) for p in zarr_paths]
+        return xarray.combine_by_coords(
+            datasets,
+            compat="override",
+            join="exact",
+            coords="minimal",
+            data_vars="all",
+            combine_attrs="override",
+        )
+
+    # Standard WeatherBench layouts often contain NetCDF files split by
+    # variable and/or year.
+    nc_paths = sorted(
+        [
+            *path.rglob("*.nc"),
+            *path.rglob("*.nc4"),
+            *path.rglob("*.netcdf"),
+        ]
+    )
+    if nc_paths:
+        return xarray.open_mfdataset(
+            [str(p) for p in nc_paths],
+            chunks=None,
+            combine="by_coords",
+            join="exact",
+            compat="override",
+            coords="minimal",
+            data_vars="all",
+            combine_attrs="override",
+        )
+
+    raise FileNotFoundError(
+        f"No Zarr store or NetCDF files were found under {path}"
+    )
+
+
+def _load_stats(root_dir: str, cfg: DictConfig) -> dict:
+    """Load mean/std statistics from JSON."""
+    root_path = Path(root_dir).expanduser()
+    default_path = (
+        root_path / "stats.json"
+        if root_path.is_dir()
+        else root_path.parent / "stats.json"
+    )
+    stats_path = Path(str(cfg.dataset.get("stats_path", default_path))).expanduser()
+
+    if not stats_path.exists():
+        raise FileNotFoundError(f"Statistics JSON does not exist: {stats_path}")
+
+    with stats_path.open("r", encoding="utf-8") as file:
+        stats = json.load(file)
+
+    if not isinstance(stats, dict):
+        raise TypeError("Statistics JSON must contain a JSON object at its root")
+
+    return stats
+
+
+def _find_stats(stats: dict, feature: str, required: bool = True) -> dict | None:
+    """Find statistics in a flat or sectioned JSON layout."""
+    for section in ("features", "forcings"):
+        section_data = stats.get(section, {})
+        if isinstance(section_data, dict) and feature in section_data:
+            entry = section_data[feature]
+            if not isinstance(entry, dict):
+                raise TypeError(f"Statistics entry for '{feature}' must be an object")
+            return entry
+
+    if feature in stats:
+        entry = stats[feature]
+        if not isinstance(entry, dict):
+            raise TypeError(f"Statistics entry for '{feature}' must be an object")
+        return entry
+
+    if required:
+        raise KeyError(
+            f"No statistics found for '{feature}'. Expected it in "
+            "stats['features'], stats['forcings'], or at the JSON root."
+        )
+
+    return None
+
+
+def _mean_std(stats: dict, feature: str) -> tuple[float, float]:
+    entry = _find_stats(stats, feature)
+
+    try:
+        mean = float(entry["mean"])
+        std = float(entry["std"])
+    except KeyError as exc:
+        raise KeyError(
+            f"Statistics for '{feature}' must contain 'mean' and 'std'"
+        ) from exc
+
+    if not numpy.isfinite(mean):
+        raise ValueError(f"Non-finite mean for '{feature}': {mean}")
+
+    if not numpy.isfinite(std) or std <= 0.0:
+        raise ValueError(
+            f"Standard deviation for '{feature}' must be > 0, got {std}"
+        )
+
+    return mean, std
+
+
+def _split_feature_name(feature: str) -> tuple[str, int | None]:
+    """Split canonical PARADIS names such as temperature_h500."""
+    match = re.fullmatch(r"(.+)_h(-?\d+)", feature)
+    if match is None:
+        return feature, None
+
+    return match.group(1), int(match.group(2))
+
+
+def _level_position(
+    da: xarray.DataArray,
+    feature: str,
+    requested_level: int,
+) -> int:
+    """Return the integer position of a pressure level without indexing data."""
+    if "level" not in da.dims:
+        raise ValueError(
+            f"Feature '{feature}' requests pressure level {requested_level}, but "
+            f"variable '{da.name}' has dimensions {da.dims} and no 'level' dimension."
+        )
+
+    level_values = numpy.asarray(da["level"].values)
+    matches = numpy.flatnonzero(level_values == requested_level)
+    if matches.size == 0:
+        raise KeyError(
+            f"Level {requested_level} for feature '{feature}' was not found in "
+            f"'{da.name}'. Available values: {level_values.tolist()}"
+        )
+    return int(matches[0])
+
+
+def _first_existing_variable_name(
+    ds: xarray.Dataset,
+    candidates: tuple[str, ...],
+    feature: str,
+) -> str:
+    """Return the first available WeatherBench variable name."""
+    for name in candidates:
+        if name in ds.data_vars:
+            return name
+
+    raise KeyError(
+        f"None of {list(candidates)} required to construct feature "
+        f"'{feature}' are present in the WeatherBench dataset."
+    )
+
+
+def _load_weatherbench_field(
+    ds: xarray.Dataset,
+    variable_name: str,
+    feature: str,
+    level: int | None = None,
+) -> numpy.ndarray:
+    """Read one field as float32 [time, latitude, longitude].
+
+    Pressure-level reads deliberately retain the level dimension while data are
+    fetched from the backend.  Some Zarr/Xarray combinations fail when a scalar
+    level selection is pushed down to a Zarr array whose physical chunk still
+    has shape [time, 1, latitude, longitude].  Squeezing only after ``load``
+    avoids that backend shape mismatch.
+    """
+    if variable_name not in ds.data_vars:
+        raise KeyError(
+            f"Variable '{variable_name}' required by feature '{feature}' is missing"
+        )
+
+    da = ds[variable_name]
+
+    if level is not None:
+        level_pos = _level_position(da, feature, level)
+        # Keep level length 1 during backend I/O.  Do not use scalar .sel/.isel.
+        da = da.isel(level=slice(level_pos, level_pos + 1))
+
+    # At this point ``ds`` has already been sliced to only the sample times.
+    # Materialize the small requested field before any dimension is squeezed.
+    da = da.load()
+
+    if level is not None and "level" in da.dims:
+        da = da.isel(level=0, drop=True)
+
+    squeeze_dims = [
+        dim
+        for dim in da.dims
+        if dim not in {"time", "latitude", "longitude"} and da.sizes[dim] == 1
+    ]
+    if squeeze_dims:
+        da = da.squeeze(squeeze_dims, drop=True)
+
+    expected_dims = {"time", "latitude", "longitude"}
+    extra_dims = set(da.dims) - expected_dims
+    missing_dims = expected_dims - set(da.dims)
+    if extra_dims or missing_dims:
+        raise ValueError(
+            f"Feature '{feature}' must resolve to dimensions "
+            "('time', 'latitude', 'longitude'). "
+            f"Got {da.dims}; extra={sorted(extra_dims)}, "
+            f"missing={sorted(missing_dims)}."
+        )
+
+    array = numpy.asarray(
+        da.transpose("time", "latitude", "longitude").data,
+        dtype=numpy.float32,
+    )
+    return array
+
+
+def _weatherbench_feature_available(ds: xarray.Dataset, feature: str) -> bool:
+    """Check whether a configured PARADIS feature can be built."""
+    variable, level = _split_feature_name(feature)
+
+    def has_level(name: str) -> bool:
+        if name not in ds.data_vars:
+            return False
+        da = ds[name]
+        if level is None:
+            return True
+        return "level" in da.dims and bool(numpy.any(da.level.values == level))
+
+    if variable in ds.data_vars:
+        return has_level(variable)
+
+    if variable in {"wind_x", "wind_y", "wind_z"}:
+        if level is None:
+            return False
+        u_name = next(
+            (name for name in ("u_component_of_wind", "u") if name in ds.data_vars),
+            None,
+        )
+        v_name = next(
+            (name for name in ("v_component_of_wind", "v") if name in ds.data_vars),
+            None,
+        )
+        if u_name is None or v_name is None:
+            return False
+        return all(
+            "level" in ds[name].dims
+            and bool(numpy.any(ds[name].level.values == level))
+            for name in (u_name, v_name)
+        )
+
+    if variable in {"wind_x_10m", "wind_y_10m", "wind_z_10m"}:
+        has_u = any(
+            name in ds.data_vars
+            for name in ("10m_u_component_of_wind", "u10", "10m_u_wind")
+        )
+        has_v = any(
+            name in ds.data_vars
+            for name in ("10m_v_component_of_wind", "v10", "10m_v_wind")
+        )
+        return has_u and has_v
+
+    aliases = {
+        "mslp": ("mean_sea_level_pressure", "msl"),
+    }
+    return any(has_level(name) for name in aliases.get(variable, ()))
+
+
+def _cartesian_wind_arrays(
+    ds: xarray.Dataset,
+    feature: str,
+    level: int | None,
+    ten_meter: bool,
+    components: set[str],
+) -> dict[str, numpy.ndarray]:
+    """Compute only the requested Cartesian wind components for one level."""
+    g = numpy.float32(9.80616)
+    gas_constant = numpy.float32(287.05)
+
+    if ten_meter:
+        u_name = _first_existing_variable_name(
+            ds,
+            ("10m_u_component_of_wind", "u10", "10m_u_wind"),
+            feature,
+        )
+        v_name = _first_existing_variable_name(
+            ds,
+            ("10m_v_component_of_wind", "v10", "10m_v_wind"),
+            feature,
+        )
+        u = _load_weatherbench_field(ds, u_name, feature)
+        v = _load_weatherbench_field(ds, v_name, feature)
+        dr_dt: float | numpy.ndarray = 0.0
+    else:
+        if level is None:
+            raise ValueError(
+                f"Atmospheric Cartesian wind feature '{feature}' requires a pressure level."
+            )
+
+        u_name = _first_existing_variable_name(
+            ds,
+            ("u_component_of_wind", "u"),
+            feature,
+        )
+        v_name = _first_existing_variable_name(
+            ds,
+            ("v_component_of_wind", "v"),
+            feature,
+        )
+        u = _load_weatherbench_field(ds, u_name, feature, level)
+        v = _load_weatherbench_field(ds, v_name, feature, level)
+
+        omega_name = None
+        if "vertical_velocity" in ds.data_vars:
+            omega_name = "vertical_velocity"
+        elif "w" in ds.data_vars:
+            omega_name = "w"
+
+        if omega_name is None:
+            dr_dt = 0.0
+        else:
+            temperature_name = _first_existing_variable_name(
+                ds,
+                ("temperature", "t"),
+                feature,
+            )
+            temperature = _load_weatherbench_field(
+                ds,
+                temperature_name,
+                feature,
+                level,
+            )
+            omega = _load_weatherbench_field(
+                ds,
+                omega_name,
+                feature,
+                level,
+            )
+            scale = gas_constant / numpy.float32(level * 100.0) / g
+            dr_dt = -omega * temperature * scale
+
+    # Float32 geometry avoids promoting every full-grid temporary to float64.
+    lat = numpy.deg2rad(
+        numpy.asarray(ds.latitude.values, dtype=numpy.float32)
+    )[:, None]
+    lon = numpy.deg2rad(
+        numpy.asarray(ds.longitude.values, dtype=numpy.float32)
+    )[None, :]
+
+    sin_lat = numpy.sin(lat)
+    cos_lat = numpy.cos(lat)
+    sin_lon = numpy.sin(lon)
+    cos_lon = numpy.cos(lon)
+
+    results: dict[str, numpy.ndarray] = {}
+
+    if "x" in components:
+        value = (
+            dr_dt * cos_lat * cos_lon
+            - sin_lat * cos_lon * v
+            - sin_lon * u
+        )
+        results["x"] = numpy.asarray(value, dtype=numpy.float32)
+
+    if "y" in components:
+        value = (
+            dr_dt * cos_lat * sin_lon
+            - sin_lat * sin_lon * v
+            + cos_lon * u
+        )
+        results["y"] = numpy.asarray(value, dtype=numpy.float32)
+
+    if "z" in components:
+        value = dr_dt * sin_lat + cos_lat * v
+        results["z"] = numpy.asarray(value, dtype=numpy.float32)
+
+    return results
+
+
+def _stack_weatherbench_features(
+    ds: xarray.Dataset,
+    features: list[str],
+    allow_missing: bool,
+    zero_template: xarray.DataArray | None = None,
+) -> tuple[numpy.ndarray, list[str]]:
+    """Build [time, latitude, longitude, features] without Xarray concat.
+
+    The output buffer is allocated channel-first internally so that each loaded
+    field is copied contiguously.  A transpose view exposes the legacy
+    [time, latitude, longitude, features] order without another full copy.
+    """
+    del zero_template  # Retained in the signature for compatibility.
+
+    n_time = ds.sizes["time"]
+    n_lat = ds.sizes["latitude"]
+    n_lon = ds.sizes["longitude"]
+    n_features = len(features)
+
+    # [features, time, latitude, longitude] gives contiguous writes per channel.
+    stacked = numpy.empty(
+        (n_features, n_time, n_lat, n_lon),
+        dtype=numpy.float32,
+    )
+    missing: list[str] = []
+    filled = numpy.zeros(n_features, dtype=bool)
+
+    aliases = {
+        "mslp": ("mean_sea_level_pressure", "msl"),
+    }
+    atmospheric_winds = {"wind_x": "x", "wind_y": "y", "wind_z": "z"}
+    surface_winds = {
+        "wind_x_10m": "x",
+        "wind_y_10m": "y",
+        "wind_z_10m": "z",
+    }
+
+    for index, feature in enumerate(features):
+        if filled[index]:
+            continue
+
+        variable, level = _split_feature_name(feature)
+
+        try:
+            # Stored PARADIS-form variables take precedence over derived aliases.
+            if variable in ds.data_vars:
+                stacked[index] = _load_weatherbench_field(
+                    ds,
+                    variable,
+                    feature,
+                    level,
+                )
+                filled[index] = True
+                continue
+
+            if variable in atmospheric_winds:
+                group: list[tuple[int, str]] = []
+                for other_index, other_feature in enumerate(features):
+                    if filled[other_index]:
+                        continue
+                    other_variable, other_level = _split_feature_name(other_feature)
+                    if (
+                        other_level == level
+                        and other_variable in atmospheric_winds
+                        and other_variable not in ds.data_vars
+                    ):
+                        group.append(
+                            (other_index, atmospheric_winds[other_variable])
+                        )
+
+                requested = {component for _, component in group}
+                values = _cartesian_wind_arrays(
+                    ds,
+                    feature=feature,
+                    level=level,
+                    ten_meter=False,
+                    components=requested,
+                )
+                for other_index, component in group:
+                    stacked[other_index] = values[component]
+                    filled[other_index] = True
+                continue
+
+            if variable in surface_winds:
+                group = []
+                for other_index, other_feature in enumerate(features):
+                    if filled[other_index]:
+                        continue
+                    other_variable, other_level = _split_feature_name(other_feature)
+                    if (
+                        other_level is None
+                        and other_variable in surface_winds
+                        and other_variable not in ds.data_vars
+                    ):
+                        group.append((other_index, surface_winds[other_variable]))
+
+                requested = {component for _, component in group}
+                values = _cartesian_wind_arrays(
+                    ds,
+                    feature=feature,
+                    level=None,
+                    ten_meter=True,
+                    components=requested,
+                )
+                for other_index, component in group:
+                    stacked[other_index] = values[component]
+                    filled[other_index] = True
+                continue
+
+            candidates = aliases.get(variable, ())
+            if not candidates:
+                raise KeyError(
+                    f"Variable '{variable}' required by feature '{feature}' is missing"
+                )
+            variable_name = _first_existing_variable_name(ds, candidates, feature)
+            stacked[index] = _load_weatherbench_field(
+                ds,
+                variable_name,
+                feature,
+                level,
+            )
+            filled[index] = True
+
+        except KeyError:
+            if not allow_missing:
+                raise
+            stacked[index].fill(0.0)
+            filled[index] = True
+            missing.append(feature)
+
+    if not bool(numpy.all(filled)):
+        unresolved = [
+            feature for feature, is_filled in zip(features, filled) if not is_filled
+        ]
+        raise RuntimeError(f"Failed to construct WeatherBench features: {unresolved}")
+
+    # Legacy order expected by the rest of the loader. This is a zero-copy view.
+    return stacked.transpose(1, 2, 3, 0), missing
+
+
 class ERA5Dataset(torch.utils.data.Dataset):
-    """Prepare and process ERA5 dataset for Pytorch."""
+    """Prepare WeatherBench-style ERA5 data for PARADIS.
+
+    Dynamic variables are expected in WeatherBench-style form:
+
+      * atmospheric: [time, level, latitude, longitude]
+      * surface:     [time, latitude, longitude]
+
+    Dynamic variables are read from the WeatherBench-style dataset. Static
+    fields are read from ``root_dir/constants`` using the same Zarr format as
+    the previous loader. Geometric constants are computed internally.
+
+    The public constructor and returned sample tuples are kept compatible with
+    the previous stacked-feature ERA5Dataset.
+    """
 
     def __init__(
         self,
@@ -46,107 +616,106 @@ class ERA5Dataset(torch.utils.data.Dataset):
         end_date: str,
         forecast_steps: int,
         dtype: torch.dtype = torch.float32,
-        preload: bool = False,  # Whether to preload the dataset
+        preload: bool = False,
         cfg: DictConfig = DictConfig({}),
         time_interval: str = None,
-        prediction_stage=False,
+        prediction_stage: bool = False,
     ) -> None:
-
         self.cfg = cfg
         features_cfg = cfg.features
         self.preload = preload
-        self.eps = 1e-12
         self.root_dir = root_dir
         self.forecast_steps = forecast_steps
         self.dtype = dtype
-        self.forcing_inputs = features_cfg.input.forcings
+        self.forcing_inputs = list(features_cfg.input.forcings)
         self.concat_input = cfg.dataset.n_time_inputs > 1
         self.n_time_inputs = cfg.dataset.n_time_inputs if self.concat_input else 1
-        self.custom_normalization = not cfg.normalization.standard
         self.prediction_stage = prediction_stage
 
-        # Lazy open this dataset
-        ds = xarray.open_mfdataset(
-            os.path.join(root_dir, "*[0-9]"),
-            chunks={"time": 1},
-            engine="zarr",
-            preprocess=_preprocess_era5_store,
-            join="exact",
+        # Kept for compatibility with postprocessing.
+        # WeatherBench loader always uses standard z-score normalization.
+        self.custom_normalization = False
+
+        ds = _standardize_weatherbench_coords(
+            _open_weatherbench_dataset(root_dir, cfg)
         )
+        stats = _load_stats(root_dir, cfg)
+        self.stats = stats
 
-        if ds.latitude.values[0] > ds.latitude.values[-1]:
-            ds = ds.sortby("latitude")
-
-        if ds.longitude.values[0] > ds.longitude.values[-1]:
-            ds = ds.sortby("longitude")
-
-        # Add stats to data array
-        ds_stats = xarray.open_dataset(
-            os.path.join(self.root_dir, "stats"), engine="zarr"
-        )
-
-        # Store them in main dataset for easier processing
-        ds["mean"] = ds_stats["mean"]
-        ds["std"] = ds_stats["std"]
-        ds["max"] = ds_stats["max"]
-
-        ds["min"] = ds_stats["min"]
-        ds.attrs["toa_radiation_std"] = ds_stats.attrs["toa_radiation_std"]
-        ds.attrs["toa_radiation_mean"] = ds_stats.attrs["toa_radiation_mean"]
-
-        # Make sure start date and end_date provide the time, otherwise asume 0Z and 24Z respectively
         if "T" not in start_date:
             start_date += "T00:00:00"
 
-        # Add the number of forecast steps to the range of dates
-        self.time_resolution = time_resolution = int(cfg.dataset.time_resolution[:-1])
+        time_resolution = int(cfg.dataset.time_resolution[:-1])
 
-        # Apply an initialization time interval if necessary
         if time_interval is None:
-            time_interval = time_resolution
+            time_interval_hours = time_resolution
         else:
-            time_interval = int(time_interval[:-1])
+            time_interval_hours = int(time_interval[:-1])
 
-        self.interval_steps = time_interval // time_resolution
+        if time_interval_hours % time_resolution != 0:
+            raise ValueError(
+                "time_interval must be an integer multiple of dataset.time_resolution"
+            )
+
+        self.interval_steps = time_interval_hours // time_resolution
         self.prediction_shift = (
             int(cfg.dataset.prediction_delta[:-1]) // time_resolution - 1
         ) * self.interval_steps
-
-        # Get the number of additional time instances needed in data for autoregression
-        hours = time_resolution * self.forecast_steps
 
         start_date_dt = numpy.datetime64(start_date, "s")
         step = numpy.timedelta64(time_resolution, "h")
         adjusted_start_date = start_date_dt - (self.n_time_inputs - 1) * step
 
-        # Convert end_date to a datetime object and adjust end date
-        if end_date is not None:
-            if "T" not in end_date:
-                end_date += "T23:59:59"
+        if end_date is not None and "T" not in end_date:
+            end_date += "T23:59:59"
 
-        # Store a lazy dataset that contains the requested dates only
-        ds_loader = ds.sel(time=slice(start_date, end_date, self.interval_steps))
-        self.ds_loader = ds_loader
+        # Keep the WeatherBench backend untouched.  Store absolute integer time
+        # indices instead of constructing a multi-decade Xarray slice.
+        all_times = numpy.asarray(ds.time.values)
+        if all_times.ndim != 1 or all_times.size == 0:
+            raise ValueError("WeatherBench time coordinate must be a non-empty 1D array")
+        if numpy.any(all_times[1:] < all_times[:-1]):
+            raise ValueError("WeatherBench time coordinate must be monotonically increasing")
 
-        # The number of time instances in the dataset represents its length
-        self.time = ds_loader.time.values
-        self.length = ds_loader.time.size
+        start_index = int(numpy.searchsorted(all_times, start_date_dt, side="left"))
+        if end_date is None:
+            end_index = all_times.size
+        else:
+            end_index = int(
+                numpy.searchsorted(
+                    all_times,
+                    numpy.datetime64(end_date, "s"),
+                    side="right",
+                )
+            )
 
-        # Make sure dataset starts at the right time
-        # Note it can access all available data after this
-        ds = ds.sel(time=slice(adjusted_start_date, None))
+        self.init_time_indices = numpy.arange(
+            start_index,
+            end_index,
+            self.interval_steps,
+            dtype=numpy.int64,
+        )
+        self.time = all_times[self.init_time_indices]
+        self.length = int(self.init_time_indices.size)
 
-        # Extract latitude and longitude to build the graph
+        history_start_index = int(
+            numpy.searchsorted(all_times, adjusted_start_date, side="left")
+        )
+        if self.length > 0:
+            required_history_index = int(self.init_time_indices[0]) - (self.n_time_inputs - 1)
+            if required_history_index < 0 or history_start_index > required_history_index:
+                raise ValueError(
+                    "Dataset does not contain enough history before the requested start_date "
+                    f"for n_time_inputs={self.n_time_inputs}."
+                )
+
         self.lat = torch.from_numpy(ds.latitude.values.copy())
         self.lon = torch.from_numpy(ds.longitude.values.copy())
         self.lat_size = len(self.lat)
         self.lon_size = len(self.lon)
         self.pressure_levels = features_cfg.pressure_levels
+        self.grid_size = self.lat_size * self.lon_size
 
-        # Store the size of the grid (lat * lon)
-        self.grid_size = ds.latitude.size * ds.longitude.size
-
-        # Setup input and output features based on config
         input_atmospheric = [
             variable + f"_h{level}"
             for variable in features_cfg.input.atmospheric
@@ -159,30 +728,281 @@ class ERA5Dataset(torch.utils.data.Dataset):
             for level in features_cfg.pressure_levels
         ]
 
-        # Update feature counts
-        common_features = list(
-            filter(
-                lambda x: x in input_atmospheric + features_cfg["input"]["surface"],
-                output_atmospheric + features_cfg["output"]["surface"],
-            )
-        )
+        input_features = input_atmospheric + list(features_cfg.input.surface)
+        output_features = output_atmospheric + list(features_cfg.output.surface)
+
+        common_features = [feature for feature in output_features if feature in input_features]
+        output_only_features = [
+            feature for feature in output_features if feature not in input_features
+        ]
+        input_only_features = [
+            feature for feature in input_features if feature not in output_features
+        ]
 
         self.num_common_features = len(common_features)
+        self.dyn_input_features = common_features + input_only_features
+        self.dyn_output_features = common_features + output_only_features
+        self.num_dyn_inputs_single = len(self.dyn_input_features)
 
-        # Constant input variables
-        ds_constants = xarray.open_dataset(
-            os.path.join(root_dir, "constants"), engine="zarr"
-        ).compute()  # Definitely preload constants
+        # Keep only the raw WeatherBench dataset here.  Building a stacked
+        # [time, lat, lon, features] object for the full multi-decade archive
+        # creates a very large Dask graph.  Feature stacking is done only after
+        # slicing the few time steps required by each sample in __getitem__.
+        self.ds = ds
 
-        # Convert lat/lon to radians
-        lat_rad = torch.deg2rad(self.lat).to(self.dtype)
-        lon_rad = torch.deg2rad(self.lon).to(self.dtype)
-        self.lat_rad_grid, self.lon_rad_grid = torch.meshgrid(
-            lat_rad, lon_rad, indexing="ij"
+        self.missing_output_features = [
+            feature
+            for feature in self.dyn_output_features
+            if not _weatherbench_feature_available(ds, feature)
+        ]
+
+        missing_output_set = set(self.missing_output_features)
+        self.missing_output_indices = torch.tensor(
+            [
+                index
+                for index, feature in enumerate(self.dyn_output_features)
+                if feature in missing_output_set
+            ],
+            dtype=torch.long,
         )
 
-        if len(lat_rad) != len(ds_constants.latitude.values):
-            ds_constants = ds_constants.sel(latitude=ds.latitude, longitude=ds.longitude)
+        if self.missing_output_features:
+            print(
+                "Warning: dataset is missing configured output features "
+                f"{self.missing_output_features}. Their target channels will "
+                "be filled with normalized zeros."
+            )
+
+        if self.preload:
+            print(
+                "Warning: preload=True is ignored for the WeatherBench loader to "
+                "avoid materializing the multi-decade dataset in CPU memory."
+            )
+
+        # Keep the exposed initialization-time view without constructing a
+        # feature stack.  Only coordinates/metadata are retained here.
+        self.ds_loader = xarray.Dataset(
+            coords={"time": self.time}
+        )
+
+        self._prepare_constants(ds)
+        self._prepare_normalization(stats)
+
+        # Preserve the old public list behavior when input history is concatenated.
+        if self.concat_input:
+            self.dyn_input_features *= self.n_time_inputs
+
+        self.num_in_dyn_features = (
+            len(self.dyn_input_features)
+            + len(self.forcing_inputs) * self.n_time_inputs
+        )
+        self.num_in_static_features = self.constant_data.shape[-1]
+        self.num_in_features = self.num_in_dyn_features + self.num_in_static_features
+        self.num_out_features = len(self.dyn_output_features)
+
+        self._run_dataset_checks()
+
+        if not cfg.forecast.enable and cfg.training.reports.enable:
+            report_features = list(cfg.training.reports.features)
+            self.report_stats = {
+                "mean": numpy.asarray(
+                    [_mean_std(stats, feature)[0] for feature in report_features]
+                ),
+                "std": numpy.asarray(
+                    [_mean_std(stats, feature)[1] for feature in report_features]
+                ),
+            }
+
+        # Backward compatibility. To be removed
+        self.custom_normalization = False
+
+        self.norm_precip_in = torch.empty(0, dtype=torch.long)
+        self.norm_precip_out = torch.empty(0, dtype=torch.long)
+        self.norm_humidity_in = torch.empty(0, dtype=torch.long)
+        self.norm_humidity_out = torch.empty(0, dtype=torch.long)
+
+        self.norm_zscore_in = torch.arange(
+            self.num_dyn_inputs_single * self.n_time_inputs,
+            dtype=torch.long,
+        )
+
+        self.norm_zscore_out = torch.arange(
+            len(self.dyn_output_features),
+            dtype=torch.long,
+        )
+
+    def __len__(self):
+        return self.length
+
+    def _getitem_standard(self, ind: int):
+        steps = self.forecast_steps
+        init_index = int(self.init_time_indices[ind])
+
+        # Dynamic history ends at initialization time.
+        input_ini = init_index - (self.n_time_inputs - 1)
+        input_end = init_index + 1
+
+        # First target time.
+        output_ini = init_index + 1 + self.prediction_shift
+        output_end = output_ini + steps
+
+        # Forcing history ends at each corresponding target time.
+        #
+        # n_time_inputs = 2:
+        #
+        # dynamic:  [t-6, t]
+        # forcing:  [t, t+6]
+        # target:         t+6
+        forcing_ini = output_ini - (self.n_time_inputs - 1)
+
+        if input_ini < 0 or output_end > self.ds.sizes["time"]:
+            raise IndexError(
+                f"Sample {ind} requires time indices "
+                f"[{input_ini}, {output_end}), "
+                f"but dataset has {self.ds.sizes['time']} times."
+            )
+
+        input_ds = self.ds.isel(
+            time=slice(input_ini, input_end)
+        )
+
+        forcing_ds = self.ds.isel(
+            time=slice(forcing_ini, output_end)
+        )
+
+        output_ds = self.ds.isel(
+            time=slice(output_ini, output_end)
+        )
+
+        input_data, _ = _stack_weatherbench_features(
+            input_ds,
+            self.dyn_input_features[: self.num_dyn_inputs_single],
+            allow_missing=False,
+        )
+
+        true_data, _ = _stack_weatherbench_features(
+            output_ds,
+            self.dyn_output_features,
+            allow_missing=True,
+        )
+
+        x = torch.from_numpy(input_data)
+        if x.dtype != self.dtype:
+            x = x.to(self.dtype)
+
+        if self.n_time_inputs > 1:
+            x = torch.cat(
+                [x[j] for j in range(self.n_time_inputs)],
+                dim=-1,
+            ).unsqueeze(0)
+        else:
+            x = x[0].unsqueeze(0)
+
+        y = torch.from_numpy(true_data)
+        if y.dtype != self.dtype:
+            y = y.to(self.dtype)
+
+        self._apply_normalization(x, y)
+        forcings = self._compute_forcings(forcing_ds, steps)
+
+        x_grid = x.permute(0, 3, 1, 2)
+        y_grid = y.permute(0, 3, 1, 2)
+
+        return (
+            x_grid.float(),
+            y_grid.float(),
+            forcings,
+            self.constant_data[:1],
+        )
+
+
+    def _getitem_prediction(self, ind: int):
+        ind0 = ind
+        steps = self.forecast_steps
+        init_index = int(self.init_time_indices[ind])
+
+        input_ini = init_index - (self.n_time_inputs - 1)
+        input_end = init_index + 1
+
+        # Prediction has no target data, but we still need the
+        # target-time indices to construct future forcings.
+        output_ini = init_index + 1 + self.prediction_shift
+        output_end = output_ini + steps
+
+        forcing_ini = output_ini - (self.n_time_inputs - 1)
+
+        if input_ini < 0 or output_end > self.ds.sizes["time"]:
+            raise IndexError(
+                f"Prediction sample {ind} requires time indices "
+                f"[{input_ini}, {output_end}), "
+                f"but dataset has {self.ds.sizes['time']} times."
+            )
+
+        input_ds = self.ds.isel(
+            time=slice(input_ini, input_end)
+        )
+
+        forcing_ds = self.ds.isel(
+            time=slice(forcing_ini, output_end)
+        )
+
+        input_data, _ = _stack_weatherbench_features(
+            input_ds,
+            self.dyn_input_features[: self.num_dyn_inputs_single],
+            allow_missing=False,
+        )
+
+        x = torch.from_numpy(input_data)
+        if x.dtype != self.dtype:
+            x = x.to(self.dtype)
+
+        if self.n_time_inputs > 1:
+            x = torch.cat(
+                [x[j] for j in range(self.n_time_inputs)],
+                dim=-1,
+            ).unsqueeze(0)
+        else:
+            x = x[0].unsqueeze(0)
+
+        self._apply_normalization(x, None)
+        forcings = self._compute_forcings(forcing_ds, steps)
+
+        x_grid = x.permute(0, 3, 1, 2)
+
+        return (
+            ind0,
+            x_grid.float(),
+            forcings,
+            self.constant_data[:1],
+        )
+
+    def __getitem__(self, ind: int):
+        if self.prediction_stage:
+            return self._getitem_prediction(ind)
+
+        return self._getitem_standard(ind)
+
+    def _prepare_constants(self, ds: xarray.Dataset) -> None:
+        """Load legacy constants Zarr and compute geometric constant channels."""
+        # constants_path = Path(self.root_dir).expanduser() / "constants"
+        # if not constants_path.exists():
+        #     raise FileNotFoundError(
+        #         f"Constants Zarr store does not exist: {constants_path}"
+        #     )
+
+        constants_path = Path(
+            "/home/cap003/site7/datasets/era5_0.25deg_13level_lq/constants"
+        )
+        ds_constants = xarray.open_dataset(constants_path, engine="zarr").compute()
+
+        if "latitude" in ds_constants.coords:
+            ds_constants = ds_constants.assign_coords(
+                latitude=ds_constants.latitude.astype("float64").round(6)
+            )
+        if "longitude" in ds_constants.coords:
+            ds_constants = ds_constants.assign_coords(
+                longitude=ds_constants.longitude.astype("float64").round(6)
+            )
 
         if ds_constants.latitude.values[0] > ds_constants.latitude.values[-1]:
             ds_constants = ds_constants.sortby("latitude")
@@ -190,32 +1010,62 @@ class ERA5Dataset(torch.utils.data.Dataset):
         if ds_constants.longitude.values[0] > ds_constants.longitude.values[-1]:
             ds_constants = ds_constants.sortby("longitude")
 
-        # Use zscore to normalize the following variables
+        # Align the legacy constant grid with the WeatherBench dynamic grid.
+        if (
+            len(ds_constants.latitude) != self.lat_size
+            or len(ds_constants.longitude) != self.lon_size
+            or not numpy.allclose(ds_constants.latitude.values, ds.latitude.values)
+            or not numpy.allclose(ds_constants.longitude.values, ds.longitude.values)
+        ):
+            ds_constants = ds_constants.sel(
+                latitude=ds.latitude,
+                longitude=ds.longitude,
+            )
+
+        lat_rad = torch.deg2rad(self.lat).to(self.dtype)
+        lon_rad = torch.deg2rad(self.lon).to(self.dtype)
+        self.lat_rad_grid, self.lon_rad_grid = torch.meshgrid(
+            lat_rad,
+            lon_rad,
+            indexing="ij",
+        )
+
+        # These are the same file-backed constants normalized by the previous
+        # loader using mean/std attributes stored in the constants Zarr.
         normalize_const_vars = {
             "geopotential_at_surface",
             "slope_of_sub_gridscale_orography",
             "standard_deviation_of_orography",
         }
 
-        # Extract pre-processed constants that require normalization
         pre_constants = []
-        for var in features_cfg.input.constants:
-
-            # Normalize constants and keep in memory
+        for var in self.cfg.features.input.constants:
             if var in normalize_const_vars:
-                array = (
-                    torch.from_numpy(ds_constants[var].data)
-                    - ds_constants[var].attrs["mean"]
-                ) / ds_constants[var].attrs["std"]
+                if var not in ds_constants:
+                    raise KeyError(
+                        f"Configured constant '{var}' is missing from {constants_path}"
+                    )
+                if "mean" not in ds_constants[var].attrs or "std" not in ds_constants[var].attrs:
+                    raise KeyError(
+                        f"Constant '{var}' must contain 'mean' and 'std' attributes "
+                        f"in {constants_path}"
+                    )
 
+                array = (
+                    torch.from_numpy(ds_constants[var].data).to(self.dtype)
+                    - float(ds_constants[var].attrs["mean"])
+                ) / float(ds_constants[var].attrs["std"])
                 pre_constants.append(array)
 
-        # Get land-sea mask (no normalization needed)
-        pre_constants.append(
-            torch.from_numpy(ds_constants["land_sea_mask"].data).to(self.dtype)
-        )
+        if "land_sea_mask" in self.cfg.features.input.constants:
+            if "land_sea_mask" not in ds_constants:
+                raise KeyError(
+                    f"Configured constant 'land_sea_mask' is missing from {constants_path}"
+                )
+            pre_constants.append(
+                torch.from_numpy(ds_constants["land_sea_mask"].data).to(self.dtype)
+            )
 
-        # Include the distance variation of two longitude points along the latitude direction
         self._compute_geometric_constants()
 
         post_constants = []
@@ -227,21 +1077,29 @@ class ERA5Dataset(torch.utils.data.Dataset):
             "latitude",
             "longitude",
         ]:
-            if feature in features_cfg.input.constants:
+            if feature in self.cfg.features.input.constants:
                 if feature == "lon_spacing":
                     post_constants.append(self.d_lon_inv)
-                if feature == "latitude":
+                elif feature == "latitude":
                     post_constants.append(self.lat_rad_grid)
-                if feature == "longitude":
+                elif feature == "longitude":
                     post_constants.append(self.lon_rad_grid)
-                if feature == "cos_latitude":
+                elif feature == "cos_latitude":
                     post_constants.append(torch.cos(self.lat_rad_grid))
-                if feature == "cos_longitude":
+                elif feature == "cos_longitude":
                     post_constants.append(torch.cos(self.lon_rad_grid))
-                if feature == "sin_longitude":
+                elif feature == "sin_longitude":
                     post_constants.append(torch.sin(self.lon_rad_grid))
 
-        # Stack all constant features together
+        actual_total = len(pre_constants) + len(post_constants)
+        expected_total = len(self.cfg.features.input.constants)
+        if actual_total != expected_total:
+            raise ValueError(
+                f"Constant count mismatch: expected {expected_total} constants from "
+                f"configuration, but built {actual_total} ({len(pre_constants)} file-backed, "
+                f"{len(post_constants)} computed)."
+            )
+
         self.constant_data = (
             torch.stack([*pre_constants, *post_constants])
             .permute(1, 2, 0)
@@ -250,346 +1108,168 @@ class ERA5Dataset(torch.utils.data.Dataset):
             .expand(self.forecast_steps, -1, -1, -1)
         )
 
-        # Check that constants have been added properly
-        actual_total = len(pre_constants) + len(post_constants)
-        expected_total = len(features_cfg.input.constants)
-
-        if actual_total != expected_total:
-            raise ValueError(
-                f"Constant count mismatch: expected {expected_total} total constants from configuration, "
-                f"but found {actual_total} (Pre: {len(pre_constants)}, Post: {len(post_constants)})."
-            )
-
-        # Store these for access in forecaster
         self.ds_constants = ds_constants
 
-        # Order them so that common features are placed first
-        input_features = input_atmospheric + list(features_cfg.input.surface)
-        output_features = output_atmospheric + list(features_cfg.output.surface)
+    def _prepare_normalization(self, stats: dict) -> None:
+        """Prepare standard z-score statistics for all dynamic channels."""
+        input_pairs = [_mean_std(stats, feature) for feature in self.dyn_input_features]
+        output_pairs = [_mean_std(stats, feature) for feature in self.dyn_output_features]
 
-        common_features = [f for f in output_features if f in input_features]
-
-        output_only_features = [f for f in output_features if f not in input_features]
-        input_only_features = [f for f in input_features if f not in output_features]
-
-        self.dyn_input_features = common_features + input_only_features
-        self.dyn_output_features = common_features + output_only_features
-
-        # Store the number of dynamic features without concatenation
-        self.num_dyn_inputs_single = len(self.dyn_input_features)
-
-        # Inputs must exist because they are required by the model.
-        ds_input = ds.sel(features=self.dyn_input_features)
-
-        ds_output = ds.sel(features=self.dyn_output_features)
-
-        self.ds_loader = self.ds_loader.sel(features=self.dyn_input_features)
-        self.ds_loader = self.ds_loader.transpose("time", "latitude", "longitude", "features")
-
-        # Pre-select the features in the right order
-        if self.preload:
-            ds_input = ds_input.compute()
-            ds_output = ds_output.compute()
-
-        # Concatenate dynamic input features as many times as needed
-        if self.concat_input:
-            self.dyn_input_features *= self.n_time_inputs
-
-        # Fetch data
-        self.ds_input = ds_input["data"].transpose("time", "latitude", "longitude", "features")
-        self.ds_output = ds_output["data"].transpose("time", "latitude", "longitude", "features")
-
-        # Get the indices to apply custom normalizations
-        self._prepare_normalization(ds_input, ds_output)
-
-        # Calculate the final number of input and output features after preparation
-        # Number of dynamic inputs
-        self.num_in_dyn_features = (
-            len(self.dyn_input_features) + len(self.forcing_inputs) * self.n_time_inputs
+        input_mean_single = torch.tensor(
+            [pair[0] for pair in input_pairs],
+            dtype=self.dtype,
+        )
+        input_std_single = torch.tensor(
+            [pair[1] for pair in input_pairs],
+            dtype=self.dtype,
         )
 
-        # Number of static features
-        self.num_in_static_features = self.constant_data.shape[-1]
+        self.input_mean = input_mean_single.repeat(self.n_time_inputs)
+        self.input_std = input_std_single.repeat(self.n_time_inputs)
+        self.output_mean = torch.tensor(
+            [pair[0] for pair in output_pairs],
+            dtype=self.dtype,
+        )
+        self.output_std = torch.tensor(
+            [pair[1] for pair in output_pairs],
+            dtype=self.dtype,
+        )
 
-        # Number of total inputs
-        self.num_in_features = self.num_in_dyn_features + self.num_in_static_features
+        all_features = set(self.dyn_input_features + self.dyn_output_features)
+        self.var_stats = {
+            feature: {
+                "mean": _mean_std(stats, feature)[0],
+                "std": _mean_std(stats, feature)[1],
+            }
+            for feature in all_features
+        }
 
-        # Number of total outputs
-        self.num_out_features = len(self.dyn_output_features)
+        if "toa_incident_solar_radiation" in self.forcing_inputs:
+            toa_entry = _find_stats(
+                stats,
+                "toa_incident_solar_radiation",
+                required=False,
+            )
+            if toa_entry is not None:
+                self.toa_rad_mean, self.toa_rad_std = _mean_std(
+                    stats,
+                    "toa_incident_solar_radiation",
+                )
+            elif (
+                "toa_radiation_mean" in stats
+                and "toa_radiation_std" in stats
+            ):
+                self.toa_rad_mean = float(stats["toa_radiation_mean"])
+                self.toa_rad_std = float(stats["toa_radiation_std"])
+                if not numpy.isfinite(self.toa_rad_std) or self.toa_rad_std <= 0.0:
+                    raise ValueError(
+                        "toa_radiation_std in statistics JSON must be positive"
+                    )
+            else:
+                raise KeyError(
+                    "Statistics JSON must contain mean/std for "
+                    "'toa_incident_solar_radiation' (for example under "
+                    "'forcings') or top-level toa_radiation_mean/toa_radiation_std."
+                )
+        else:
+            self.toa_rad_mean = 0.0
+            self.toa_rad_std = 1.0
 
-        # Ensure dataset configuration is well-aligned with requirements
-        self._run_dataset_checks()
-
-        # Store the mean and standard deviation of quantities to be reported
-        if not cfg.forecast.enable and cfg.training.reports.enable:
-            report_features = ds_output.sel(features=cfg.training.reports.features)
-            self.report_stats = {
-                "mean": report_features["mean"].values,
-                "std": report_features["std"].values,
+        # Keep tendency statistics in the same legacy Zarr store as before.
+        tendency_stats_path = Path(self.root_dir).expanduser() / "tendency_stats_6h"
+        if tendency_stats_path.exists():
+            ds_tendency = xarray.open_dataset(tendency_stats_path, engine="zarr")
+            tendency_lookup = {
+                name: float(value)
+                for name, value in zip(
+                    ds_tendency.features.values,
+                    ds_tendency["tendency_std"].values,
+                )
             }
 
+            tendency_values = []
+            missing_tendency = []
+            for feature in self.dyn_output_features:
+                if feature in tendency_lookup:
+                    tendency_values.append(tendency_lookup[feature])
+                else:
+                    tendency_values.append(1.0)
+                    missing_tendency.append(feature)
 
-    def __len__(self):
-        # Do not yield a value for the last time in the dataset since there
-        # is no future data
-        return self.length
+            if missing_tendency:
+                print(
+                    "Warning: missing tendency stds for output features "
+                    f"{missing_tendency}; using 1.0 for those channels."
+                )
 
-    def _getitem_standard(self, ind: int):
-        ind = ind * self.interval_steps
+            self.output_tendency_std = torch.tensor(
+                tendency_values,
+                dtype=self.dtype,
+            )
+        else:
+            self.output_tendency_std = None
+            print(
+                f"Warning: no tendency stats found at {tendency_stats_path}. "
+                "Variance-normalized loss will not be available."
+            )
 
-        # Retrieve the current value of forecast steps
-        steps = self.forecast_steps
+    def get_raw_input_data(self, times) -> numpy.ndarray:
+        """
+        Return unnormalized dynamic input fields at initialization times.
 
-        # Extract values from the requested indices
-        input_ini = ind
-        input_end = input_ini + self.n_time_inputs
-        input_data = self.ds_input.isel(time=slice(input_ini, input_end))
+        Shape:
+            [time, latitude, longitude, features]
 
-        input_end = input_ini + steps + self.n_time_inputs - 1
-        forcing_ds = self.ds_input.isel(time=slice(input_ini, input_end))
+        Only the current-time state is returned, not concatenated history.
+        """
+        times = numpy.asarray(times)
 
-        output_ini = input_ini + self.n_time_inputs + self.prediction_shift
-        output_end = ind + steps + self.n_time_inputs + self.prediction_shift
+        all_times = numpy.asarray(self.ds.time.values)
+        indices = numpy.searchsorted(all_times, times)
 
-        true_data = self.ds_output.isel(time=slice(output_ini, output_end))
+        if numpy.any(indices >= len(all_times)):
+            raise KeyError("Requested initialization time is outside the dataset")
 
-        # Load arrays into CPU memory
-        input_data, true_data = dask.compute(
-            input_data, true_data, scheduler="synchronous", traverse=False
+        if not numpy.all(all_times[indices] == times):
+            missing = times[all_times[indices] != times]
+            raise KeyError(
+                f"Initialization times not found in dataset: {missing}"
+            )
+
+        ds = self.ds.isel(time=indices)
+
+        data, _ = _stack_weatherbench_features(
+            ds,
+            self.dyn_input_features[: self.num_dyn_inputs_single],
+            allow_missing=False,
         )
 
-        # Convert to tensors - data comes in [time, lat, lon, features]
-        x = torch.tensor(input_data.data, dtype=self.dtype)
-
-        # Concatenate n_time_inputs if requested
-        if self.n_time_inputs > 1:
-            x = torch.cat([x[j] for j in range(self.n_time_inputs)], dim=-1).unsqueeze(0)
-        else:
-            x = x.unsqueeze(0)
-
-        y = torch.tensor(true_data.data, dtype=self.dtype)
-
-        # Apply normalizations
-        self._apply_normalization(x, y)
-
-        # Compute forcings
-        forcings = self._compute_forcings(forcing_ds, steps)
-
-        # Permute to [time, channels, latitude, longitude] format
-        x_grid = x.permute(0, 3, 1, 2)
-        y_grid = y.permute(0, 3, 1, 2)
-
-        return x_grid.float(), y_grid.float(), forcings, self.constant_data[:1]
-
-    def _getitem_prediction(self, ind: int):
-        ind0 = ind
-        ind = ind * self.interval_steps
-
-        # Retrieve the current value of forecast steps
-        steps = self.forecast_steps
-
-        # Extract values from the requested indices
-        input_ini = ind
-        input_end = input_ini + self.n_time_inputs
-        input_data = self.ds_input.isel(time=slice(input_ini, input_end))
-
-        input_end = input_ini + steps + self.n_time_inputs - 1
-        forcing_ds = self.ds_input.isel(time=slice(input_ini, input_end))
-
-        # Load arrays into CPU memory
-        # input_data = dask.compute(input_data, scheduler="synchronous", traverse=False)
-        (input_data,) = dask.compute(
-            input_data, scheduler="synchronous", traverse=False
-        )
-
-        # Convert to tensors - data comes in [time, lat, lon, features]
-        x = torch.tensor(input_data.data, dtype=self.dtype)
-
-        # Concatenate n_time_inputs if requested
-        if self.n_time_inputs > 1:
-            x = torch.cat([x[j] for j in range(self.n_time_inputs)], dim=-1).unsqueeze(0)
-        else:
-            x = x.unsqueeze(0)
-
-        # Apply normalizations
-        self._apply_normalization(x, None)
-
-        # Compute forcings
-        forcings = self._compute_forcings(forcing_ds, steps)
-
-        # Permute to [time, channels, latitude, longitude] format
-        x_grid = x.permute(0, 3, 1, 2)
-
-        return ind0, x_grid.float(), forcings, self.constant_data[:1]
-
-    def __getitem__(self, ind: int):
-        if self.prediction_stage:
-            return self._getitem_prediction(ind)
-        return self._getitem_standard(ind)
-
-    def _run_dataset_checks(self):
-        # Make sure latitude and longitude are in input file
-        assert (
-            self.cfg.features.input.constants[-2] == "latitude"
-        ), "Latitude must be the second-to-last feature in constants!"
-
-        assert (
-            self.cfg.features.input.constants[-1] == "longitude"
-        ), "Longitude must be the last feature in constants!"
-
-    def _prepare_normalization(
-        self, ds_input: xarray.Dataset, ds_output: xarray.Dataset
-    ) -> None:
-        """
-        Prepare indices and statistics for normalization in a vectorized fashion.
-
-        This method identifies indices for specific types of features
-        (e.g., precipitation, humidity, and others) for both input and output
-        datasets, converts them into PyTorch tensors, and retrieves
-        mean and standard deviation values for z-score normalization.
-
-        Parameters:
-            ds_input: xarray.Dataset
-                Input dataset containing mean and standard deviation values.
-            ds_output: xarray.Dataset
-                Output dataset containing mean and standard deviation values.
-        """
-
-        # Initialize lists to store indices for each feature type
-        self.norm_precip_in = []
-        self.norm_humidity_in = []
-        self.norm_zscore_in = []
-
-        self.norm_precip_out = []
-        self.norm_humidity_out = []
-        self.norm_zscore_out = []
-
-        # Process dynamic input features
-        for i, feature in enumerate(self.dyn_input_features):
-            feature_name = re.sub(
-                r"_h\d+$", "", feature
-            )  # Remove height suffix (e.g., "_h10")
-            if feature_name == "total_precipitation_6hr" and self.custom_normalization:
-                self.norm_precip_in.append(i)
-            elif feature_name == "specific_humidity" and self.custom_normalization:
-                self.norm_humidity_in.append(i)
-            else:
-                self.norm_zscore_in.append(i)
-
-        # Process dynamic output features
-        for i, feature in enumerate(self.dyn_output_features):
-            feature_name = re.sub(
-                r"_h\d+$", "", feature
-            )  # Remove height suffix (e.g., "_h10")
-            if feature_name == "total_precipitation_6hr" and self.custom_normalization:
-                self.norm_precip_out.append(i)
-            elif feature_name == "specific_humidity" and self.custom_normalization:
-                self.norm_humidity_out.append(i)
-            else:
-                self.norm_zscore_out.append(i)
-
-        # Convert lists of indices to PyTorch tensors for efficient indexing
-        if self.custom_normalization:
-            self.norm_precip_in = torch.tensor(self.norm_precip_in, dtype=torch.long)
-            self.norm_precip_out = torch.tensor(self.norm_precip_out, dtype=torch.long)
-            self.norm_humidity_in = torch.tensor(
-                self.norm_humidity_in, dtype=torch.long
-            )
-            self.norm_humidity_out = torch.tensor(
-                self.norm_humidity_out, dtype=torch.long
-            )
-        self.norm_zscore_in = torch.tensor(self.norm_zscore_in, dtype=torch.long)
-        self.norm_zscore_out = torch.tensor(self.norm_zscore_out, dtype=torch.long)
-
-        # Retrieve mean and standard deviation values for z-score normalization
-        self.input_mean = torch.tensor(ds_input["mean"].data, dtype=self.dtype)
-        self.input_std = torch.tensor(ds_input["std"].data, dtype=self.dtype)
-        self.input_max = torch.tensor(ds_input["max"].data, dtype=self.dtype)
-        self.input_min = torch.tensor(ds_input["min"].data, dtype=self.dtype)
-
-        self.output_mean = torch.tensor(ds_output["mean"].data, dtype=self.dtype)
-        self.output_std = torch.tensor(ds_output["std"].data, dtype=self.dtype)
-        self.output_max = torch.tensor(ds_output["max"].data, dtype=self.dtype)
-        self.output_min = torch.tensor(ds_output["min"].data, dtype=self.dtype)
-
-        # Keep only statistics of variables that require standard normalization
-        self.input_mean = self.input_mean[
-            self.norm_zscore_in % self.num_dyn_inputs_single
-        ]
-        self.input_std = self.input_std[
-            self.norm_zscore_in % self.num_dyn_inputs_single
-        ]
-        self.output_mean = self.output_mean[self.norm_zscore_out]
-        self.output_std = self.output_std[self.norm_zscore_out]
-
-        # Prepare variables required in custom normalization
-        if self.custom_normalization:
-
-            if len(self.norm_humidity_in) > 0:
-                # Maximum and minimum specific humidity in dataset
-                self.q_max = torch.max(
-                    self.input_max[self.norm_humidity_in % self.num_dyn_inputs_single]
-                ).detach()
-                self.q_min = torch.min(
-                    self.input_min[self.norm_humidity_in % self.num_dyn_inputs_single]
-                ).detach()
-                if self.q_min < self.eps:
-                    self.q_min = torch.tensor(self.eps).detach()
-            else:
-                self.q_max = torch.tensor(0.0).detach()
-                self.q_min = torch.tensor(self.eps).detach()
-
-        # Extract the toa_radiation mean and std
-        self.toa_rad_std = ds_input.attrs["toa_radiation_std"]
-        self.toa_rad_mean = ds_input.attrs["toa_radiation_mean"]
-
+        return data
 
     def _apply_normalization(
-        self, input_data: torch.Tensor, output_data: torch.Tensor = None
+        self,
+        input_data: torch.Tensor,
+        output_data: torch.Tensor = None,
     ) -> None:
-
-        # Apply custom normalizations to input
-        if self.custom_normalization:
-            input_data[..., self.norm_precip_in] = normalize_precipitation(
-                input_data[..., self.norm_precip_in]
-            )
-            input_data[..., self.norm_humidity_in] = normalize_humidity(
-                input_data[..., self.norm_humidity_in], self.q_min, self.q_max, self.eps
-            )
-
-            if output_data is not None:
-                # Apply custom normalizations to output
-                output_data[..., self.norm_precip_out] = normalize_precipitation(
-                    output_data[..., self.norm_precip_out]
-                )
-                output_data[..., self.norm_humidity_out] = normalize_humidity(
-                    output_data[..., self.norm_humidity_out],
-                    self.q_min,
-                    self.q_max,
-                    self.eps,
-                )
-
-        # Apply standard normalizations to input and output
-        input_data[..., self.norm_zscore_in] = normalize_standard(
-            input_data[..., self.norm_zscore_in],
-            self.input_mean,
-            self.input_std,
-        )
+        """Apply standard z-score normalization to every dynamic channel."""
+        input_data.sub_(self.input_mean).div_(self.input_std)
 
         if output_data is not None:
-            output_data[..., self.norm_zscore_out] = normalize_standard(
-                output_data[..., self.norm_zscore_out],
-                self.output_mean,
-                self.output_std,
-            )
+            output_data.sub_(self.output_mean).div_(self.output_std)
 
+            if self.missing_output_indices.numel() > 0:
+                output_data[..., self.missing_output_indices] = 0.0
 
-    def _compute_forcings(self, input_data: xarray.Dataset, steps: int) -> torch.Tensor:
-        """Computes forcing parameters based in input_data array"""
-
+    def _compute_forcings(
+        self,
+        input_data: xarray.Dataset | xarray.DataArray,
+        steps: int,
+    ) -> torch.Tensor | None:
+        """Compute forcing parameters from the sample times."""
         forcings_time_ds = time_forcings(input_data["time"].values)
 
         forcings = []
+
         for var in self.forcing_inputs:
             if var == "toa_incident_solar_radiation":
                 toa_rad = toa_radiation(
@@ -603,39 +1283,65 @@ class ERA5Dataset(torch.utils.data.Dataset):
                     dtype=self.dtype,
                 )
                 toa_rad = toa_rad.unfold(0, self.n_time_inputs, 1)
-
                 forcings.append(toa_rad)
-            else:
-                # Get the time forcings
-                if var in forcings_time_ds:
-                    var_ds = forcings_time_ds[var]
-                    var_forcing = torch.tensor(var_ds.data, dtype=self.dtype)
-                    var_forcing = (
-                        var_forcing.unfold(0, self.n_time_inputs, 1)
-                        .view(steps, 1, 1, self.n_time_inputs)
-                        .expand(steps, self.lat_size, self.lon_size, self.n_time_inputs)
+
+            elif var in forcings_time_ds:
+                var_ds = forcings_time_ds[var]
+                var_forcing = torch.tensor(var_ds.data, dtype=self.dtype)
+                var_forcing = (
+                    var_forcing.unfold(0, self.n_time_inputs, 1)
+                    .view(steps, 1, 1, self.n_time_inputs)
+                    .expand(
+                        steps,
+                        self.lat_size,
+                        self.lon_size,
+                        self.n_time_inputs,
                     )
+                )
+                forcings.append(var_forcing)
 
-                    forcings.append(var_forcing)
-
-        if len(forcings) > 0:
+        if forcings:
             return torch.cat(forcings, dim=-1)
-        return
 
-    def _compute_geometric_constants(self):
-        # Approximate distances using Haversine formula
-        # This can be later improved for better approximation close to the poles
-        R = 6371  # Average earth radius in km
+        return None
 
-        # Compute distance between latitude points
+    def _compute_geometric_constants(self) -> None:
+        """Compute the normalized inverse zonal grid spacing."""
+        earth_radius_km = 6371
         dlon = torch.diff(torch.deg2rad(self.lon))[0]
+
         distance_lon_inv = 1.0 / (
             2
-            * torch.arcsin(torch.cos(self.lat_rad_grid) ** 2 * torch.sin(dlon / 2))
-            * R
+            * torch.arcsin(
+                torch.cos(self.lat_rad_grid) ** 2 * torch.sin(dlon / 2)
+            )
+            * earth_radius_km
         )
 
-        # Normalize using z-score
         distance_lon_mean = torch.mean(distance_lon_inv)
         distance_lon_std = torch.std(distance_lon_inv)
-        self.d_lon_inv = (distance_lon_inv - distance_lon_mean) / distance_lon_std
+        self.d_lon_inv = (
+            distance_lon_inv - distance_lon_mean
+        ) / distance_lon_std
+
+    def _run_dataset_checks(self) -> None:
+        """Check assumptions required by the model."""
+        has_poles = torch.any(
+            torch.isclose(
+                torch.abs(self.lat_rad_grid),
+                torch.tensor(
+                    torch.pi / 2,
+                    dtype=self.lat_rad_grid.dtype,
+                    device=self.lat_rad_grid.device,
+                ),
+            )
+        )
+        # assert not has_poles, "Grid with poles unsupported!"
+
+        assert (
+            self.cfg.features.input.constants[-2] == "latitude"
+        ), "Latitude must be the second-to-last feature in constants!"
+
+        assert (
+            self.cfg.features.input.constants[-1] == "longitude"
+        ), "Longitude must be the last feature in constants!"

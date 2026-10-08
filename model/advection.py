@@ -5,7 +5,13 @@ from model.padding import GeoCyclicPadding
 
 
 class NeuralSemiLagrangian(torch.nn.Module):
-    """Neural semi-Lagrangian advection operator."""
+    """Neural semi-Lagrangian advection operator.
+
+    Under latitude-band parallelism, the learned projection is computed on each
+    local band.  The projected source field is then gathered inside the spatial
+    group because semi-Lagrangian departure points can cross an arbitrary number
+    of bands.  Each rank samples only its own destination band.
+    """
 
     def __init__(
         self,
@@ -16,22 +22,22 @@ class NeuralSemiLagrangian(torch.nn.Module):
         lat_grid: torch.Tensor,
         lon_grid: torch.Tensor,
         interpolation: str = "bicubic",
+        spatial_context=None,
     ):
         super().__init__()
 
-        self.padding = 1
-        if interpolation == "bicubic":
-            self.padding = 2
-
+        self.padding = 2 if interpolation == "bicubic" else 1
+        # The interpolation source is gathered to the complete global grid, so
+        # its interpolation padding is the ordinary non-distributed padding.
         self.padding_interp = GeoCyclicPadding(self.padding)
         self.hidden_dim = hidden_dim
         self.num_vels = num_vels
         self.mesh_size = mesh_size
+        self.spatial_context = spatial_context
 
         adv_cfg = cfg.model.physblock.advection
         down_proj_layers = adv_cfg.down_projection.layers
         up_proj_layers = adv_cfg.up_projection.layers
-
         down_proj_ldim = adv_cfg.down_projection.hidden_dim
         up_proj_ldim = adv_cfg.up_projection.hidden_dim
 
@@ -41,6 +47,7 @@ class NeuralSemiLagrangian(torch.nn.Module):
             output_dim=num_vels,
             mesh_size=mesh_size,
             hidden_dim=down_proj_ldim,
+            spatial_context=spatial_context,
         )
 
         self.up_projection = GMBlock(
@@ -49,17 +56,21 @@ class NeuralSemiLagrangian(torch.nn.Module):
             output_dim=hidden_dim,
             mesh_size=mesh_size,
             hidden_dim=up_proj_ldim,
+            spatial_context=spatial_context,
         )
 
         self.interpolation = interpolation
 
         H, W = mesh_size
-
         self.register_buffer(
-            "lat_grid", lat_grid.unsqueeze(0).unsqueeze(0).contiguous().clone(), persistent=False,
+            "lat_grid",
+            lat_grid.unsqueeze(0).unsqueeze(0).contiguous().clone(),
+            persistent=False,
         )
         self.register_buffer(
-            "lon_grid", lon_grid.unsqueeze(0).unsqueeze(0).contiguous().clone(), persistent=False,
+            "lon_grid",
+            lon_grid.unsqueeze(0).unsqueeze(0).contiguous().clone(),
+            persistent=False,
         )
 
         self.register_buffer("Hf", torch.tensor(float(H)), persistent=False)
@@ -78,7 +89,6 @@ class NeuralSemiLagrangian(torch.nn.Module):
         lat_p: torch.Tensor,
         lon_p: torch.Tensor,
     ) -> tuple:
-        """Transform from local rotated coordinates back to standard latlon coordinates."""
         sin_lat_prime = torch.sin(lat_prime)
         cos_lat_prime = torch.cos(lat_prime)
         sin_lon_prime = torch.sin(lon_prime)
@@ -86,32 +96,53 @@ class NeuralSemiLagrangian(torch.nn.Module):
         sin_lat_p = torch.sin(lat_p)
         cos_lat_p = torch.cos(lat_p)
 
-        sin_lat = sin_lat_prime * cos_lat_p + cos_lat_prime * cos_lon_prime * sin_lat_p
+        sin_lat = (
+            sin_lat_prime * cos_lat_p
+            + cos_lat_prime * cos_lon_prime * sin_lat_p
+        )
         lat = torch.arcsin(torch.clamp(sin_lat, -1 + 1e-7, 1 - 1e-7))
 
         num = cos_lat_prime * sin_lon_prime
-        den = cos_lat_prime * cos_lon_prime * cos_lat_p - sin_lat_prime * sin_lat_p
+        den = (
+            cos_lat_prime * cos_lon_prime * cos_lat_p
+            - sin_lat_prime * sin_lat_p
+        )
         lon = lon_p + torch.atan2(num, den)
-
         lon = torch.remainder(lon + 2 * torch.pi, 2 * torch.pi)
-
         return lat, lon
 
-    def enforce_pole_continuity(self, x):
-        """
-        Forces the South Pole (row 0) and North Pole (row -1) to have
-        a single scalar value (mean of the row).
-        """
-        # Calculate global mean for South Pole (Row 0)
-        # x: [B, C, H, W]
-        south_mean = x[:, :, 0:1, :].mean(dim=3, keepdim=True)
-        north_mean = x[:, :, -1:, :].mean(dim=3, keepdim=True)
+    def enforce_pole_continuity(self, x: torch.Tensor) -> torch.Tensor:
+        """Give each global pole row one value shared by all longitudes."""
+        H = self.mesh_size[0]
+        if self.spatial_context is None or not self.spatial_context.enabled:
+            south = True
+            north = True
+        elif x.shape[-2] == H:
+            # Gathered global source field.
+            south = True
+            north = True
+        else:
+            south = self.spatial_context.spatial_rank == 0
+            north = self.spatial_context.spatial_rank == self.spatial_context.spatial_size - 1
 
-        # Overwrite the pole rows with the broadcasted mean
+        if not south and not north:
+            return x
+
         x_fixed = x.clone()
-        x_fixed[:, :, 0, :] = south_mean.squeeze(-1)
-        x_fixed[:, :, -1, :] = north_mean.squeeze(-1)
+        if south:
+            south_mean = x[:, :, 0:1, :].mean(dim=3, keepdim=True)
+            x_fixed[:, :, 0, :] = south_mean.squeeze(-1)
+        if north:
+            north_mean = x[:, :, -1:, :].mean(dim=3, keepdim=True)
+            x_fixed[:, :, -1, :] = north_mean.squeeze(-1)
         return x_fixed
+
+    def _local_geometry(self):
+        H = self.mesh_size[0]
+        if self.spatial_context is None or not self.spatial_context.enabled:
+            return self.lat_grid, self.lon_grid
+        start, end = self.spatial_context.lat_range(H)
+        return self.lat_grid[..., start:end, :], self.lon_grid[..., start:end, :]
 
     def forward(
         self,
@@ -120,19 +151,25 @@ class NeuralSemiLagrangian(torch.nn.Module):
         v: torch.Tensor,
         dt: float,
     ) -> torch.Tensor:
-        """Compute advection using rotated coordinate system."""
         batch_size = hidden_features.shape[0]
         H, W = self.mesh_size
+        H_local = hidden_features.shape[-2]
 
         projected_inputs = self.down_projection(hidden_features)
+
+        if self.spatial_context is not None and self.spatial_context.enabled:
+            projected_inputs = self.spatial_context.gather_latitude(
+                projected_inputs, H
+            )
 
         projected_inputs = self.enforce_pole_continuity(projected_inputs)
 
         lon_prime = -u * dt
         lat_prime = -v * dt
+        lat_grid, lon_grid = self._local_geometry()
 
         lat_dep, lon_dep = self._transform_to_latlon(
-            lat_prime, lon_prime, self.lat_grid, self.lon_grid
+            lat_prime, lon_prime, lat_grid, lon_grid
         )
 
         pix_x = (lon_dep - self.min_lon) / self.d_lon * (self.Wf - 1.0)
@@ -149,9 +186,8 @@ class NeuralSemiLagrangian(torch.nn.Module):
         grid_x = 2.0 * (pix_x_pad / float(W_pad - 1)) - 1.0
         grid_y = 2.0 * (pix_y_pad / float(H_pad - 1)) - 1.0
 
-        grid_x = grid_x.reshape(batch_size * self.num_vels, H, W)
-        grid_y = grid_y.reshape(batch_size * self.num_vels, H, W)
-
+        grid_x = grid_x.reshape(batch_size * self.num_vels, H_local, W)
+        grid_y = grid_y.reshape(batch_size * self.num_vels, H_local, W)
         grid = torch.stack([grid_x, grid_y], dim=-1)
 
         projected_padded = projected_padded.reshape(
@@ -165,11 +201,9 @@ class NeuralSemiLagrangian(torch.nn.Module):
             mode=self.interpolation,
             padding_mode="zeros",
         )
-
         interpolated = self.enforce_pole_continuity(interpolated)
 
         interpolated = self.up_projection(
-            interpolated.reshape(batch_size, self.num_vels, H, W)
+            interpolated.reshape(batch_size, self.num_vels, H_local, W)
         )
-
         return interpolated

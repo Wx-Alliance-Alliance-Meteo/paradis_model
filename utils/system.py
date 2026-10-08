@@ -21,6 +21,19 @@ def setup_system(cfg: DictConfig):
     else:
         torch.set_float32_matmul_precision("high")
 
+    # Validate the hybrid DDP + spatial-parallel topology before launching.
+    sp_cfg = cfg.compute.get("spatial_parallel", {})
+    if bool(sp_cfg.get("enabled", False)):
+        spatial_size = int(sp_cfg.get("size", 1))
+        total_devices = int(cfg.compute.num_nodes) * int(cfg.compute.num_devices)
+        if spatial_size < 1:
+            raise ValueError("compute.spatial_parallel.size must be >= 1")
+        if total_devices % spatial_size != 0:
+            raise ValueError(
+                f"Configured devices ({total_devices}) must be divisible by "
+                f"spatial_parallel.size ({spatial_size})."
+            )
+
     # Make sure number of steps or epochs is defined
     if not cfg.forecast.enable:
         assert not (
@@ -33,14 +46,15 @@ def setup_system(cfg: DictConfig):
 
 @rank_zero_only
 def _check_log_dir(cfg: DictConfig):
-    experiment_name = cfg.training.get("experiment_name", None)
-    if experiment_name:
-        exp_dir = os.path.join(cfg.training.log_dir, "lightning_logs", experiment_name)
-        if os.path.exists(exp_dir):
-            raise RuntimeError(
-                f"Experiment directory already exists: {exp_dir}\n"
-                f"Please choose a different experiment_name or delete the existing directory."
-            )
+    pass
+    # experiment_name = cfg.training.get("experiment_name", None)
+    # if experiment_name:
+    #     exp_dir = os.path.join(cfg.training.log_dir, "lightning_logs", experiment_name)
+    #     if os.path.exists(exp_dir):
+    #         raise RuntimeError(
+    #             f"Experiment directory already exists: {exp_dir}\n"
+    #             f"Please choose a different experiment_name or delete the existing directory."
+    #         )
 
 
 @rank_zero_only

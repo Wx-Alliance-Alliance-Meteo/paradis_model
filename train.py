@@ -40,13 +40,18 @@ def main(cfg: DictConfig):
         version=cfg.training.get("experiment_name", None),
     )
 
-    # Instantiate lightning trainer with options
+    # Instantiate lightning trainer with options. With spatial parallelism,
+    # the datamodule supplies a grouped DistributedSampler so ranks in one
+    # spatial group see the same sample.
+    spatial_enabled = bool(cfg.compute.get("spatial_parallel", {}).get("enabled", False))
+    total_devices = cfg.compute.num_devices * cfg.compute.num_nodes
+
     trainer = L.Trainer(
         default_root_dir=cfg.training.log_dir,
         accelerator=cfg.compute.accelerator,
         devices=cfg.compute.num_devices,
         num_nodes=cfg.compute.num_nodes,
-        strategy="auto" if cfg.compute.num_devices == 1 else "ddp",
+        strategy="auto" if total_devices == 1 else "ddp",
         max_epochs=cfg.training.max_epochs,
         max_steps=cfg.training.max_steps,
         gradient_clip_val=cfg.training.gradient_clip_val,
@@ -62,6 +67,7 @@ def main(cfg: DictConfig):
         enable_checkpointing=cfg.training.checkpointing.enabled,
         num_sanity_val_steps=0,
         accumulate_grad_batches=1, # This must be set to one here for manual optimization, but taken care of in trainer.py
+        use_distributed_sampler=not spatial_enabled,
     )
 
     # Keep track of configuration parameters in logging directory

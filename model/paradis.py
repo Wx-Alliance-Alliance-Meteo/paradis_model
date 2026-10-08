@@ -4,10 +4,11 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-
 from model.advection import NeuralSemiLagrangian
 from model.blocks import GMBlock, PhysicalDownsample, SepConv
 from model.padding import GeoCyclicPadding
+from utils.spatial_parallel import SpatialParallelContext
+from torch.cuda import nvtx
 
 
 def get_scaled_timestep(original_timestep_seconds: float) -> float:
@@ -29,27 +30,25 @@ def _get_activation_cls(name: str) -> type[nn.Module]:
 
 
 class Paradis(nn.Module):
-    """Paradis model adapted for shallow water equations."""
+    """PARADIS model with optional latitude-band spatial parallelism."""
 
     def __init__(self, datamodule, cfg, lat_grid, lon_grid):
         super().__init__()
 
         self.nlat = lat_grid.shape[0]
         self.nlon = lat_grid.shape[1]
-
         mesh_size = (self.nlat, self.nlon)
 
+        self.spatial = SpatialParallelContext(cfg)
+
         hidden_dim = cfg.model.get("latent_size")
-
         self.num_vels = cfg.model.get("velocity_vectors")
-
         adv_interpolation = cfg.model.get("adv_interpolation")
         bias_channels = cfg.model.get("bias_channels", 4)
 
         self.num_layers = max(1, cfg.model.num_layers)
         self.dt = get_scaled_timestep(cfg.model.get("base_dt")) / self.num_layers
 
-        # Input projection
         self.activation_function = _get_activation_cls(cfg.model.activation)
 
         input_dim = (
@@ -59,11 +58,8 @@ class Paradis(nn.Module):
         self.num_common_features = datamodule.num_common_features
         self.n_inputs = cfg.dataset.n_time_inputs
 
-        # Wrapper for gradient checkpointing
         self.step_fn = self._layer_step
         self.gradient_checkpoint = cfg.compute.get("gradient_checkpointing", False)
-
-
         if self.gradient_checkpoint:
             self.step_fn = lambda i, h, hs: checkpoint(
                 self._layer_step, i, h, hs, use_reentrant=False
@@ -85,6 +81,7 @@ class Paradis(nn.Module):
         stride = cfg.model.get("coarsening_factor", 1)
         if stride < 1:
             raise ValueError("Coarsening factor must be >=1")
+        self.stride = stride
 
         self.nlat_coarse = (self.nlat - 1) // stride + 1
         self.nlon_coarse = self.nlon // stride
@@ -100,6 +97,7 @@ class Paradis(nn.Module):
             activation_fn=self.activation_function,
             pre_normalize=False,
             bias_channels=0,
+            spatial_context=self.spatial,
         )
 
         self.velocity_nets = nn.ModuleList(
@@ -113,6 +111,7 @@ class Paradis(nn.Module):
                     bias_channels=bias_channels,
                     activation_fn=self.activation_function,
                     pre_normalize=True,
+                    spatial_context=self.spatial,
                 )
                 for _ in range(self.num_layers)
             ]
@@ -128,6 +127,7 @@ class Paradis(nn.Module):
                     lat_grid=lat_grid[::stride, ::stride],
                     lon_grid=lon_grid[::stride, ::stride],
                     interpolation=adv_interpolation,
+                    spatial_context=self.spatial,
                 )
                 for _ in range(self.num_layers)
             ]
@@ -144,6 +144,7 @@ class Paradis(nn.Module):
                     pre_normalize=True,
                     activation_fn=self.activation_function,
                     bias_channels=bias_channels,
+                    spatial_context=self.spatial,
                 )
                 for _ in range(self.num_layers)
             ]
@@ -160,6 +161,7 @@ class Paradis(nn.Module):
                     pre_normalize=True,
                     activation_fn=self.activation_function,
                     bias_channels=bias_channels,
+                    spatial_context=self.spatial,
                 )
                 for _ in range(self.num_layers)
             ]
@@ -175,24 +177,50 @@ class Paradis(nn.Module):
             activation=False,
             activation_fn=self.activation_function,
             bias_channels=bias_channels,
+            spatial_context=self.spatial,
         )
 
         self.alpha_adv = nn.Parameter(torch.full((self.num_layers, hidden_dim), -1.0))
 
-        self.downsample = PhysicalDownsample(stride=stride)
+        self.downsample = PhysicalDownsample(
+            stride=stride,
+            spatial_context=self.spatial,
+            global_input_height=self.nlat,
+            global_output_height=self.nlat_coarse,
+        )
 
         self.n_static = n_static = len(cfg.features.input.constants)
 
         self.static_encoder = nn.Sequential(
-            SepConv(n_static, 64, mesh_size, kernel_size=7),
+            SepConv(
+                n_static,
+                64,
+                mesh_size,
+                kernel_size=7,
+                spatial_context=self.spatial,
+            ),
             nn.SiLU(),
-            GeoCyclicPadding(3),
+            GeoCyclicPadding(
+                3,
+                spatial_context=self.spatial,
+                global_height=self.nlat,
+            ),
             nn.Conv2d(64, 64, groups=64, kernel_size=7),
             nn.SiLU(),
-            SepConv(64, static_dim, mesh_size, kernel_size=5),
+            SepConv(
+                64,
+                static_dim,
+                mesh_size,
+                kernel_size=5,
+                spatial_context=self.spatial,
+            ),
         )
 
     def _compile(self):
+        # Distributed point-to-point halo exchanges are intentionally kept out
+        # of torch.compile for now.  This method remains valid for non-spatial runs.
+        # if self.spatial.enabled:
+        #     return
         self._layer_step = torch.compile(self._layer_step)
         self.static_encoder = torch.compile(self.static_encoder)
         self.input_proj = torch.compile(self.input_proj)
@@ -206,64 +234,81 @@ class Paradis(nn.Module):
             self.step_fn = self._layer_step
 
     def upsample(self, x: torch.Tensor) -> torch.Tensor:
-        # Make longitude explicitly periodic before interpolation
-        x_ext = torch.cat([x, x[..., :1]], dim=-1)
+        if self.spatial.enabled:
+            x = self.spatial.gather_latitude(x, self.nlat_coarse)
 
-        # Interpolate to include both latitude endpoints and both 0/360 endpoints
+        # Make longitude explicitly periodic before interpolation.
+        x_ext = torch.cat([x, x[..., :1]], dim=-1)
         y_ext = F.interpolate(
             x_ext,
             size=(self.nlat, self.nlon + 1),
             mode="bilinear",
             align_corners=True,
         )
+        y = y_ext[..., :-1]
 
-        return y_ext[..., :-1]
+        if self.spatial.enabled:
+            y = self.spatial.slice_latitude(y, self.nlat, dim=-2)
+        return y
 
     def _apply_checkpoint(self, func, *args):
         if self.gradient_checkpoint:
             return checkpoint(func, *args, use_reentrant=False)
-        else:
-            return func(*args)
+        return func(*args)
 
     def _layer_step(
         self, i: int, hidden: torch.Tensor, hidden_static: torch.Tensor
     ) -> torch.Tensor:
-        """Single physics-informed latent update."""
-        B = hidden.shape[0]
+        B, _, H_local, W_local = hidden.shape
 
-        # Predict latent velocities (u, v) for advection
-        velocities_raw = self.velocity_nets[i](hidden)
-        velocities = velocities_raw.view(B, 2, self.num_vels, self.nlat_coarse, self.nlon_coarse)
+        with nvtx.range(f"L{i}/velocity"):
+            velocities_raw = self.velocity_nets[i](hidden)
+
+        velocities = velocities_raw.view(
+            B, 2, self.num_vels, H_local, W_local
+        )
         u, v = velocities[:, 0], velocities[:, 1]
 
-        g_adv = torch.sigmoid(self.alpha_adv[i]).to(hidden.dtype).view(1, -1, 1, 1)
+        g_adv = (
+            torch.sigmoid(self.alpha_adv[i])
+            .to(hidden.dtype)
+            .view(1, -1, 1, 1)
+        )
 
-        # Transport: Semi-Lagrangian advection
-        advected = self.advection[i](hidden, u, v, self.dt)
-        hidden = hidden + g_adv * (advected - hidden)
+        with nvtx.range(f"L{i}/advection"):
+            advected = self.advection[i](hidden, u, v, self.dt)
+            hidden = hidden + g_adv * (advected - hidden)
 
-        # Mixing: Learned diffusion
-        hidden = hidden + self.diffusion[i](hidden)
+        with nvtx.range(f"L{i}/diffusion"):
+            hidden = hidden + self.diffusion[i](hidden)
 
-        # Add static features
-        hidden_reac = torch.cat([hidden, hidden_static], dim=1)
-
-        # Forcing: Pointwise reaction (primary nonlinearity)
-        hidden = hidden + self.reaction[i](hidden_reac)
+        with nvtx.range(f"L{i}/reaction"):
+            hidden_reac = torch.cat([hidden, hidden_static], dim=1)
+            hidden = hidden + self.reaction[i](hidden_reac)
 
         return hidden
 
     def forward(self, fields):
-        hidden = self._apply_checkpoint(self.input_proj, fields)
-        hidden_static = self._apply_checkpoint(
-            self.static_encoder, fields[:, -self.n_static:])
+        if self.spatial.enabled:
+            fields = self.spatial.slice_latitude(fields, self.nlat, dim=-2)
 
-        skip = hidden
-        hidden = self.downsample(hidden)
-        hidden_static = self.downsample(hidden_static)
+        with nvtx.range("input_proj"):
+            hidden = self._apply_checkpoint(self.input_proj, fields)
 
-        for i in range(self.num_layers):
-            hidden = self.step_fn(i, hidden, hidden_static)
+        with nvtx.range("static_encoder"):
+            hidden_static = self._apply_checkpoint(
+                self.static_encoder, fields[:, -self.n_static :]
+            )
 
-        hidden = self.upsample(hidden) + skip
-        return self._apply_checkpoint(self.output_proj, hidden)
+        with nvtx.range("downsample"):
+            skip = hidden
+            hidden = self.downsample(hidden)
+            hidden_static = self.downsample(hidden_static)
+
+        with nvtx.range("step"):
+            for i in range(self.num_layers):
+                hidden = self.step_fn(i, hidden, hidden_static)
+
+        with nvtx.range("output"):
+            hidden = self.upsample(hidden) + skip
+            return self._apply_checkpoint(self.output_proj, hidden)

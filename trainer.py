@@ -15,6 +15,7 @@ from model.paradis import Paradis
 from utils.loss import ParadisLoss
 from utils.normalization import denormalize_humidity, denormalize_precipitation
 from utils.file_output import ZarrForecastWriter
+from torch.cuda import nvtx
 
 # Configure torch.compile to handle dynamic shapes in Muon/NorMuon optimizers
 torch._dynamo.config.cache_size_limit = 64
@@ -97,6 +98,8 @@ class LitParadis(L.LightningModule):
         lat_grid = datamodule.dataset.lat_rad_grid
         lon_grid = datamodule.dataset.lon_rad_grid
         self.model = Paradis(datamodule, cfg, lat_grid, lon_grid)
+        self.spatial = self.model.spatial
+        self.global_nlat = datamodule.lat_size
         self.cfg = cfg
         self.n_inputs = cfg.dataset.n_time_inputs
         self.gradient_checkpoint = cfg.compute.gradient_checkpointing
@@ -257,15 +260,25 @@ class LitParadis(L.LightningModule):
 
             self.load_state_dict(sd, strict=True)
 
-        # Compile model in place
-        if cfg.compute.compile == True:
-            self.model.compile(
-                mode="default",
-                fullgraph=True,
-                dynamic=False,
-                backend="inductor",
-            )
-        elif cfg.compute.compile == "modules":
+        # torch.compile fullgraph does not currently compose reliably with the
+        # autograd-aware point-to-point halo exchanges used by spatial parallelism.
+        # Keep the distributed implementation eager; non-spatial runs retain the
+        # existing compile behavior.
+        if self.spatial.enabled and cfg.compute.compile:
+            if self.global_rank == 0:
+                logging.warning(
+                    "Spatial parallelism enabled: disabling torch.compile for the model "
+                    "because latitude halo exchanges contain distributed P2P collectives."
+                )
+            self.model._compile()
+        elif cfg.compute.compile == True:
+        #     self.model.compile(
+        #         mode="default",
+        #         fullgraph=True,
+        #         dynamic=False,
+        #         backend="inductor",
+        #     )
+        # elif cfg.compute.compile == "modules":
             self.model._compile()
 
         self.epoch_start_time = None
@@ -495,50 +508,75 @@ class LitParadis(L.LightningModule):
         else:
             return func(*args)
 
+    def _spatial_lat_slice(self):
+        if not self.spatial.enabled:
+            return None
+        return self.spatial.lat_range(self.global_nlat)
+
+    def _slice_fine_latitude(self, x: torch.Tensor) -> torch.Tensor:
+        return self.spatial.slice_latitude(x, self.global_nlat, dim=-2)
+
+    def _spatial_loss_scale(self) -> float:
+        return self.spatial.loss_scale(self.global_nlat)
+
     def training_step(self, batch, batch_idx):
-        input_data, true_data, forcings, constant_data = batch
+        with nvtx.range("train/prep"):
+            input_data, true_data, forcings, constant_data = batch
 
-        opt = self.optimizers()
+            opt = self.optimizers()
 
-        grad_accum_steps = self.cfg.training.get("accumulate_grad_batches", 1)
+            grad_accum_steps = self.cfg.training.get("accumulate_grad_batches", 1)
 
-        if batch_idx % grad_accum_steps == 0:
-            opt.zero_grad()
+            if batch_idx % grad_accum_steps == 0:
+                opt.zero_grad()
 
-        constants = constant_data[:, :1].permute(0, 1, 4, 2, 3)
-        forcings = forcings.permute(0, 1, 4, 2, 3)
+            constants = constant_data[:, :1].permute(0, 1, 4, 2, 3)
+            forcings = forcings.permute(0, 1, 4, 2, 3)
 
-        num_steps = true_data.size(1)
+            if self.spatial.enabled:
+                input_data = self._slice_fine_latitude(input_data)
+                true_data = self._slice_fine_latitude(true_data)
+                constants = self._slice_fine_latitude(constants)
+                forcings = self._slice_fine_latitude(forcings)
 
-        train_loss_for_logging = 0.0
-        chunk_loss = 0.0
+            lat_slice = self._spatial_lat_slice()
+            spatial_loss_scale = self._spatial_loss_scale()
+            num_steps = true_data.size(1)
 
-        detach_every_n = self.detach_gradient_every
-        scheduler = self.lr_schedulers()
+            train_loss_for_logging = 0.0
+            chunk_loss = 0.0
 
-        if self.log_statistics:
-            train_channel_loss_weighted = torch.zeros(
-                self.loss_fn.num_features,
-                device=self.device,
-                dtype=torch.float32
-            )
+            detach_every_n = self.detach_gradient_every
+            scheduler = self.lr_schedulers()
 
-            train_channel_loss_unweighted = torch.zeros(
-                self.loss_fn.num_features,
-                device=self.device,
-                dtype=torch.float32
-            )
+            if self.log_statistics:
+                train_channel_loss_weighted = torch.zeros(
+                    self.loss_fn.num_features,
+                    device=self.device,
+                    dtype=torch.float32
+                )
+
+                train_channel_loss_unweighted = torch.zeros(
+                    self.loss_fn.num_features,
+                    device=self.device,
+                    dtype=torch.float32
+                )
 
         for step in range(num_steps):
-            forcings_step = forcings[:, step].unsqueeze(1)
+            with nvtx.range(f"forecast_{step}/build_input"):
+                forcings_step = forcings[:, step].unsqueeze(1)
 
-            model_input = torch.cat(
-                [input_data, forcings_step, constants], dim=2
-            ).squeeze(1)
+                model_input = torch.cat(
+                    [input_data, forcings_step, constants], dim=2
+                ).squeeze(1)
 
-            output_data = self(model_input)
+            with nvtx.range(f"forecast_{step}/forward"):
+                output_data = self(model_input)
 
-            loss = self.loss_fn(output_data, true_data[:, step])
+            with nvtx.range(f"forecast_{step}/loss"):
+                loss = self.loss_fn(
+                    output_data, true_data[:, step], lat_slice=lat_slice
+                ) * spatial_loss_scale
 
             if self.log_statistics:
                 with torch.no_grad():
@@ -546,13 +584,15 @@ class LitParadis(L.LightningModule):
                         output_data,
                         true_data[:, step],
                         weighted=True,
-                    ).float()
+                        lat_slice=lat_slice,
+                    ).float() * spatial_loss_scale
 
                     train_channel_loss_unweighted += self.loss_fn.per_channel_loss(
                         output_data,
                         true_data[:, step],
                         weighted=False,
-                    ).float()
+                        lat_slice=lat_slice,
+                    ).float() * spatial_loss_scale
 
             train_loss_for_logging = train_loss_for_logging + loss.detach()
 
@@ -570,7 +610,8 @@ class LitParadis(L.LightningModule):
             is_last_step = step == num_steps - 1
 
             if should_backward_chunk or is_last_step:
-                self.manual_backward(chunk_loss)
+                with nvtx.range(f"forecast_{step}/BACKWARD"):
+                    self.manual_backward(chunk_loss)
                 input_data = input_data.detach()
                 chunk_loss = 0.0
 
@@ -582,58 +623,62 @@ class LitParadis(L.LightningModule):
         )
 
         if should_step_optimizer:
-            opt.step()
-            scheduler.step()
+            with nvtx.range("OPTIMIZER_STEP"):
+                opt.step()
 
-        train_loss = train_loss_for_logging / num_steps
+            with nvtx.range("SCHEDULER_STEP"):
+                scheduler.step()
 
-        if self.log_statistics:
-            train_channel_loss_weighted = train_channel_loss_weighted / num_steps
-            train_channel_loss_unweighted = train_channel_loss_unweighted / num_steps
+        with nvtx.range("TRAIN_LOGGING"):
+            train_loss = train_loss_for_logging / num_steps
 
-            channel_metrics = {}
+            if self.log_statistics:
+                train_channel_loss_weighted = train_channel_loss_weighted / num_steps
+                train_channel_loss_unweighted = train_channel_loss_unweighted / num_steps
 
-            channel_metrics.update(
-                {
-                    f"train_loss_channel_weighted/{name}": train_channel_loss_weighted[i]
-                    for i, name in enumerate(self.output_name_order)
-                }
-            )
+                channel_metrics = {}
 
-            channel_metrics.update(
-                {
-                    f"train_loss_channel_unweighted/{name}": train_channel_loss_unweighted[i]
-                    for i, name in enumerate(self.output_name_order)
-                }
-            )
+                channel_metrics.update(
+                    {
+                        f"train_loss_channel_weighted/{name}": train_channel_loss_weighted[i]
+                        for i, name in enumerate(self.output_name_order)
+                    }
+                )
 
-            self.log_dict(
-                channel_metrics,
+                channel_metrics.update(
+                    {
+                        f"train_loss_channel_unweighted/{name}": train_channel_loss_unweighted[i]
+                        for i, name in enumerate(self.output_name_order)
+                    }
+                )
+
+                self.log_dict(
+                    channel_metrics,
+                    on_step=True,
+                    on_epoch=False,
+                    prog_bar=False,
+                    sync_dist=True,
+                )
+
+            self.log(
+                "train_loss",
+                train_loss,
                 on_step=True,
                 on_epoch=False,
-                prog_bar=False,
+                prog_bar=True,
                 sync_dist=True,
             )
 
-        self.log(
-            "train_loss",
-            train_loss,
-            on_step=True,
-            on_epoch=False,
-            prog_bar=True,
-            sync_dist=True,
-        )
+            self.log("lr", opt.param_groups[0]["lr"], prog_bar=True)
 
-        self.log("lr", opt.param_groups[0]["lr"], prog_bar=True)
-
-        self.log(
-            "forecast_steps",
-            num_steps,
-            on_step=True,
-            on_epoch=False,
-            prog_bar=True,
-            sync_dist=True,
-        )
+            self.log(
+                "forecast_steps",
+                num_steps,
+                on_step=True,
+                on_epoch=False,
+                prog_bar=True,
+                sync_dist=True,
+            )
 
         return train_loss
 
@@ -644,6 +689,14 @@ class LitParadis(L.LightningModule):
         constants = constant_data[:, :1].permute(0, 1, 4, 2, 3)
         forcings = forcings.permute(0, 1, 4, 2, 3)
 
+        if self.spatial.enabled:
+            input_data = self._slice_fine_latitude(input_data)
+            true_data = self._slice_fine_latitude(true_data)
+            constants = self._slice_fine_latitude(constants)
+            forcings = self._slice_fine_latitude(forcings)
+
+        lat_slice = self._spatial_lat_slice()
+        spatial_loss_scale = self._spatial_loss_scale()
         val_loss = 0.0
         report_loss = 0.0
         num_steps = true_data.size(1)
@@ -658,11 +711,23 @@ class LitParadis(L.LightningModule):
             # Forward pass
             output_data = self(input_data)
 
-            loss = self.val_loss_fn(output_data, true_data[:, step])
+            loss = self.val_loss_fn(
+                output_data, true_data[:, step], lat_slice=lat_slice
+            ) * spatial_loss_scale
 
-            # Log requested scaled RMSE losses for validation
+            # Report RMSE is nonlinear, so reconstruct the global latitude field
+            # before taking the square root. This path is validation-only.
             if self.enable_reports:
-                report_loss += self._get_report_rmse(output_data, true_data[:, step])
+                report_output = output_data
+                report_target = true_data[:, step]
+                if self.spatial.enabled:
+                    report_output = self.spatial.gather_latitude(
+                        report_output, self.global_nlat
+                    )
+                    report_target = self.spatial.gather_latitude(
+                        report_target, self.global_nlat
+                    )
+                report_loss += self._get_report_rmse(report_output, report_target)
 
             # Compute loss (data is already transformed by dataset)
             val_loss += loss
@@ -733,12 +798,18 @@ class LitParadis(L.LightningModule):
         output_features = list(dataset.dyn_output_features)
         constants = constant_data[:, :1].permute(0, 1, 4, 2, 3)
 
+        if self.spatial.enabled:
+            input_data = self._slice_fine_latitude(input_data)
+            constants = self._slice_fine_latitude(constants)
+
         chunk_buffer = []
         chunk_start_idx = None
         stored_step_idx = 0
 
         for step in range(num_forecast_steps):
             forcings_step = forcings[:, step].unsqueeze(1).permute(0, 1, 4, 2, 3)
+            if self.spatial.enabled:
+                forcings_step = self._slice_fine_latitude(forcings_step)
 
             model_input = torch.cat(
                 [input_data, forcings_step, constants], dim=2
@@ -750,13 +821,20 @@ class LitParadis(L.LightningModule):
             ).unsqueeze(1)
 
             if step % output_frequency == 0:
-                if chunk_start_idx is None:
-                    chunk_start_idx = stored_step_idx
+                output_for_write = output_data.detach()
+                if self.spatial.enabled:
+                    output_for_write = self.spatial.gather_latitude(
+                        output_for_write, self.global_nlat
+                    )
 
-                chunk_buffer.append(output_data.detach())
-                stored_step_idx += 1
+                if self.spatial.is_group_leader:
+                    if chunk_start_idx is None:
+                        chunk_start_idx = stored_step_idx
 
-                if len(chunk_buffer) == write_every_n:
+                    chunk_buffer.append(output_for_write)
+                    stored_step_idx += 1
+
+                if self.spatial.is_group_leader and len(chunk_buffer) == write_every_n:
                     chunk_tensor = torch.stack(chunk_buffer, dim=1).cpu()
                     denormalize_datasets(None, chunk_tensor, dataset)
 
@@ -782,7 +860,7 @@ class LitParadis(L.LightningModule):
 
             del output_data
 
-        if chunk_buffer:
+        if self.spatial.is_group_leader and chunk_buffer:
             chunk_tensor = torch.stack(chunk_buffer, dim=1).cpu()
             denormalize_datasets(None, chunk_tensor, dataset)
 
@@ -914,9 +992,12 @@ class LitParadis(L.LightningModule):
         # Record current time for time-per-step calculation
         self.tic = time.perf_counter()
 
+        nvtx.range_push(f"train_batch_{batch_idx}")
         return super().on_train_batch_start(batch, batch_idx)
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
+        nvtx.range_pop()
+
         dt = time.perf_counter() - self.tic
 
         self.log(

@@ -96,13 +96,20 @@ def main():
 
     model = LitParadis(datamodule, cfg)
 
+    spatial_enabled = bool(
+        cfg.compute.get("spatial_parallel", {}).get("enabled", False)
+    )
+    total_devices = cfg.compute.num_devices * cfg.compute.num_nodes
+
     trainer = L.Trainer(
         accelerator=cfg.compute.accelerator,
         devices=cfg.compute.num_devices,
         num_nodes=cfg.compute.num_nodes,
+        strategy="auto" if total_devices == 1 else "ddp",
         precision="16-mixed" if cfg.compute.use_amp else "32-true",
         logger=False,
         enable_checkpointing=False,
+        use_distributed_sampler=not spatial_enabled,
     )
 
     trainer.predict(
